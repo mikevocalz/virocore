@@ -148,7 +148,11 @@ public:
                       std::string ceilingMaterial, std::string floorMaterial);
     
     GLKView *getView() { return _viewGL; }
-    
+
+    // Exposed for VROExternalSurfaceTextureImpl: the IOSurface→GLES import path
+    // needs the EAGL context to build (and re-use) a CVOpenGLESTextureCache.
+    EAGLContext *getEAGLContext() const { return _eaglContext; }
+
 protected:
     
     __weak GLKView *_viewGL;
