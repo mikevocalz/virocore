@@ -64,6 +64,7 @@ add_library( # Sets the name of the library.
              ${VIRO_ANDROID_SRC}/VROAVPlayer.cpp
              ${VIRO_ANDROID_SRC}/VROVideoTextureAVP.cpp
              ${VIRO_ANDROID_SRC}/VROCameraTextureAndroid.cpp
+             ${VIRO_ANDROID_SRC}/VROExternalSurfaceTextureImpl.cpp
              ${VIRO_ANDROID_SRC}/VROTypefaceAndroid.cpp
              ${VIRO_ANDROID_SRC}/VROInputControllerDaydream.cpp
              ${VIRO_ANDROID_SRC}/VROInputControllerCardboard.cpp
