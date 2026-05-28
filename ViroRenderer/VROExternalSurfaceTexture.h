@@ -2,11 +2,10 @@
 //  VROExternalSurfaceTexture.h
 //  ViroRenderer
 //
-//  Bridges an externally-provided GPU buffer (rendered into by Skia / WebGPU /
-//  Rive on the JS side via the Nitro CanvasSurface HybridObject) into a Viro
-//  material as a live texture. Mirrors the camera-texture path: shader
-//  modifiers that sample this texture declare requiresExternalSurfaceTexture()
-//  on the modifier, and the engine injects samplerExternalOES on Android.
+//  Bridges an externally-provided GPU buffer into a Viro material as a live
+//  texture. Mirrors the camera-texture path: shader modifiers that sample
+//  this texture set requiresExternalSurfaceTexture(true) so the engine
+//  injects samplerExternalOES on Android.
 //
 
 #ifndef VROExternalSurfaceTexture_h

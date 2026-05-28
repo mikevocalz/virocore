@@ -3,16 +3,9 @@
 //  ViroKit
 //
 //  Apple-platform implementation of VROExternalSurfaceTextureImpl_importHandle().
-//
-//    iOS / tvOS:  IOSurface  → CVOpenGLESTextureCache → GL_TEXTURE_2D
-//    visionOS:    IOSurface  → CVMetalTextureCache    → MTLTexture
-//
-//  The texture cache is kept per-driver in a small map (EAGLContext or MTLDevice
-//  pointer as the key) so frame imports are O(1). Each substrate owns its own
-//  CV texture ref and releases it on destruction; this is the "release on
-//  substrate swap" model — the previous frame's CV ref stays alive as long as
-//  the substrate is bound to the material, then is released when
-//  VROExternalSurfaceTexture::updateFromHandle() swaps a new substrate in.
+//  iOS uses CVOpenGLESTextureCache; visionOS uses CVMetalTextureCache. Caches
+//  are kept per-device. Each substrate owns its own CV texture ref and
+//  releases it on destruction.
 //
 
 #include "VROExternalSurfaceTexture.h"
@@ -28,23 +21,17 @@
 #include <mutex>
 
 #if TARGET_OS_VISION
-  // visionOS path: Metal end-to-end. Producer hands us an IOSurface, we wrap it
-  // in an MTLTexture via CVMetalTextureCache, then in VROTextureSubstrateMetal.
   #import <Metal/Metal.h>
   #include "VROTextureSubstrateMetal.h"
   #include "VRODriverMetal.h"
 #else
-  // iOS path: GLES. Producer hands us an IOSurface, we wrap it in a GLES
-  // texture via CVOpenGLESTextureCache.
   #import <OpenGLES/EAGL.h>
   #include "VRODriverOpenGLiOS.h"
 #endif
 
 #if TARGET_OS_VISION
 
-// ────────────────────────────────────────────────────────────────────────────
-// visionOS: IOSurface → MTLTexture → VROTextureSubstrateMetal
-// ────────────────────────────────────────────────────────────────────────────
+// visionOS: IOSurface -> MTLTexture via CVMetalTextureCache.
 
 namespace {
 
@@ -127,9 +114,7 @@ VROExternalSurfaceTextureImpl_importHandle(const VROSharedTextureHandle &handle,
 
 #else  // !TARGET_OS_VISION
 
-// ────────────────────────────────────────────────────────────────────────────
-// iOS: IOSurface → GL_TEXTURE_2D → VROTextureSubstrateOpenGL
-// ────────────────────────────────────────────────────────────────────────────
+// iOS: IOSurface -> GL_TEXTURE_2D via CVOpenGLESTextureCache.
 
 namespace {
 
