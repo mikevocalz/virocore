@@ -305,6 +305,7 @@ add_library( # Sets the name of the library.
              ${VIRO_RENDERER_SRC}/VROGeometrySubstrateOpenGL.cpp
              ${VIRO_RENDERER_SRC}/VROMaterialSubstrateOpenGL.cpp
              ${VIRO_RENDERER_SRC}/VROTextureSubstrateOpenGL.cpp
+             ${VIRO_RENDERER_SRC}/VROExternalSurfaceTexture.cpp
              ${VIRO_RENDERER_SRC}/VROUniform.cpp
              ${VIRO_RENDERER_SRC}/VROShaderProgram.cpp
              ${VIRO_RENDERER_SRC}/VROShaderModifier.cpp
