@@ -792,18 +792,20 @@ void VROShaderProgram::inflateFragmentShaderModifiers(const std::vector<std::sha
     }
 
 #ifdef VRO_PLATFORM_ANDROID
-    // On Android, camera_texture is an OES external image texture.
-    // When any modifier uses it, inject the required extension directive and
-    // replace 'sampler2D camera_texture' with 'samplerExternalOES camera_texture'
-    // so users can write platform-agnostic 'uniform sampler2D camera_texture' declarations.
+    // On Android, camera_texture (AR camera feed) and surface_texture
+    // (Nitro CanvasSurface) are OES external image textures. When any modifier
+    // uses either, inject the required extension directive and replace
+    //   'sampler2D camera_texture'  → 'samplerExternalOES camera_texture'
+    //   'sampler2D surface_texture' → 'samplerExternalOES surface_texture'
+    // so user code can always declare the uniforms as plain sampler2D.
     {
-        bool needsOES = false;
+        bool needsOESForCamera = false;
+        bool needsOESForSurface = false;
         for (const auto &modifier : sorted) {
-            if (modifier->requiresCameraTexture()) {
-                needsOES = true;
-                break;
-            }
+            if (modifier->requiresCameraTexture())          needsOESForCamera  = true;
+            if (modifier->requiresExternalSurfaceTexture()) needsOESForSurface = true;
         }
+        const bool needsOES = needsOESForCamera || needsOESForSurface;
         if (needsOES) {
             // Runtime check: VRO_PLATFORM_ANDROID is also defined as 1 for plain .cpp
             // compilation units on iOS (VRODefines.h gates on __OBJC__). Query the GL
@@ -833,7 +835,14 @@ void VROShaderProgram::inflateFragmentShaderModifiers(const std::vector<std::sha
                 } else {
                     source = oesExt + source;
                 }
-                VROStringUtil::replaceAll(source, "sampler2D camera_texture", "samplerExternalOES camera_texture");
+                if (needsOESForCamera) {
+                    VROStringUtil::replaceAll(source, "sampler2D camera_texture",
+                                                      "samplerExternalOES camera_texture");
+                }
+                if (needsOESForSurface) {
+                    VROStringUtil::replaceAll(source, "sampler2D surface_texture",
+                                                      "samplerExternalOES surface_texture");
+                }
             }
         }
     }

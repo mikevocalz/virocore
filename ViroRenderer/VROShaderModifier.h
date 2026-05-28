@@ -271,6 +271,23 @@ public:
     }
 
     /*
+     Set to true if the modifier samples a `surface_texture` uniform that's bound
+     to a VROExternalSurfaceTexture (a Nitro CanvasSurface). On Android the
+     texture is GL_TEXTURE_EXTERNAL_OES; the engine injects the required
+     #extension and replaces 'sampler2D surface_texture' with
+     'samplerExternalOES surface_texture' automatically, so user code can always
+     declare 'uniform sampler2D surface_texture'.
+     On iOS / visionOS the texture is sampled as plain sampler2D (GL_TEXTURE_2D
+     on iOS; an MTLTexture sampler under the Metal driver on visionOS).
+     */
+    void setRequiresExternalSurfaceTexture(bool value) {
+        _requiresExternalSurfaceTexture = value;
+    }
+    bool requiresExternalSurfaceTexture() const {
+        return _requiresExternalSurfaceTexture;
+    }
+
+    /*
      Varyings declare typed variables that are written in the vertex stage (Geometry or Vertex
      entry point) and read in the fragment stage (Surface, LightingModel, or Fragment entry
      point). Each string should be a GLSL type + name pair, e.g. "highp float displacement".
@@ -352,6 +369,7 @@ private:
     int _priority = 0;
     bool _requiresSceneDepth = false;
     bool _requiresCameraTexture = false;
+    bool _requiresExternalSurfaceTexture = false;
 
     /*
      Typed varying declarations shared between vertex and fragment stages.
