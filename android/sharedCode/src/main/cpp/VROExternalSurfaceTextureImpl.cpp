@@ -2,25 +2,9 @@
 //  VROExternalSurfaceTextureImpl.cpp
 //  ViroRenderer (Android)
 //
-//  Android implementation of VROExternalSurfaceTextureImpl_importHandle().
-//
-//  Two routes are supported via the same factory; selection is based on
-//  which field of VROSharedTextureHandle is populated.
-//
-//    Route B (preferred, zero-copy, fence-friendly):
-//        AHardwareBuffer*
-//          → eglGetNativeClientBufferANDROID
-//          → eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID, ...)
-//          → glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, ...)
-//          → VROTextureSubstrateOpenGL(GL_TEXTURE_EXTERNAL_OES, name, ..., ownTexture=true)
-//
-//    Route A (fallback, mirrors Viro's video-texture path most closely):
-//        SurfaceTexture GL id (already created and updated on the producer side
-//        via android.view.Surface; we just sample it)
-//          → VROTextureSubstrateOpenGL(GL_TEXTURE_EXTERNAL_OES, name, ..., ownTexture=false)
-//
-//  Route B requires API 26+ (AHardwareBuffer). digivision's PICO flavor is
-//  minSdk 32, comfortably above that.
+//  Route B: AHardwareBuffer -> EGLImage -> GL_TEXTURE_EXTERNAL_OES (API 26+).
+//  Route A: pass-through of a SurfaceTexture-backed external-OES name owned
+//  by the producer. Selected by which field of VROSharedTextureHandle is set.
 //
 
 #include "VROExternalSurfaceTexture.h"
@@ -108,9 +92,7 @@ importRouteB(const VROSharedTextureHandle &handle,
              std::shared_ptr<VRODriver> &driver) {
     auto &fns = eglFns();
     if (!fns.getNativeClientBuffer || !fns.createImage || !fns.imageTargetTexture2D) {
-        pinfo("VROExternalSurfaceTexture: Route B unavailable — missing EGL extensions "
-              "(getNativeClientBufferANDROID / createImageKHR / imageTargetTexture2DOES). "
-              "Falling back caller-side to Route A.");
+        pinfo("VROExternalSurfaceTexture: Route B unavailable, missing EGL extensions");
         return nullptr;
     }
 
@@ -181,7 +163,6 @@ VROExternalSurfaceTextureImpl_importHandle(const VROSharedTextureHandle &handle,
     if (handle.surfaceTextureGLId != 0) {
         return importRouteA(handle, driver);
     }
-    pinfo("VROExternalSurfaceTexture: Android handle has neither ahardwareBuffer (Route B) "
-          "nor surfaceTextureGLId (Route A) set");
+    pinfo("VROExternalSurfaceTexture: Android handle has no backing buffer set");
     return nullptr;
 }
