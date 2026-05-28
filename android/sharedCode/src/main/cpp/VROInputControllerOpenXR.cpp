@@ -128,16 +128,17 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     }
 
     // ── 3. Suggest interaction profile bindings ───────────────────────────────
-    // Covers Touch controllers (Quest 2) and Touch Plus (Quest 3 default).
-    XrPath touchProfile;
-    xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller", &touchProfile);
-
+    // Covers Touch controllers (Quest 2) and Touch Plus (Quest 3 default), plus
+    // PICO Neo3 and PICO 4 controllers so B/Menu fire on PICO hardware too.
     auto makePath = [&](const char *str) -> XrPath {
         XrPath p;
         xrStringToPath(instance, str, &p);
         return p;
     };
 
+    // The action→subpath table is the same across profiles. Each profile that
+    // exposes the same physical buttons (A/B/X/Y, menu, triggers, grips,
+    // thumbsticks, haptics, aim pose) reuses these bindings.
     const XrActionSuggestedBinding bindings[] = {
         { _leftAimPoseAction,     makePath("/user/hand/left/input/aim/pose")       },
         { _rightAimPoseAction,    makePath("/user/hand/right/input/aim/pose")      },
@@ -155,19 +156,31 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         { _leftVibrateAction,     makePath("/user/hand/left/output/haptic")        },
         { _rightVibrateAction,    makePath("/user/hand/right/output/haptic")       },
     };
+    const uint32_t kBindingsCount = (uint32_t)(sizeof(bindings) / sizeof(bindings[0]));
 
-    XrInteractionProfileSuggestedBinding suggestion = {
-        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
+    auto suggestForProfile = [&](const char *profilePath) {
+        XrPath profile;
+        xrStringToPath(instance, profilePath, &profile);
+        XrInteractionProfileSuggestedBinding s = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+        s.interactionProfile     = profile;
+        s.suggestedBindings      = bindings;
+        s.countSuggestedBindings = kBindingsCount;
+        XrResult r = xrSuggestInteractionProfileBindings(instance, &s);
+        if (!XR_SUCCEEDED(r)) {
+            // Runtimes that don't recognise a given profile return
+            // XR_ERROR_PATH_UNSUPPORTED — that's expected, just log and move on.
+            ALOGV("xrSuggestInteractionProfileBindings(%s) -> %d", profilePath, (int)r);
+        } else {
+            ALOGV("xrSuggestInteractionProfileBindings(%s) OK", profilePath);
+        }
     };
-    suggestion.interactionProfile     = touchProfile;
-    suggestion.suggestedBindings      = bindings;
-    suggestion.countSuggestedBindings = (uint32_t)(sizeof(bindings) / sizeof(bindings[0]));
 
-    result = xrSuggestInteractionProfileBindings(instance, &suggestion);
-    if (!XR_SUCCEEDED(result)) {
-        ALOGE("xrSuggestInteractionProfileBindings failed: %d", result);
-        return false;
-    }
+    // Quest Touch / Touch Plus
+    suggestForProfile("/interaction_profiles/oculus/touch_controller");
+    // PICO Neo3 + PICO 4 / 4 Ultra. The runtime accepts the one it recognises
+    // and rejects the others with XR_ERROR_PATH_UNSUPPORTED; that's fine.
+    suggestForProfile("/interaction_profiles/bytedance/pico_neo3_controller");
+    suggestForProfile("/interaction_profiles/bytedance/pico4_controller");
 
     // ── 4. Attach action set to session ───────────────────────────────────────
     XrSessionActionSetsAttachInfo attachInfo = { XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };

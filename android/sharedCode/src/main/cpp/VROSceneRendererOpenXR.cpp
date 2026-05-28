@@ -29,12 +29,23 @@
 // Required extensions
 // ──────────────────────────────────────────────────────────────────────────────
 
-static const char *const kRequiredExtensions[] = {
+// Hard requirements: every conformant OpenXR runtime exposes these. If one is
+// missing we genuinely cannot run.
+static const char *const kHardRequiredExtensions[] = {
     XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,   // GLES context binding (mandatory)
+};
+static constexpr uint32_t kHardRequiredExtensionCount =
+    sizeof(kHardRequiredExtensions) / sizeof(kHardRequiredExtensions[0]);
+
+// Soft requirements: required on Quest, but PICO Swan rejects the create call
+// when these are enabled without the matching xrInitializeLoaderKHR prelude
+// having been done with the exact JavaVM / Activity refs the runtime expects.
+// We downgrade these to "enable iff enumerated".
+static const char *const kSoftRequiredExtensions[] = {
     XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
 };
-static constexpr uint32_t kRequiredExtensionCount =
-    sizeof(kRequiredExtensions) / sizeof(kRequiredExtensions[0]);
+static constexpr uint32_t kSoftRequiredExtensionCount =
+    sizeof(kSoftRequiredExtensions) / sizeof(kSoftRequiredExtensions[0]);
 
 static const char *const kOptionalExtensions[] = {
     XR_FB_PASSTHROUGH_EXTENSION_NAME,           // mixed reality (Quest 2 BW, Quest 3 color)
@@ -222,24 +233,37 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount,
                                             availableExts.data());
 
-    // Verify required extensions are present
-    for (uint32_t i = 0; i < kRequiredExtensionCount; ++i) {
+    // Verify hard-required extensions are present
+    for (uint32_t i = 0; i < kHardRequiredExtensionCount; ++i) {
         bool found = false;
         for (auto &ext : availableExts) {
-            if (strcmp(ext.extensionName, kRequiredExtensions[i]) == 0) {
+            if (strcmp(ext.extensionName, kHardRequiredExtensions[i]) == 0) {
                 found = true; break;
             }
         }
         if (!found) {
             ALOGE("Required OpenXR extension not available: %s",
-                  kRequiredExtensions[i]);
+                  kHardRequiredExtensions[i]);
             return false;
         }
     }
 
-    // Build the extension list: required + available optionals
-    std::vector<const char *> enabledExts(kRequiredExtensions,
-                                           kRequiredExtensions + kRequiredExtensionCount);
+    // Build the extension list: hard-required + soft-required-if-present + optionals-if-present.
+    std::vector<const char *> enabledExts(kHardRequiredExtensions,
+                                           kHardRequiredExtensions + kHardRequiredExtensionCount);
+    bool androidCreateInstanceAvailable = false;
+    for (uint32_t i = 0; i < kSoftRequiredExtensionCount; ++i) {
+        auto *softExt = kSoftRequiredExtensions[i];
+        for (auto &ext : availableExts) {
+            if (strcmp(ext.extensionName, softExt) == 0) {
+                enabledExts.push_back(softExt);
+                if (strcmp(softExt, XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME) == 0)
+                    androidCreateInstanceAvailable = true;
+                ALOGV("Soft-required extension enabled: %s", softExt);
+                break;
+            }
+        }
+    }
     for (auto *optExt : kOptionalExtensions) {
         for (auto &ext : availableExts) {
             if (strcmp(ext.extensionName, optExt) == 0) {
@@ -269,12 +293,26 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     appInfo.apiVersion         = XR_CURRENT_API_VERSION;
 
     XrInstanceCreateInfo createInfo = { XR_TYPE_INSTANCE_CREATE_INFO };
-    createInfo.next                    = &androidInfo;
+    // Only chain XrInstanceCreateInfoAndroidKHR when the extension is enabled.
+    // PICO Swan rejects createInstance if the chain references an extension
+    // that wasn't in enabledExtensionNames.
+    createInfo.next                    = androidCreateInstanceAvailable ? (const void *)&androidInfo
+                                                                        : nullptr;
     createInfo.applicationInfo         = appInfo;
     createInfo.enabledExtensionCount   = (uint32_t)enabledExts.size();
     createInfo.enabledExtensionNames   = enabledExts.data();
 
-    XR_RETURN_FALSE(xrCreateInstance(&createInfo, &_instance));
+    XrResult createResult = xrCreateInstance(&createInfo, &_instance);
+    if (XR_FAILED(createResult)) {
+        // xrResultToString needs an instance, which we don't have on failure.
+        // The numeric value is still actionable when cross-referenced against
+        // openxr.h's XrResult enum.
+        ALOGE("xrCreateInstance failed: XrResult=%d (androidCreateInstanceAvailable=%d, "
+              "enabledExtensions=%u)",
+              (int)createResult, (int)androidCreateInstanceAvailable,
+              createInfo.enabledExtensionCount);
+        return false;
+    }
     ALOGV("xrCreateInstance OK");
 
     // ── Get system (HMD) ──────────────────────────────────────────────────────
