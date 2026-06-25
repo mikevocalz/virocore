@@ -586,6 +586,19 @@ public class ViroViewOpenXR extends ViroView {
                 || event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
             return true;
         }
+        // ponytail: never consume KEYCODE_BACK. Two paths converge on it:
+        //   - Immersive mode: the OpenXR action set is what fires the B/Menu
+        //     callback; onKeyEvent here is a no-op stub. The OpenXR runtime
+        //     should not be delivering KEYCODE_BACK as an Android KeyEvent in
+        //     that mode anyway.
+        //   - Panel/dev-client mode: there is no XR session, and PICO emits
+        //     the B button as KEYCODE_BACK. Activity.onBackPressed must see it
+        //     so React Native's BackHandler fires.
+        // Returning true unconditionally (the old behaviour) hid back from the
+        // Activity in panel mode and broke RN's BackHandler.
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            return super.dispatchKeyEvent(event);
+        }
         if (mNativeRenderer != null) {
             mNativeRenderer.onKeyEvent(event.getKeyCode(), event.getAction());
         }
