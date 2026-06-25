@@ -119,7 +119,12 @@ VROMaterial::VROMaterial(std::shared_ptr<VROMaterial> material) : VROThreadRestr
  _shaderUniformFloats(material->_shaderUniformFloats),
  _shaderUniformVec3s(material->_shaderUniformVec3s),
  _shaderUniformVec4s(material->_shaderUniformVec4s),
- _shaderUniformMat4s(material->_shaderUniformMat4s) {
+ _shaderUniformMat4s(material->_shaderUniformMat4s),
+ // Nitro Canvas: copy the texture-uniform map so cloned materials inherit
+ // bindings registered via setExternalSurfaceTexture / setShaderUniform(VROTexture).
+ // Without this, the clone keeps the canvasModifier (cloned via _shaderModifiers
+ // above) but loses the surface_texture binding → samples a blank/white default.
+ _shaderUniformTextures(material->_shaderUniformTextures) {
 
      _diffuse = new VROMaterialVisual(*this, *material->_diffuse);
      _roughness = new VROMaterialVisual(*this, *material->_roughness);
@@ -195,6 +200,9 @@ void VROMaterial::copyFrom(std::shared_ptr<VROMaterial> material) {
     _shaderUniformVec3s = material->_shaderUniformVec3s;
     _shaderUniformVec4s = material->_shaderUniformVec4s;
     _shaderUniformMat4s = material->_shaderUniformMat4s;
+    // Nitro Canvas: same reason as the copy ctor — without copying the texture
+    // uniform map, runtime material copies lose their canvasSource bindings.
+    _shaderUniformTextures = material->_shaderUniformTextures;
 
     _diffuse->copyFrom(*material->_diffuse);
     _roughness->copyFrom(*material->_roughness);
@@ -509,4 +517,45 @@ void VROMaterial::applySemanticMaskModifier() {
         });
 
     addShaderModifier(_semanticMaskModifier);
+}
+
+// ============================================================
+// Nitro Canvas: External Surface Texture
+// ============================================================
+
+void VROMaterial::setExternalSurfaceTexture(const std::string &channel,
+                                            std::shared_ptr<VROTexture> texture) {
+    // Store the texture in shader uniform textures map
+    // The uniform name for external surface textures is always "surface_texture"
+    setShaderUniform("surface_texture", texture);
+
+    // Check if we already have a canvas modifier
+    static const std::string kCanvasModifierName = "nitro_canvas_surface";
+    for (const auto &mod : _shaderModifiers) {
+        if (mod->getName() == kCanvasModifierName) {
+            // Modifier already exists, just update substrate textures
+            updateSubstrateTextures();
+            return;
+        }
+    }
+
+    // Surface-entry modifier so the existing lighting pipeline still runs
+    // over the sampled color (matches the diffuse_texture modifier in
+    // VROShaderFactory). On Android the "sampler2D surface_texture"
+    // declaration is rewritten to samplerExternalOES at compile time
+    // because setRequiresExternalSurfaceTexture(true) is set.
+    std::vector<std::string> lines = {
+        "uniform sampler2D surface_texture;",
+        // Force alpha=1: the AHB-backed external texture may carry alpha=0 in
+        // formats where the alpha channel isn't meaningful. Without this the
+        // material renders transparent and the quad becomes invisible.
+        "_surface.diffuse_color = vec4(texture(surface_texture, _surface.diffuse_texcoord).rgb, 1.0);",
+    };
+
+    std::shared_ptr<VROShaderModifier> canvasModifier = std::make_shared<VROShaderModifier>(
+        VROShaderEntryPoint::Surface, lines);
+    canvasModifier->setName(kCanvasModifierName);
+    canvasModifier->setRequiresExternalSurfaceTexture(true);
+
+    addShaderModifier(canvasModifier);
 }
