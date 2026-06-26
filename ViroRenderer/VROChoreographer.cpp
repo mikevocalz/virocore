@@ -285,6 +285,14 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
             inputs.outputTarget = _hdrTarget;
             _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
 
+            // Custom pass slot — runs against the opaque-filled HDR target before
+            // the depth blit + bloom so splat-style consumers can depth-test
+            // against opaque geometry without affecting the depth texture saved
+            // for next-frame sampling. See setCustomPostOpaquePass.
+            if (_customPostOpaquePass) {
+                _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+            }
+
             // Capture scene depth from the HDR target's depth renderbuffer into the
             // depth texture target, so the next frame can sample it.
             if (_sceneDepthTarget && _sceneDepthTarget->getWidth() == _hdrTarget->getWidth()) {
@@ -336,6 +344,12 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
             inputs.outputTarget = _hdrTarget;
             _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
 
+            // Custom pass slot (see setCustomPostOpaquePass). Runs before
+            // the depth blit + tone-mapping so depth-test is against opaque.
+            if (_customPostOpaquePass) {
+                _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+            }
+
             // Capture scene depth for the next frame
             if (_sceneDepthTarget && _sceneDepthTarget->getWidth() == _hdrTarget->getWidth()) {
                 _hdrTarget->blitDepth(_sceneDepthTarget);
@@ -371,15 +385,21 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
     }
     else if (_mrtSupported && _renderToTextureDelegate) {
         _rttTarget->hydrate();
-        
+
         inputs.outputTarget = _rttTarget;
         _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+        if (_customPostOpaquePass) {
+            _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+        }
         renderToTextureAndDisplay(_rttTarget, driver);
     }
     else {
         // Render to the display directly
         inputs.outputTarget = driver->getDisplay();
         _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+        if (_customPostOpaquePass) {
+            _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+        }
     }
 }
 

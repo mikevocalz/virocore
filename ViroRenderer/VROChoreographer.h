@@ -70,6 +70,32 @@ public:
     void setBaseRenderPass(std::shared_ptr<VRORenderPass> pass) {
         _baseRenderPass = pass;
     }
+
+    /*
+     Inject a custom render pass that runs AFTER the opaque scene draws and
+     BEFORE bloom / blit / tone-mapping / gamma. The pass receives the
+     current render target as `inputs.outputTarget` already bound, with
+     depth filled by the opaque pass. Use this for transparency-style
+     surfaces that must depth-test against opaque geometry but write into
+     the linear HDR target before post-processing (e.g. Gaussian splats).
+
+     The pass implementation owns its own GL state save/restore. Viro's
+     frame-boundary GL state contract is defined in VRODriverOpenGL.h:
+       DEPTH_TEST=on, DEPTH_MASK=GL_TRUE, DEPTH_FUNC=GL_LEQUAL,
+       STENCIL_TEST=on, CULL_FACE=off,
+       BLEND=on, BlendEquation=FUNC_ADD, BlendFunc=SRC_ALPHA, 1-SRC_ALPHA.
+     Anything mutated outside this default MUST be restored before render()
+     returns.
+
+     Passing nullptr clears the hook.
+     */
+    void setCustomPostOpaquePass(std::shared_ptr<VRORenderPass> pass) {
+        _customPostOpaquePass = pass;
+    }
+
+    std::shared_ptr<VRORenderPass> getCustomPostOpaquePass() const {
+        return _customPostOpaquePass;
+    }
     
     /*
      Enable or disable HDR rendering. If HDR is disabled, then features like
@@ -202,6 +228,12 @@ private:
      Pass that renders the 3D scene to a render target.
      */
     std::shared_ptr<VRORenderPass> _baseRenderPass;
+
+    /*
+     Optional pass invoked between the opaque base pass and the bloom /
+     post-processing chain (see setCustomPostOpaquePass).
+     */
+    std::shared_ptr<VRORenderPass> _customPostOpaquePass;
 
     /*
      Simple blitting post process.
