@@ -168,6 +168,28 @@ VRO_METHOD(void, nativeSetHandTrackingEnabled)(VRO_ARGS
     }
 }
 
+// Return a PersistentRef<VROChoreographer> as jlong. The caller (Java)
+// holds this handle until release. Used by extension passes
+// (@viro-external/splat-pass) to attach a custom VRORenderPass via
+// VROChoreographer::setCustomPostOpaquePass.
+VRO_METHOD(jlong, nativeGetChoreographerRef)(VRO_ARGS jlong rendererRef) {
+    auto sceneRenderer = Renderer::native(rendererRef);
+    if (!sceneRenderer) return 0;
+    auto vroRenderer = sceneRenderer->getRenderer();
+    if (!vroRenderer) return 0;
+    auto choreographer = vroRenderer->getChoreographer();
+    if (!choreographer) return 0;
+    auto *persisted = new PersistentRef<VROChoreographer>(
+        std::const_pointer_cast<VROChoreographer>(choreographer));
+    return reinterpret_cast<intptr_t>(persisted);
+}
+
+VRO_METHOD(void, nativeReleaseChoreographerRef)(VRO_ARGS jlong choreographerRef) {
+    if (choreographerRef == 0) return;
+    auto *persisted = reinterpret_cast<PersistentRef<VROChoreographer> *>(choreographerRef);
+    delete persisted;
+}
+
 VRO_METHOD(jlong, nativeCreateRendererSceneView)(VRO_ARGS
                                                  jobject class_loader,
                                                  jobject android_context,

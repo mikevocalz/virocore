@@ -362,5 +362,24 @@ public class Renderer {
     private native float nativeGetFieldOfView(long nativeRef);
     private native void nativePerformHitTestWithPoint(long nativeRef, int x, int y, boolean boundsOnly, HitTestListener callback);
     private native void nativePerformHitTestWithRay(long nativeRef, float origin[], float ray[], boolean boundsOnly, HitTestListener callback);
+    private native long nativeGetChoreographerRef(long nativeRenderer);
+    private native void nativeReleaseChoreographerRef(long choreographerRef);
+
+    /**
+     * Return a persistent native handle to this renderer's VROChoreographer.
+     * Caller MUST call {@link #releaseChoreographerRef(long)} when done.
+     * Used by extension passes (e.g. @viro-external/splat-pass) to insert a
+     * custom VRORenderPass via VROChoreographer::setCustomPostOpaquePass.
+     */
+    public long getChoreographerRef() {
+        if (mNativeRef == 0) return 0;
+        return nativeGetChoreographerRef(mNativeRef);
+    }
+
+    public void releaseChoreographerRef(long choreographerRef) {
+        if (choreographerRef != 0) {
+            nativeReleaseChoreographerRef(choreographerRef);
+        }
+    }
 
 }
