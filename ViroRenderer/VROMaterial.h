@@ -420,6 +420,16 @@ public:
     const std::map<std::string, std::shared_ptr<VROTexture>> &getShaderUniformTextures() const { return _shaderUniformTextures; }
 
     /*
+     Nitro Canvas: bind an external surface texture (e.g. canvasSource) to
+     a material channel. Stores the texture in the shader uniform map and
+     installs a shader modifier that overwrites diffuse_color with the
+     sampled `surface_texture` (rewritten to samplerExternalOES on Android
+     via setRequiresExternalSurfaceTexture(true)).
+     */
+    void setExternalSurfaceTexture(const std::string &channel,
+                                   std::shared_ptr<VROTexture> texture);
+
+    /*
      Shader modifiers.
      */
     void addShaderModifier(std::shared_ptr<VROShaderModifier> modifier) {

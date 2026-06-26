@@ -63,7 +63,9 @@ public:
                                    void *buffer
 #endif
                                    )
-        : VROTextureSubstrateOpenGL(GL_TEXTURE_EXTERNAL_OES, name, driver, /*ownTexture*/ true),
+        : VROTextureSubstrateOpenGL(GL_TEXTURE_EXTERNAL_OES, name,
+                                    std::dynamic_pointer_cast<VRODriverOpenGL>(driver),
+                                    /*owned*/ true),
           _image(image), _buffer(buffer) {}
 
     ~VROExternalSurfaceSubstrateAHB() override {
@@ -147,7 +149,9 @@ importRouteA(const VROSharedTextureHandle &handle,
         return nullptr;
     }
     return std::make_unique<VROTextureSubstrateOpenGL>(
-        GL_TEXTURE_EXTERNAL_OES, texId, driver, /*ownTexture*/ false);
+        GL_TEXTURE_EXTERNAL_OES, texId,
+        std::dynamic_pointer_cast<VRODriverOpenGL>(driver),
+        /*owned*/ false);
 }
 
 } // namespace
