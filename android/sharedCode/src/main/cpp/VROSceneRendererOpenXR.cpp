@@ -618,12 +618,16 @@ bool VROSceneRendererOpenXR::initPassthrough() {
         return false;
     }
 
-    // Create a full-reconstruction layer. The layer itself starts running
-    // (XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB) but we immediately pause it;
-    // this avoids a stop/start round-trip on first enable.
+    // Create a full-reconstruction layer in the PAUSED state (flags = 0).
+    // Do NOT use XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB + immediate pause:
+    // Quest tolerates a running layer whose parent feature was never started,
+    // but PICO's XR_FB_passthrough implementation rejects the pause ("feature
+    // is not started") and then refuses the layer at every xrEndFrame
+    // ("passthrough layer count is illegal"). Creating paused and resuming
+    // only after xrPassthroughStartFB is correct on both runtimes.
     XrPassthroughLayerCreateInfoFB layerInfo = { XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB };
     layerInfo.passthrough = _passthrough;
-    layerInfo.flags       = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    layerInfo.flags       = 0;
     layerInfo.purpose     = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
     r = _pfnCreatePassthroughLayer(_session, &layerInfo, &_passthroughLayer);
     if (XR_FAILED(r)) {
@@ -632,9 +636,6 @@ bool VROSceneRendererOpenXR::initPassthrough() {
         _passthrough = XR_NULL_HANDLE;
         return false;
     }
-
-    // Pause immediately — layer is ready but not composited until setPassthroughEnabled(true).
-    _pfnPassthroughLayerPause(_passthroughLayer);
 
     ALOGV("XR_FB_passthrough initialised (paused — call setPassthroughEnabled(true) to enable)");
     return true;
