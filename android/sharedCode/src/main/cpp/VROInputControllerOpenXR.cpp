@@ -255,6 +255,18 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     syncInfo.countActiveActionSets = 1;
     xrSyncActions(session, &syncInfo);
 
+    // ── Drain any JS-requested haptic on the render thread (session valid) ────
+    _cachedSession = session;
+    if (_hapticPending.exchange(false, std::memory_order_acquire)) {
+        int hand = (_hapticHand < 0) ? _lastActiveHand : _hapticHand;
+        if (hand == 2) {
+            triggerHaptic(session, 0, _hapticAmplitude, _hapticDuration);
+            triggerHaptic(session, 1, _hapticAmplitude, _hapticDuration);
+        } else {
+            triggerHaptic(session, hand, _hapticAmplitude, _hapticDuration);
+        }
+    }
+
     // ── Capture poses for both hands (no dispatch yet) ───────────────────────
     // Each hand can be supplied by either a held controller or by tracked
     // hand joints. We probe controllers first, and the hand-tracking step
@@ -310,9 +322,10 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         xrGetActionStateFloat(session, &info, &state);
         if (state.isActive) {
             bool pressed = (state.currentState >= kTriggerThreshold);
-            if (pressed && !_prevTriggerRight)
+            if (pressed && !_prevTriggerRight) {
+                _lastActiveHand = 1;
                 VROInputControllerBase::onButtonEvent(ViroOculus::Controller, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevTriggerRight)
+            } else if (!pressed && _prevTriggerRight)
                 VROInputControllerBase::onButtonEvent(ViroOculus::Controller, VROEventDelegate::ClickState::ClickUp);
             _prevTriggerRight = pressed;
         }
@@ -326,9 +339,10 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         xrGetActionStateFloat(session, &info, &state);
         if (state.isActive) {
             bool pressed = (state.currentState >= kTriggerThreshold);
-            if (pressed && !_prevTriggerLeft)
+            if (pressed && !_prevTriggerLeft) {
+                _lastActiveHand = 0;
                 VROInputControllerBase::onButtonEvent(ViroOculus::LeftController, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevTriggerLeft)
+            } else if (!pressed && _prevTriggerLeft)
                 VROInputControllerBase::onButtonEvent(ViroOculus::LeftController, VROEventDelegate::ClickState::ClickUp);
             _prevTriggerLeft = pressed;
         }
@@ -553,6 +567,15 @@ void VROInputControllerOpenXR::triggerHaptic(XrSession session, int hand,
     XrHapticActionInfo info = { XR_TYPE_HAPTIC_ACTION_INFO };
     info.action = vibrateAction;
     xrApplyHapticFeedback(session, &info, (const XrHapticBaseHeader *)&vibration);
+}
+
+void VROInputControllerOpenXR::requestHaptic(int hand, float amplitude, float durationSec) {
+    // Called off the render thread — just stash the request. onProcess applies
+    // it next frame with a valid session (see the drain after xrSyncActions).
+    _hapticHand      = hand;
+    _hapticAmplitude = amplitude;
+    _hapticDuration  = durationSec;
+    _hapticPending.store(true, std::memory_order_release);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -641,6 +641,12 @@ bool VROSceneRendererOpenXR::initPassthrough() {
     return true;
 }
 
+void VROSceneRendererOpenXR::triggerHaptic(int hand, float amplitude, float durationSec) {
+    if (_inputController) {
+        _inputController->requestHaptic(hand, amplitude, durationSec);
+    }
+}
+
 void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
     if (_passthrough == XR_NULL_HANDLE || _passthroughLayer == XR_NULL_HANDLE) {
         ALOGW("setPassthroughEnabled(%s): XR_FB_passthrough not available on this device",
