@@ -31,6 +31,7 @@
 #include <memory>
 #include <openxr/openxr.h>
 #include "VROInputControllerBase.h"
+#include "VROInputType.h"
 
 class VROInputControllerOpenXR : public VROInputControllerBase {
 public:
@@ -75,6 +76,28 @@ public:
      * @param time       Predicted display time from XrFrameState
      * @param camera     Current Viro camera (for gaze / forward direction)
      */
+    // Drag binds to steady buttons (A / X / grips), not the trigger — trigger
+    // squeeze tilts the aim ray and makes drags bob vertically.
+    bool canSourceStartDrag(int source) override {
+        return source == ViroOculus::AButton  || source == ViroOculus::XButton ||
+               source == ViroOculus::LeftGrip || source == ViroOculus::RightGrip;
+    }
+
+    // A / right-grip drags follow the right aim pose; X / Y / left-grip
+    // follow the left. onMove fires per-hand, so this pins the drag to the
+    // initiating hand instead of flip-flopping between both rays.
+    int getDragPoseSource(int source) override {
+        switch (source) {
+            case ViroOculus::XButton:
+            case ViroOculus::YButton:
+            case ViroOculus::LeftGrip:
+            case ViroOculus::LeftController:
+                return ViroOculus::LeftController;
+            default:
+                return ViroOculus::Controller;
+        }
+    }
+
     void onProcess(XrSession session, XrSpace baseSpace,
                    XrTime time, const VROCamera &camera);
 

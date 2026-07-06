@@ -18,6 +18,7 @@
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR,   LOG_TAG, __VA_ARGS__)
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN,    LOG_TAG, __VA_ARGS__)
 #define ALOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
+#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 static constexpr float kTriggerThreshold   = 0.5f;
 static constexpr float kGripThreshold      = 0.5f;
@@ -169,9 +170,9 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         if (!XR_SUCCEEDED(r)) {
             // Runtimes that don't recognise a given profile return
             // XR_ERROR_PATH_UNSUPPORTED — that's expected, just log and move on.
-            ALOGV("xrSuggestInteractionProfileBindings(%s) -> %d", profilePath, (int)r);
+            ALOGI("xrSuggestInteractionProfileBindings(%s) -> %d", profilePath, (int)r);
         } else {
-            ALOGV("xrSuggestInteractionProfileBindings(%s) OK", profilePath);
+            ALOGI("xrSuggestInteractionProfileBindings(%s) OK", profilePath);
         }
     };
 

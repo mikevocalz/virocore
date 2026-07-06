@@ -81,22 +81,25 @@ void VROInputControllerBase::setProjection(VROMatrix4f projection) {
 }
 
 void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickState clickState) {
-    // Resolve the click against this source's most recent hit result so two
-    // simultaneous pointers don't clobber each other. Falls back to the
-    // legacy `_hitResult` for single-pointer backends.
-    auto hit = getHitResultForSource(source);
+    // Resolve the click against the aim ray that drives this button (A button
+    // → right controller ray, X → left, etc). Face buttons have no hit
+    // results of their own; without this mapping they fell back to the legacy
+    // `_hitResult`, which with two tracked hands is last-writer-wins — i.e.
+    // whatever the OTHER hand was pointing at.
+    int hitSource = getDragPoseSource(source);
+    auto hit = getHitResultForSource(hitSource);
     if (hit == nullptr) {
         return;
     }
-    bool sourceAware = _hitResultsBySource.count(source) > 0;
+    bool sourceAware = _hitResultsBySource.count(hitSource) > 0;
     std::shared_ptr<VRONode> &lastClicked = sourceAware
-        ? _lastClickedNodesBySource[source]
+        ? _lastClickedNodesBySource[hitSource]
         : _lastClickedNode;
     std::shared_ptr<VRONode> &lastHovered = sourceAware
-        ? _lastHoveredNodesBySource[source]
+        ? _lastHoveredNodesBySource[hitSource]
         : _lastHoveredNode;
     HoverPending &pending = sourceAware
-        ? _hoverPendingBySource[source]
+        ? _hoverPendingBySource[hitSource]
         : _hoverPending;
 
     VROVector3f hitLoc = hit->getLocation();
@@ -158,12 +161,21 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
     } else if (clickState == VROEventDelegate::ClickDown){
         lastClicked = hitNode;
 
+        pinfo("VROInput: ClickDown source=%d hitNode=%s dragEligible=%d",
+              source, hitNode ? hitNode->getTag().c_str() : "(none)",
+              canSourceStartDrag(source) ? 1 : 0);
+
+        if (!canSourceStartDrag(source)) {
+            return;
+        }
+
         // Identify if object is draggable.
         std::shared_ptr<VRONode> draggableNode
                 = getNodeToHandleEvent(VROEventDelegate::EventAction::OnDrag,
                                        hitNode);
         
         if (draggableNode == nullptr){
+            pinfo("VROInput: ClickDown source=%d — no draggable node under hit", source);
             return;
         }
 
@@ -180,8 +192,11 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
         draggedObject->_originalDraggedNodeRotation = draggableNode->getWorldRotation();
         draggedObject->_draggedNode = draggableNode;
         _lastDraggedNode = draggedObject;
+        _lastDraggedNode->_poseSource = getDragPoseSource(source);
         _lastDraggedNode->_dragState = VROEventDelegate::DragState::Start;
         draggableNode->setIsBeingDragged(true);
+        pinfo("VROInput: drag START source=%d poseSource=%d node=%s",
+              source, _lastDraggedNode->_poseSource, draggableNode->getTag().c_str());
     }
 }
 
@@ -232,7 +247,8 @@ void VROInputControllerBase::onMove(int source, VROVector3f position, VROQuatern
     }
     
     // Update draggable objects if needed unless we have a pinch motion.
-    if (_lastDraggedNode != nullptr && ((_currentPinchedNode == nullptr) && (_currentRotateNode == nullptr))) {
+    if (_lastDraggedNode != nullptr && ((_currentPinchedNode == nullptr) && (_currentRotateNode == nullptr)) &&
+        (_lastDraggedNode->_poseSource < 0 || _lastDraggedNode->_poseSource == source)) {
         processDragging(source);
     }
 }
@@ -258,8 +274,10 @@ void VROInputControllerBase::processDragging(int source) {
                 _lastDraggedNode->_originalDraggedNodePosition = _lastDraggedNode->_originalHitLocation;
             }
         } else {
-            _lastDraggedNode->_draggedDistanceFromController = _hitResult->getLocation().distanceAccurate(_lastKnownPosition);
-            _lastDraggedNode->_originalHitLocation = _hitResult->getLocation();
+            std::shared_ptr<VROHitTestResult> hit = getHitResultForSource(source);
+            if (!hit) { hit = _hitResult; }
+            _lastDraggedNode->_draggedDistanceFromController = hit->getLocation().distanceAccurate(_lastKnownPosition);
+            _lastDraggedNode->_originalHitLocation = hit->getLocation();
         }
 
         // Grab the forwardOffset (delta from the controller's forward in reference to the user).
@@ -283,11 +301,39 @@ void VROInputControllerBase::processDragging(int source) {
         case VRODragType::FixedToWorld: // this is only supported in AR, so default to FixedDistance here
         case VRODragType::FixedDistance:
         case VRODragType::FixedDistanceOrigin:
+        case VRODragType::Gizmo:
             draggedToPosition = getDragPositionFixedDistance();
             break;
     }
 
-    draggedNode->setWorldTransform(draggedToPosition, _lastDraggedNode->_originalDraggedNodeRotation);
+    // One Euro filter: tremor-free when still, near-zero lag in motion.
+    double nowMs = VROTimeCurrentMillis();
+    if (!_lastDraggedNode->_smoothInit) {
+        _lastDraggedNode->_smoothInit = true;
+        _lastDraggedNode->_smoothPos = draggedToPosition;
+        _lastDraggedNode->_smoothDeriv = VROVector3f(0, 0, 0);
+    } else {
+        double dt = (nowMs - _lastDraggedNode->_lastDragMillis) / 1000.0;
+        if (dt <= 0 || dt > 0.25) dt = 0.011;
+        const float kMinCutoff = 1.5f;   // Hz — tremor floor when still
+        const float kBeta      = 40.0f;  // lag killer — scales cutoff by speed
+        const float kDCutoff   = 1.0f;
+        VROVector3f &sp = _lastDraggedNode->_smoothPos;
+        VROVector3f &sd = _lastDraggedNode->_smoothDeriv;
+        float aD = 1.0f / (1.0f + 1.0f / (2.0f * (float)M_PI * kDCutoff * (float)dt));
+        VROVector3f rawD = (draggedToPosition - sp) / (float)dt;
+        sd = sd + (rawD - sd) * aD;
+        float speed = sd.magnitude();
+        float cutoff = kMinCutoff + kBeta * speed;
+        float a = 1.0f / (1.0f + 1.0f / (2.0f * (float)M_PI * cutoff * (float)dt));
+        sp = sp + (draggedToPosition - sp) * a;
+    }
+    _lastDraggedNode->_lastDragMillis = nowMs;
+    draggedToPosition = _lastDraggedNode->_smoothPos;
+
+    if (draggedNode->getDragType() != VRODragType::Gizmo) {
+        draggedNode->setWorldTransform(draggedToPosition, _lastDraggedNode->_originalDraggedNodeRotation);
+    }
 
     /*
      To avoid spamming the JNI / JS bridge, throttle the notification
@@ -546,6 +592,23 @@ void VROInputControllerBase::processGazeEvent(int source) {
     if (lastHovered == nullptr) {
         if (newNode && newNode->getEventDelegate()) {
             newNode->getEventDelegate()->onHover(source, newNode, true, pos);
+        }
+        lastHovered = newNode;
+        pending = HoverPending{};
+        return;
+    }
+
+    // Direct move onto a DIFFERENT interactive node is a confident,
+    // intentional transfer — confirm instantly. The hysteresis window exists
+    // to absorb ray jitter to BACKGROUND, not to slow node→node moves
+    // (it made adjacent-button hover feel laggy: user had to exit to
+    // background before the next button would light up).
+    if (newNode != nullptr && !isBgHit) {
+        if (newNode->getEventDelegate()) {
+            newNode->getEventDelegate()->onHover(source, newNode, true, pos);
+        }
+        if (lastHovered && lastHovered->getEventDelegate()) {
+            lastHovered->getEventDelegate()->onHover(source, lastHovered, false, pos);
         }
         lastHovered = newNode;
         pending = HoverPending{};
