@@ -580,6 +580,8 @@ VRO_METHOD(void, nativeSetDragType)(VRO_ARGS
         type = VRODragType::FixedToWorld;
     } else if (VROStringUtil::strcmpinsensitive(dragTypeStr, "FixedToPlane")) {
         type = VRODragType::FixedToPlane;
+    } else if (VROStringUtil::strcmpinsensitive(dragTypeStr, "Gizmo")) {
+        type = VRODragType::Gizmo;
     }
 
     VROPlatformDispatchAsyncRenderer([node_w, type] {

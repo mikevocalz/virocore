@@ -107,6 +107,12 @@ public class Node implements EventDelegate.EventDelegateCallback {
         FIXED_DISTANCE_ORIGIN("FixedDistanceOrigin"),
 
         /**
+         * Gizmo mode: drag positions are reported to listeners but the node is
+         * not moved. For resize / rotate handles.
+         */
+        GIZMO("Gizmo"),
+
+        /**
          * Dragging is based on intersection with real-world object. This is only available in
          * AR. This setting is used when you wish to drag a Node off a table and onto the ground,
          * for example.

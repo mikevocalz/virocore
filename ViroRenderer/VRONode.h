@@ -98,6 +98,11 @@ enum class VRODragType {
     // Drags object along a given plane (point + normal)
     FixedToPlane,
 
+    // Gizmo mode: the drag is computed like FixedDistance and reported to
+    // onDrag delegates, but the node is NOT moved. Lets JS drive resize /
+    // rotate handles that must stay attached to their parent.
+    Gizmo,
+
     // Currently available to AR only. Attempts to drag object w.r.t. the real world.
     FixedToWorld,
 };

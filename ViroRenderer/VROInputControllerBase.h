@@ -141,6 +141,20 @@ public:
      The following position, rotation and forward are all in world coordinates.
      */
     void onMove(int source, VROVector3f position, VROQuaternion rotation, VROVector3f forward);
+
+    /*
+     Whether a ClickDown from this source may initiate a drag. Default: any
+     source (mobile touch relies on this). Headset controllers override to
+     bind dragging to a steady button (A/X/grips) instead of the trigger,
+     whose squeeze physically tilts the aim ray and makes drags bob.
+     */
+    virtual bool canSourceStartDrag(int source) { return true; }
+
+    /*
+     Maps a button source (e.g. A button) to the aim-pose source (e.g. right
+     controller) that should drive a drag it initiates. Identity by default.
+     */
+    virtual int getDragPoseSource(int source) { return source; }
     void onSwipe(int source, VROEventDelegate::SwipeState swipeState);
     void onScroll(int source, float x, float y);
     
@@ -210,6 +224,17 @@ protected:
         VROVector3f _forwardOffset;
         float _draggedDistanceFromController;
         VROEventDelegate::DragState _dragState;
+        // Input source whose aim pose drives this drag. With two tracked
+        // hands, onMove fires per-hand; only the initiating hand's pose may
+        // move the node, else the drag flip-flops between both rays.
+        int _poseSource = -1;
+        // One Euro filter state for the drag position — raw XR aim poses
+        // carry hand-tremor noise (PICO does not filter like Quest does).
+        // Adaptive: heavy filtering when still, near-zero lag when moving.
+        bool _smoothInit = false;
+        VROVector3f _smoothPos;
+        VROVector3f _smoothDeriv;
+        double _lastDragMillis = -1.0;
     };
     
     /*
