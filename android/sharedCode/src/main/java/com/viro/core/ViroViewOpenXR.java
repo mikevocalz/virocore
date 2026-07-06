@@ -422,6 +422,17 @@ public class ViroViewOpenXR extends ViroView {
     }
 
     /**
+     * Fire a controller haptic pulse. hand: 0 = left, 1 = right, 2 = both,
+     * -1 = whichever controller last pressed its trigger. No-op if the renderer
+     * isn't ready (haptics are transient — there's nothing to cache/replay).
+     */
+    public void triggerHaptic(int hand, float amplitude, float durationSec) {
+        if (mNativeRenderer != null) {
+            mNativeRenderer.triggerHaptic(hand, amplitude, durationSec);
+        }
+    }
+
+    /**
      * Style the passthrough layer. {@code opacity} is the texture opacity factor
      * [0,1]; {@code edge*} is the edge-highlight colour (alpha 0 disables the edge).
      * Cached and re-applied if the renderer isn't ready yet.

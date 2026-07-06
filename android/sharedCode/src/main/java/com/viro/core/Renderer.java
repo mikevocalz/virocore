@@ -123,6 +123,16 @@ public class Renderer {
     }
 
     /**
+     * Fire a controller haptic pulse. hand: 0 = left, 1 = right, 2 = both,
+     * -1 = whichever controller last pressed its trigger. Safe from any thread.
+     */
+    public void triggerHaptic(int hand, float amplitude, float durationSec) {
+        if (mNativeRef != 0) {
+            nativeTriggerHaptic(mNativeRef, hand, amplitude, durationSec);
+        }
+    }
+
+    /**
      * Style the XR_FB_passthrough layer. opacity is the texture opacity factor
      * [0,1]; edge[RGBA] is the edge-highlight colour (alpha 0 disables the edge).
      */
@@ -358,6 +368,7 @@ public class Renderer {
     private native void nativeSetPassthroughStyle(long nativeRenderer, float opacity,
                                                   float edgeR, float edgeG, float edgeB, float edgeA);
     private native void nativeSetHandTrackingEnabled(long nativeRenderer, boolean enabled);
+    private native void nativeTriggerHaptic(long nativeRenderer, int hand, float amplitude, float durationSec);
     private native void nativeSetClearColor(long sceneRef, int color);
     private native void nativeSetShadowsEnabled(long nativeRef, boolean enabled);
     private native void nativeSetHDREnabled(long nativeRef, boolean enabled);

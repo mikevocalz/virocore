@@ -27,6 +27,7 @@
 #ifndef ANDROID_VROINPUTCONTROLLEROPENXR_H
 #define ANDROID_VROINPUTCONTROLLEROPENXR_H
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <openxr/openxr.h>
@@ -108,6 +109,14 @@ public:
     void triggerHaptic(XrSession session, int hand,
                        float amplitude = 0.5f, float durationSec = 0.05f);
 
+    /*
+     * Thread-safe haptic request from any thread (e.g. the JS/UI thread via
+     * the VRModuleOpenXR bridge). The pulse is applied on the render thread in
+     * onProcess, where the XrSession is valid. hand: 0 = left, 1 = right,
+     * 2 = both, -1 = whichever controller last pressed its trigger.
+     */
+    void requestHaptic(int hand, float amplitude = 0.5f, float durationSec = 0.05f);
+
     VROVector3f getDragForwardOffset() override;
 
     std::string getHeadset()    override { return "quest"; }
@@ -156,6 +165,16 @@ private:
     // ── Haptic output (one per hand) ─────────────────────────────────────────
     XrAction _leftVibrateAction  = XR_NULL_HANDLE;
     XrAction _rightVibrateAction = XR_NULL_HANDLE;
+
+    // ── JS-triggered haptic (single-slot, cross-thread) ──────────────────────
+    // requestHaptic() (any thread) fills these and sets _hapticPending; the
+    // render thread drains it in onProcess where the session is valid.
+    std::atomic<bool> _hapticPending{false};
+    int   _hapticHand      = 1;     // 0 left, 1 right, 2 both, -1 last-active
+    float _hapticAmplitude = 0.5f;
+    float _hapticDuration  = 0.05f;
+    XrSession _cachedSession = XR_NULL_HANDLE;
+    int   _lastActiveHand    = 1;   // last controller to press its trigger
 
     // ── Action spaces for aim poses ───────────────────────────────────────────
     XrSpace _leftSpace  = XR_NULL_HANDLE;

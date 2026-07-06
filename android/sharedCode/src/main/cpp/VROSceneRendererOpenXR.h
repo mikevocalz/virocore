@@ -95,6 +95,12 @@ public:
      */
     void setPassthroughStyle(float opacity, float edgeR, float edgeG, float edgeB, float edgeA);
     void setHandTrackingEnabled(bool enabled);
+    /**
+     * Fire a controller haptic pulse. hand: 0 = left, 1 = right, 2 = both,
+     * -1 = whichever controller last pressed its trigger. Safe to call from any
+     * thread — the pulse is applied on the next render frame.
+     */
+    void triggerHaptic(int hand, float amplitude, float durationSec);
     void onStart();
     void onResume();
     void onPause();

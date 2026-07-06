@@ -173,6 +173,18 @@ VRO_METHOD(void, nativeSetHandTrackingEnabled)(VRO_ARGS
     }
 }
 
+VRO_METHOD(void, nativeTriggerHaptic)(VRO_ARGS
+                                      jlong rendererRef,
+                                      jint hand,
+                                      jfloat amplitude,
+                                      jfloat durationSec) {
+    auto base = Renderer::native(rendererRef);
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(base);
+    if (xrRenderer) {
+        xrRenderer->triggerHaptic((int)hand, (float)amplitude, (float)durationSec);
+    }
+}
+
 // Return a PersistentRef<VROChoreographer> as jlong. The caller (Java)
 // holds this handle until release. Used by extension passes
 // (@viro-external/splat-pass) to attach a custom VRORenderPass via
