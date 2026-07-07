@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <vector>
+#include <map>
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include "VROOpenGL.h"
@@ -44,19 +45,36 @@ public:
     }
 
     /*
-     * Called once per frame, after xrAcquireSwapchainImage. Sets the GL
-     * texture (from XrSwapchainImageOpenGLESKHR.image) and recreates the
-     * FBO if the texture has changed.
+     * Called once per eye render, after xrAcquireSwapchainImage. Sets the GL
+     * texture (from XrSwapchainImageOpenGLESKHR.image) and binds a cached FBO.
+     *
+     * Both eyes share this display instance and each swapchain rotates through
+     * 2-3 images, so a single cached FBO would be destroyed and recreated twice
+     * per frame (with a full depth-buffer reallocation each time). Cache one FBO
+     * per swapchain texture instead — a handful total — and share one depth
+     * renderbuffer across them (eyes render sequentially and bind() clears depth,
+     * so a single depth buffer is safe).
      */
     void setSwapchainImage(GLuint colorTex, GLsizei width, GLsizei height) {
-        if (_colorTex == colorTex && _fbo != 0) {
-            return;  // same image, FBO still valid
+        auto it = _fbos.find(colorTex);
+        if (it != _fbos.end()) {
+            _fbo = it->second;
+            _colorTex = colorTex;
+            return;
         }
-        destroyFramebuffer();
-        _colorTex = colorTex;
 
-        glGenFramebuffers(1, &_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+        if (_depthRbo == 0 || width != _depthWidth || height != _depthHeight) {
+            if (_depthRbo) glDeleteRenderbuffers(1, &_depthRbo);
+            glGenRenderbuffers(1, &_depthRbo);
+            glBindRenderbuffer(GL_RENDERBUFFER, _depthRbo);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+            _depthWidth = width;
+            _depthHeight = height;
+        }
+
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
         // Try GL_TEXTURE_2D first; Quest may use GL_TEXTURE_2D_ARRAY even for arraySize=1
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -71,9 +89,6 @@ public:
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, colorTex, 0, 0);
         }
 
-        glGenRenderbuffers(1, &_depthRbo);
-        glBindRenderbuffer(GL_RENDERBUFFER, _depthRbo);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
                                   GL_RENDERBUFFER, _depthRbo);
 
@@ -84,6 +99,10 @@ public:
             // Do NOT abort — log and continue so we can see the status code on device
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        _fbos[colorTex] = fbo;
+        _fbo = fbo;
+        _colorTex = colorTex;
     }
 
     // For mixed-reality (passthrough) the swapchain must be cleared TRANSPARENT
@@ -111,16 +130,21 @@ private:
     GLuint _depthRbo;
     GLuint _colorTex;
     float  _clearAlpha = 1.0f;  // 0 for MR/passthrough, 1 for opaque VR
+    std::map<GLuint, GLuint> _fbos;  // swapchain texture → cached FBO
+    GLsizei _depthWidth = 0;
+    GLsizei _depthHeight = 0;
 
     void destroyFramebuffer() {
-        if (_fbo) {
-            glDeleteFramebuffers(1, &_fbo);
-            _fbo = 0;
+        for (auto &entry : _fbos) {
+            glDeleteFramebuffers(1, &entry.second);
         }
+        _fbos.clear();
+        _fbo = 0;
         if (_depthRbo) {
             glDeleteRenderbuffers(1, &_depthRbo);
             _depthRbo = 0;
         }
+        _depthWidth = _depthHeight = 0;
         _colorTex = 0;
     }
 };

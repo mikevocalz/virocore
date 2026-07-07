@@ -26,6 +26,7 @@
 
 #include "VROTextureSubstrateOpenGL.h"
 #include "VROTexture.h"
+#include <cstring>
 #include "VROData.h"
 #include "VRODriverOpenGL.h"
 #include "VROLog.h"
@@ -95,6 +96,28 @@ void VROTextureSubstrateOpenGL::loadTexture(VROTextureType type,
         GL( glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, convertMagFilter(magFilter)) );
         GL( glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, convertWrapMode(wrapS)) );
         GL( glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, convertWrapMode(wrapT)) );
+
+        // Anisotropic filtering for mipmapped textures. Trilinear alone over-blurs
+        // oblique/UV-compressed regions (equirect sphere poles smear into a "smudge");
+        // no mips at all sparkles ("dead pixels") on head rotation. Aniso + mips gives
+        // both stability and sharpness. No-op if the extension is absent.
+        if (mipmapMode == VROMipmapMode::Runtime) {
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
+            static GLfloat sMaxAniso = -1.0f;
+            if (sMaxAniso < 0) {
+                sMaxAniso = 0;
+                if (strstr((const char *) glGetString(GL_EXTENSIONS), "texture_filter_anisotropic")) {
+                    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &sMaxAniso);
+                }
+            }
+            if (sMaxAniso > 1.0f) {
+                GL( glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                                    sMaxAniso < 8.0f ? sMaxAniso : 8.0f) );
+            }
+        }
         
         loadFace(GL_TEXTURE_2D, format, internalFormat, sRGB,
                  mipmapMode, data.front(), width, height, mipSizes);

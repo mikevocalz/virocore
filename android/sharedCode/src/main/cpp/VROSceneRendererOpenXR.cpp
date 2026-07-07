@@ -17,6 +17,7 @@
 #include "VROARSessionOpenXR.h"
 #include "VROARScene.h"
 #include "VROSceneController.h"
+#include "VROPortal.h"
 #include "VROLog.h"
 #include "VROAllocationTracker.h"
 #include "VROTime.h"
@@ -676,6 +677,12 @@ void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
         if (display) display->setClearAlpha(enabled ? 0.0f : 1.0f);
     }
 
+    // The real world is now the backdrop: stop rendering background spheres/cubes
+    // (they'd opaquely cover the passthrough layer). Restored when disabled — so
+    // apps can keep a Viro360Image mounted and toggle passthrough freely, with no
+    // unmount/dispose churn on the scene graph.
+    VROPortal::setBackgroundsHidden(enabled);
+
     ALOGV("setPassthroughEnabled: %s", enabled ? "true" : "false");
 }
 
@@ -1139,14 +1146,20 @@ void VROSceneRendererOpenXR::renderFrame() {
         if (_renderer && _renderer->hasRenderContext()) {
             VROViewport leftViewport(0, 0, _swapchains[0].width, _swapchains[0].height);
 
-            // Convert OpenXR half-angle tangents (radians, signed) → degrees, positive
+            // Convert OpenXR half-angle tangents (radians, signed) → degrees, positive.
+            // This single frustum drives CULLING for BOTH eyes, but it's built from the
+            // left eye's pose/fov — the right eye sees ~6.5cm further right (IPD) plus
+            // its own asymmetric FOV. Widen by a margin so geometry at the right eye's
+            // temporal edge isn't culled out from under it (visible as popping /
+            // missing fragments in one eye only).
             constexpr float kRad2Deg = 180.0f / M_PI;
+            constexpr float kCullMarginDeg = 8.0f;
             const XrFovf &fov0 = views[0].fov;
             VROFieldOfView viroFov(
-                -fov0.angleLeft  * kRad2Deg,   // left  half-angle (positive)
-                 fov0.angleRight * kRad2Deg,   // right half-angle
-                -fov0.angleDown  * kRad2Deg,   // bottom half-angle
-                 fov0.angleUp    * kRad2Deg    // top half-angle
+                -fov0.angleLeft  * kRad2Deg + kCullMarginDeg,   // left  half-angle (positive)
+                 fov0.angleRight * kRad2Deg + kCullMarginDeg,   // right half-angle
+                -fov0.angleDown  * kRad2Deg + kCullMarginDeg,   // bottom half-angle
+                 fov0.angleUp    * kRad2Deg + kCullMarginDeg    // top half-angle
             );
             // headRotation must be rotation-only. VROMatrix4f::multiply(VROVector3f) always
             // adds the matrix's translation column (m[12..14]), so passing the full pose

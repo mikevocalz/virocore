@@ -206,7 +206,12 @@ bool VROTexture::isHydrated() const {
 }
 
 VROTextureSubstrate *VROTexture::getSubstrate(int index, std::shared_ptr<VRODriver> &driver, bool immediate) {
-    passert (index <= _substrates.size());
+    // Torn-down or not-yet-sized textures have an empty substrate vector; the
+    // render pass substitutes a blank texture for a null return. Crashing here
+    // (the old passert allowed index == size()) took the whole app down.
+    if (index < 0 || index >= (int) _substrates.size()) {
+        return nullptr;
+    }
     if (!_substrates[index]) {
         // Hydration only works for single-substrate textures. Multi-substrate
         // textures need to inject the substrates manually via setSubstrate().

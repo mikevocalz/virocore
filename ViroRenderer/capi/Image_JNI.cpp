@@ -87,7 +87,11 @@ VRO_METHOD(VRO_INT, nativeGetHeight)(VRO_ARGS
 
 VRO_METHOD(void, nativeDestroyImage)(VRO_ARGS
                                      VRO_REF(VROImage) nativeRef) {
+    // Defer the final release to the render thread — a texture hydration task
+    // may still read this image mid-frame (same race as nativeDestroyTexture).
+    std::shared_ptr<VROImage> image = VRO_REF_GET(VROImage, nativeRef);
     VRO_REF_DELETE(VROImage, nativeRef);
+    VROPlatformDispatchAsyncRenderer([image] {});
 }
 
 } // extern "C"
