@@ -363,7 +363,13 @@ VRO_METHOD(void, nativeSetMipFilter)(VRO_ARGS
 
 VRO_METHOD(void, nativeDestroyTexture)(VRO_ARGS
                                        VRO_REF(VROTexture) nativeRef) {
+    // Do NOT drop the final strong ref on the calling (JS) thread: the render
+    // thread may be binding this texture mid-frame, and destroying it under its
+    // feet SIGSEGVs in VROTexture::getSubstrate. Hold the ref until the render
+    // queue drains at the next frame boundary, then release it there.
+    std::shared_ptr<VROTexture> texture = VRO_REF_GET(VROTexture, nativeRef);
     VRO_REF_DELETE(VROTexture, nativeRef);
+    VROPlatformDispatchAsyncRenderer([texture] {});
 }
 
 } // extern "C"

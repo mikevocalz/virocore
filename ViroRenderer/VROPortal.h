@@ -58,6 +58,13 @@ public:
      Render this portal's background.
      */
     void renderBackground(const VRORenderContext &context, std::shared_ptr<VRODriver> &driver);
+
+    /*
+     Globally hide/show portal backgrounds. Used by passthrough (MR): when the
+     real world is the backdrop, background spheres/cubes must not render over it.
+     Thread-safe; takes effect on the next frame.
+     */
+    static void setBackgroundsHidden(bool hidden);
     
     /*
      Render this portal's geometry.

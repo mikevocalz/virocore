@@ -26,6 +26,7 @@
 
 #include "VROPortal.h"
 #include "VROLog.h"
+#include <atomic>
 #include "VROGeometry.h"
 #include "VROMaterial.h"
 #include "VROSkybox.h"
@@ -110,8 +111,22 @@ void VROPortal::sortNodesBySortKeys() {
 
 #pragma mark - Rendering Contents
 
+// When passthrough (MR) is active the real world IS the background: skip
+// rendering background spheres/cubes so the passthrough layer shows through,
+// and restore them when passthrough turns off. Set from the OpenXR renderer.
+// ponytail: process-global flag — per-portal control if a scene ever needs
+// a background *over* passthrough.
+static std::atomic<bool> sBackgroundsHidden{false};
+
+void VROPortal::setBackgroundsHidden(bool hidden) {
+    sBackgroundsHidden = hidden;
+}
+
 void VROPortal::renderBackground(const VRORenderContext &context,
                                  std::shared_ptr<VRODriver> &driver) {
+    if (sBackgroundsHidden) {
+        return;
+    }
     if (_background) {
         const std::shared_ptr<VROMaterial> &material = _background->getMaterials()[0];
         if (material->bindShader(0, {}, context, driver)) {
@@ -308,7 +323,15 @@ void VROPortal::installBackgroundShaderModifier() {
      Modifier that pushes backgrounds to the back of the depth buffer.
      */
     if (!sBackgroundShaderModifier) {
-        std::vector<std::string> modifierCode =  { "_vertex.position = _vertex.position.xyww;"};
+        // z = w puts the background at NDC depth exactly 1.0 (the far clip plane).
+        // Perspective interpolation error then clips scattered fragments (depth
+        // marginally > 1.0) — black "dead pixel" speckles that move with head
+        // rotation on OpenXR. Nudge inside the far plane like the portal
+        // background modifier below.
+        std::vector<std::string> modifierCode =  {
+            "_vertex.position = _vertex.position.xyww;",
+            "_vertex.position.z = _vertex.position.w * 0.9999;"
+        };
         sBackgroundShaderModifier = std::make_shared<VROShaderModifier>(VROShaderEntryPoint::Vertex,
                                                                         modifierCode);
         sBackgroundShaderModifier->setName("background");
@@ -388,6 +411,9 @@ void VROPortal::setBackgroundRotation(VROQuaternion rotation) {
 
 void VROPortal::removeBackground() {
     passert_thread(__func__);
+    if (!_background) {
+        return;
+    }
     _background->getMaterials().front()->removeShaderModifier(sBackgroundShaderModifier);
     _background.reset();
 }
