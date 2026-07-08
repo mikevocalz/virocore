@@ -382,6 +382,16 @@ void VROPortal::setBackgroundSphere(std::shared_ptr<VROTexture> textureSphere) {
     _background->setCameraEnclosure(true);
     _background->setName("Background");
 
+    // Equirectangular 360 wraps horizontally: the left edge (u=0) is continuous
+    // with the right edge (u=1). The texture defaults to Clamp on both axes, so
+    // when the mipmapped/anisotropic filter footprint straddles the seam (brought
+    // into view by a horizontal head turn), it samples clamped edge texels across
+    // the discontinuity — visible as a speckle line, worse per-eye and on higher-
+    // resolution displays (Quest). Repeat on S fixes the seam continuity; T stays
+    // Clamp (the poles are the top/bottom edges and must not wrap).
+    textureSphere->setWrapS(VROWrapMode::Repeat);
+    textureSphere->setWrapT(VROWrapMode::Clamp);
+
     std::shared_ptr<VROMaterial> material = _background->getMaterials().front();
     material->setLightingModel(VROLightingModel::Constant);
     material->getDiffuse().setTexture(textureSphere);
