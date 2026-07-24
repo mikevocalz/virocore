@@ -212,6 +212,26 @@ void VROSceneWeb::buildCubeScene() {
         return;
     }
 
+    // Lights — Blinn/Lambert materials are unlit (black) without them. This was
+    // the "invisible cube" bug: the scene shipped with zero lights.
+    std::shared_ptr<VROLight> ambient = std::make_shared<VROLight>(VROLightType::Ambient);
+    ambient->setColor({1.0, 1.0, 1.0});
+    ambient->setIntensity(350);
+    rootNode->addLight(ambient);
+
+    std::shared_ptr<VROLight> key = std::make_shared<VROLight>(VROLightType::Directional);
+    key->setColor({1.0, 1.0, 1.0});
+    key->setIntensity(1000);
+    key->setDirection({-0.4, -1.0, -0.6}); // above-front-left key
+    key->setCastsShadow(true);
+    rootNode->addLight(key);
+
+    std::shared_ptr<VROLight> fill = std::make_shared<VROLight>(VROLightType::Omni);
+    fill->setColor({0.6, 0.75, 1.0});
+    fill->setIntensity(600);
+    fill->setPosition({3.0, 1.0, -2.0}); // cool rim from the right
+    rootNode->addLight(fill);
+
     std::shared_ptr<VROBox> box = VROBox::createBox(2, 2, 2);
     box->setName("Cube");
 
