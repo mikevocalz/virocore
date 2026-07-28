@@ -7,6 +7,8 @@
 #include "VROSceneRendererOpenXR.h"
 
 #include <android/log.h>
+#include <cctype>
+#include <sys/system_properties.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
@@ -28,6 +30,34 @@
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR,   LOG_TAG, __VA_ARGS__)
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN,    LOG_TAG, __VA_ARGS__)
 #define ALOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
+
+static bool propContainsNoCase(const char *name, const char *needle) {
+    char value[PROP_VALUE_MAX] = {};
+    if (__system_property_get(name, value) <= 0) {
+        return false;
+    }
+
+    for (const char *p = value; *p; ++p) {
+        const char *a = p;
+        const char *b = needle;
+        while (*a && *b &&
+               std::tolower((unsigned char)*a) == std::tolower((unsigned char)*b)) {
+            ++a;
+            ++b;
+        }
+        if (!*b) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool isPicoDevice() {
+    return propContainsNoCase("ro.product.manufacturer", "pico") ||
+           propContainsNoCase("ro.product.brand", "pico") ||
+           propContainsNoCase("ro.product.model", "A9210") ||
+           propContainsNoCase("ro.product.model", "A92Y0");
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Required extensions
@@ -137,6 +167,7 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
     _activity = env->NewGlobalRef(activity);
     _jview    = env->NewGlobalRef(view);
     env->GetJavaVM(&_jvm);
+    _picoDevice = isPicoDevice();
 
     if (!initOpenXR()) {
         ALOGE("initOpenXR() failed — Quest renderer will not function");
@@ -336,6 +367,26 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     sysInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     XR_RETURN_FALSE(xrGetSystem(_instance, &sysInfo, &_systemId));
     ALOGV("xrGetSystem OK  systemId=%llu", (unsigned long long)_systemId);
+
+    uint32_t blendModeCount = 0;
+    XrResult blendCountResult = xrEnumerateEnvironmentBlendModes(
+        _instance, _systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+        0, &blendModeCount, nullptr);
+    if (XR_SUCCEEDED(blendCountResult) && blendModeCount > 0) {
+        std::vector<XrEnvironmentBlendMode> blendModes(blendModeCount);
+        XrResult blendModesResult = xrEnumerateEnvironmentBlendModes(
+            _instance, _systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+            blendModeCount, &blendModeCount, blendModes.data());
+        if (XR_SUCCEEDED(blendModesResult)) {
+            for (auto mode : blendModes) {
+                if (mode == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) {
+                    _alphaBlendPassthroughAvailable = true;
+                }
+            }
+        }
+    }
+    ALOGV("OpenXR blend modes: alphaBlend=%d pico=%d",
+          (int)_alphaBlendPassthroughAvailable, (int)_picoDevice);
 
     return true;
 }
@@ -579,6 +630,12 @@ bool VROSceneRendererOpenXR::createSwapchains() {
 }
 
 bool VROSceneRendererOpenXR::initPassthrough() {
+    if (_picoDevice) {
+        ALOGV("Skipping XR_FB_passthrough on PICO; using alpha-blend passthrough=%d",
+              (int)_alphaBlendPassthroughAvailable);
+        return _alphaBlendPassthroughAvailable;
+    }
+
     // Extension functions are NOT direct API calls — they must be loaded via
     // xrGetInstanceProcAddr. The extension guard (XR_FB_passthrough) was already
     // checked during instance creation; if we reach here it was enabled.
@@ -649,6 +706,22 @@ void VROSceneRendererOpenXR::triggerHaptic(int hand, float amplitude, float dura
 }
 
 void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
+    if (_picoDevice) {
+        _passthroughEnabled = enabled && _alphaBlendPassthroughAvailable;
+
+        if (enabled && !_alphaBlendPassthroughAvailable) {
+            ALOGW("setPassthroughEnabled(true): PICO runtime did not advertise ALPHA_BLEND");
+        }
+        if (_openxrDriver) {
+            auto display = _openxrDriver->getOpenXRDisplay();
+            if (display) display->setClearAlpha(_passthroughEnabled ? 0.0f : 1.0f);
+        }
+        VROPortal::setBackgroundsHidden(_passthroughEnabled);
+        ALOGV("setPassthroughEnabled(PICO alpha-blend): %s",
+              _passthroughEnabled ? "true" : "false");
+        return;
+    }
+
     if (_passthrough == XR_NULL_HANDLE || _passthroughLayer == XR_NULL_HANDLE) {
         ALOGW("setPassthroughEnabled(%s): XR_FB_passthrough not available on this device",
               enabled ? "true" : "false");
@@ -1003,6 +1076,11 @@ void VROSceneRendererOpenXR::renderLoop() {
     env->DeleteLocalRef(viewCls);
 
     while (_running) {
+        // OpenXR has no GLSurfaceView queue, so renderer-thread work is
+        // drained here. Do this before session-state gates so texture setup
+        // queued during React mount can run while the runtime is still IDLE.
+        VROPlatformDrainRendererQueue();
+
         pollEvents();
 
         if (_paused || _sessionState == XR_SESSION_STATE_IDLE ||
@@ -1019,11 +1097,13 @@ void VROSceneRendererOpenXR::renderLoop() {
             renderFrame();
 
             // Drive Java FrameListeners / PlatformUtil render-thread callbacks
-            // only when the app has visible content (VISIBLE or FOCUSED states).
-            if (_sessionState == XR_SESSION_STATE_VISIBLE ||
-                _sessionState == XR_SESSION_STATE_FOCUSED) {
-                env->CallVoidMethod(_jview, onDrawFrameM);
-            }
+            // after every submitted OpenXR frame. On Pico the Android Activity
+            // receives transient pause/stop callbacks during immersive handoff,
+            // and the runtime can spend time in SYNCHRONIZED before reporting
+            // VISIBLE/FOCUSED. External SurfaceTexture consumers still need
+            // updateTexImage() in those states or the XR material can stay on
+            // its initial blank frame.
+            env->CallVoidMethod(_jview, onDrawFrameM);
         }
     }
 
@@ -1099,10 +1179,6 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
 // ──────────────────────────────────────────────────────────────────────────────
 
 void VROSceneRendererOpenXR::renderFrame() {
-    // Drain pending renderer tasks (setSceneController, texture uploads, etc.)
-    // submitted via VROPlatformDispatchAsyncRenderer from any thread.
-    VROPlatformDrainRendererQueue();
-
     // ── Wait for the display ──────────────────────────────────────────────────
     XrFrameWaitInfo waitInfo  = { XR_TYPE_FRAME_WAIT_INFO };
     XrFrameState    frameState= { XR_TYPE_FRAME_STATE };
@@ -1214,7 +1290,7 @@ void VROSceneRendererOpenXR::renderFrame() {
     XrCompositionLayerPassthroughFB ptLayerComp = {
         XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB
     };
-    if (_passthroughEnabled && _passthroughLayer != XR_NULL_HANDLE) {
+    if (_passthroughEnabled && !_picoDevice && _passthroughLayer != XR_NULL_HANDLE) {
         ptLayerComp.layerHandle = _passthroughLayer;
         ptLayerComp.flags       = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader *>(&ptLayerComp));
@@ -1243,7 +1319,10 @@ void VROSceneRendererOpenXR::renderFrame() {
     // projection layer, so the environment blend mode stays OPAQUE. The projection
     // layer's SOURCE_ALPHA bit + the display's transparent clear (alpha 0 in empty
     // regions) let the passthrough layer show through where there's no geometry.
-    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    endInfo.environmentBlendMode =
+        (_passthroughEnabled && _picoDevice && _alphaBlendPassthroughAvailable)
+            ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND
+            : XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     endInfo.layerCount  = (uint32_t)layers.size();
     // OpenXR spec: layers must be NULL when layerCount==0
     endInfo.layers      = layers.empty() ? nullptr : layers.data();

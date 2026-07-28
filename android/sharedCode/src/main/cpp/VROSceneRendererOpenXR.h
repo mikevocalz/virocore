@@ -122,6 +122,8 @@ private:
     XrTime          _lastPredictedDisplayTime = 0;  // updated each frame; used by recenterTracking()
     bool            _sessionRunning        = false;
     bool            _passthroughEnabled    = false;
+    bool            _picoDevice            = false;
+    bool            _alphaBlendPassthroughAvailable = false;
     bool            _handTrackingAvailable = false;  // XR_EXT_hand_tracking present
     bool            _handAimExtAvailable   = false;  // XR_FB_hand_tracking_aim present
     bool            _planeDetectionAvailable = false;  // XR_EXT_plane_detection present

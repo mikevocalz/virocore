@@ -24,11 +24,14 @@
 package com.viro.core.internal;
 
 import android.graphics.SurfaceTexture;
+import android.util.Log;
 import android.view.Surface;
 
 import com.viro.core.FrameListener;
 
 public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, FrameListener {
+
+    private static final String TAG = "VideoSink";
 
     /**
      * The underlying Android Graphics surface.
@@ -44,6 +47,9 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
      * True if the surface's data has been updated.
      */
     private boolean mSurfacedUpdated;
+
+    private int mFramesAvailable;
+    private int mFramesConsumed;
 
     /**
      * Create a new VideoSink wrapping the given native OpenGL
@@ -78,6 +84,10 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
             if (mSurfacedUpdated) {
                 mSurfaceTexture.updateTexImage();
                 mSurfacedUpdated = false;
+                mFramesConsumed += 1;
+                if (mFramesConsumed <= 3 || mFramesConsumed % 60 == 0) {
+                    Log.i(TAG, "updateTexImage consumed frame " + mFramesConsumed);
+                }
             }
         }
     }
@@ -90,6 +100,10 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
          * so synchronized. No OpenGL calls can be done here.
          */
         mSurfacedUpdated = true;
+        mFramesAvailable += 1;
+        if (mFramesAvailable <= 3 || mFramesAvailable % 60 == 0) {
+            Log.i(TAG, "onFrameAvailable frame " + mFramesAvailable);
+        }
     }
 
     public Surface getSurface() {

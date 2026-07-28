@@ -118,6 +118,7 @@ public class ViroViewOpenXR extends ViroView {
     private StartupListener mStartupListener;
     private Application mApplication; // for unregistering ActivityLifecycleCallbacks
     private boolean mResumed = false;  // tracks renderer.onResume / onPause balance
+    private Handler mMainHandler = new Handler(Looper.getMainLooper());
 
     // Passthrough / hand-tracking props can be set (via VRT*SceneNavigator) before
     // the native Renderer exists, since renderer creation is deferred to the host
@@ -307,16 +308,28 @@ public class ViroViewOpenXR extends ViroView {
             "onAttachedToWindow: host = " + host.getClass().getSimpleName()
                 + " (" + System.identityHashCode(host) + ")");
         mWeakActivity = new WeakReference<>(host);
-        initRenderer(host);
-        // VRActivity already fired onResume before we attached; the renderer
-        // needs an explicit resume to start its render thread. Set mResumed
-        // so the later RN LifecycleEventListener.onHostResume (which also
-        // calls our onActivityResumed) doesn't try to start a *second* render
-        // thread — std::thread reassignment would terminate the process.
-        if (mNativeRenderer != null && !mResumed) {
-            mResumed = true;
-            mNativeRenderer.onResume();
-        }
+        // Do not create the OpenXR session synchronously from attachment. On
+        // PICO, nativeCreateRendererOpenXR can block the UI thread long enough
+        // for ActivityThread to emit top-resume/pause timeouts, which the PICO
+        // runtime observes as an Activity pause before xrBeginSession. Defer
+        // one short turn so Android finishes the resume/display handoff first.
+        mMainHandler.postDelayed(() -> {
+            Activity currentHost = mWeakActivity.get();
+            if (currentHost == null || currentHost.isFinishing() || currentHost.isDestroyed()
+                    || mNativeRenderer != null || mDestroyed) {
+                return;
+            }
+            android.util.Log.i("VRORendererOpenXR",
+                    "deferred renderer init for " + currentHost.getClass().getSimpleName());
+            initRenderer(currentHost);
+            // VRActivity may already have fired onResume before this view
+            // attached; explicitly start the render thread once the renderer is
+            // finally created.
+            if (mNativeRenderer != null && !mResumed) {
+                mResumed = true;
+                mNativeRenderer.onResume();
+            }
+        }, 250);
     }
 
     /**
@@ -581,11 +594,13 @@ public class ViroViewOpenXR extends ViroView {
         if (mWeakActivity.get() != activity || mNativeRenderer == null) {
             return;
         }
-        if (!mResumed) {
-            return;
-        }
-        mResumed = false;
-        mNativeRenderer.onPause();
+        // PICO reports a pause/stop pair during immersive OpenXR handoff even
+        // though the headset session should continue. Stopping the native
+        // renderer here prevents queued renderer work (external textures,
+        // scene/controller updates) from ever reaching the render thread.
+        android.util.Log.i("VRORendererOpenXR",
+                "onActivityPaused: keeping OpenXR renderer alive for "
+                        + activity.getClass().getSimpleName());
     }
 
     /** @hide */
@@ -594,8 +609,9 @@ public class ViroViewOpenXR extends ViroView {
         if (mWeakActivity.get() != activity || mNativeRenderer == null) {
             return;
         }
-        // onStop joins the render thread in C++.
-        mNativeRenderer.onStop();
+        android.util.Log.i("VRORendererOpenXR",
+                "onActivityStopped: keeping OpenXR renderer alive for "
+                        + activity.getClass().getSimpleName());
     }
 
     /** @hide */
@@ -622,6 +638,9 @@ public class ViroViewOpenXR extends ViroView {
     /** @hide */
     @Override
     public void dispose() {
+        if (mMainHandler != null) {
+            mMainHandler.removeCallbacksAndMessages(null);
+        }
         if (mApplication != null) {
             mApplication.unregisterActivityLifecycleCallbacks(this);
             mApplication = null;

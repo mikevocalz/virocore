@@ -46,6 +46,7 @@ import java.util.Map;
  * href="https://virocore.viromedia.com/docs/3d-scene-lighting">Lighting and Materials Guide</a>.
  */
 public class Material {
+    private static final String TAG = "ViroMaterial";
 
     /**
      * LightingModel defines a formula for combining a material’s diffuse, specular, and other
@@ -757,8 +758,13 @@ public class Material {
      * @param texture The diffuse Texture to use for this Material.
      */
     public void setDiffuseTexture(Texture texture) {
+        if (texture == null) {
+            Log.w(TAG, "setDiffuseTexture(null) ignored; native material texture clearing is not supported safely");
+            mDiffuseTexture = null;
+            return;
+        }
         mDiffuseTexture = texture;
-        long nativeRef = (texture != null) ? texture.mNativeRef : 0;
+        long nativeRef = texture.mNativeRef;
         nativeSetTexture(mNativeRef, nativeRef, "diffuseTexture");
     }
 

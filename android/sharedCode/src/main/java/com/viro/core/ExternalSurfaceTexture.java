@@ -23,6 +23,7 @@
 
 package com.viro.core;
 
+import android.util.Log;
 import android.view.Surface;
 
 /**
@@ -116,6 +117,7 @@ public class ExternalSurfaceTexture extends Texture {
     // `setVideoSink(Landroid/view/Surface;)V` — resolved reflectively from
     // VROAndroidViewTexture::init().
     void setVideoSink(Surface surface) {
+        Log.i(TAG, "setVideoSink surface=" + surface + " size=" + mWidth + "x" + mHeight);
         mSurface = surface;
         SurfaceListener listener = mListener;
         if (listener != null) {
@@ -128,4 +130,6 @@ public class ExternalSurfaceTexture extends Texture {
      */
     private native long nativeCreateExternalSurfaceTexture(long renderContextRef, int width, int height);
     private native void nativeDeleteExternalSurfaceTexture(long nativeRef);
+
+    private static final String TAG = "ExternalSurfaceTexture";
 }

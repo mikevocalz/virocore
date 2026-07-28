@@ -18,6 +18,7 @@
 #include "VROAndroidViewTexture.h"
 #include "VROPlatformUtil.h"
 #include "VRODriverOpenGL.h"
+#include "VROLog.h"
 
 #define VRO_METHOD(return_type, method_name) \
   JNIEXPORT return_type JNICALL              \
@@ -37,9 +38,16 @@ VRO_METHOD(VRO_REF(VROAndroidViewTexture), nativeCreateExternalSurfaceTexture)(V
     VROPlatformDispatchAsyncRenderer([texture, context_w] {
         std::shared_ptr<ViroContext> context = context_w.lock();
         if (!context) {
+            pinfo("ExternalSurfaceTexture: context expired before renderer init");
             return;
         }
-        texture->init(std::dynamic_pointer_cast<VRODriverOpenGL>(context->getDriver()));
+        std::shared_ptr<VRODriverOpenGL> driver = std::dynamic_pointer_cast<VRODriverOpenGL>(context->getDriver());
+        if (!driver) {
+            pinfo("ExternalSurfaceTexture: OpenGL driver unavailable for renderer init");
+            return;
+        }
+        pinfo("ExternalSurfaceTexture: initializing renderer-owned SurfaceTexture");
+        texture->init(driver);
     });
 
     return VRO_REF_NEW(VROAndroidViewTexture, texture);
