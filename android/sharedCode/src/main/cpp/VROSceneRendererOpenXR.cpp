@@ -90,6 +90,7 @@ static const char *const kOptionalExtensions[] = {
     XR_FB_SCENE_EXTENSION_NAME,                 // M5: Meta room model (Space Setup) — bbox/boundary/labels
     XR_FB_SPATIAL_ENTITY_EXTENSION_NAME,        // M5: spatial entity components
     XR_FB_SPATIAL_ENTITY_QUERY_EXTENSION_NAME,  // M5: query stored room entities
+    XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME, // eye-gaze ray as an onHover source (Quest Pro only)
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -187,7 +188,7 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
     _openxrDriver = std::make_shared<VRODriverOpenGLAndroidOpenXR>(gvrAudio);
     _driver = _openxrDriver;  // base class std::shared_ptr<VRODriverOpenGLAndroid>
     _inputController = std::make_shared<VROInputControllerOpenXR>(_openxrDriver);
-    _inputController->createActionSet(_instance, _session);
+    _inputController->createActionSet(_instance, _session, _eyeGazeSupported);
     initHandTracking();  // no-op if XR_EXT_hand_tracking not available on this device
 
     // Wire the B/Menu button back to Android's back-press so React Native's
@@ -320,6 +321,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                     _fbSpatialEntityAvailable = true;
                 if (strcmp(optExt, XR_FB_SPATIAL_ENTITY_QUERY_EXTENSION_NAME) == 0)
                     _fbSpatialQueryAvailable = true;
+                if (strcmp(optExt, XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME) == 0)
+                    _eyeGazeAvailable = true;
                 break;
             }
         }
@@ -387,6 +390,23 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     }
     ALOGV("OpenXR blend modes: alphaBlend=%d pico=%d",
           (int)_alphaBlendPassthroughAvailable, (int)_picoDevice);
+    // ── Probe eye-gaze support ────────────────────────────────────────────────
+    // The extension being present doesn't mean the device has eye-tracking
+    // hardware (only Quest Pro does). Query the system properties and gate the
+    // eye-gaze input source on supportsEyeGazeInteraction, so it stays a no-op
+    // on Quest 2 / 3 / 3S.
+    if (_eyeGazeAvailable) {
+        XrSystemEyeGazeInteractionPropertiesEXT eyeGazeProps = {
+            XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT
+        };
+        XrSystemProperties systemProps = { XR_TYPE_SYSTEM_PROPERTIES };
+        systemProps.next = &eyeGazeProps;
+        if (XR_SUCCEEDED(xrGetSystemProperties(_instance, _systemId, &systemProps))) {
+            _eyeGazeSupported = (eyeGazeProps.supportsEyeGazeInteraction == XR_TRUE);
+        }
+        ALOGV("Eye-gaze interaction: extension=%d supported=%d",
+              (int)_eyeGazeAvailable, (int)_eyeGazeSupported);
+    }
 
     return true;
 }
