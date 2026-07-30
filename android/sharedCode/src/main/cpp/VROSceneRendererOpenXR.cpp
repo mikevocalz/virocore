@@ -943,11 +943,27 @@ void VROSceneRendererOpenXR::onResume() {
     if (_running) {
         ALOGV("onResume — already running, clearing paused flag");
         _paused = false;
+        // Idempotent on the GVR side too (gvr_audio_resume on a running engine
+        // is a no-op), so the catch-up path must resume as well — otherwise a
+        // second onResume leaves audio dead.
+        if (_driver) {
+            _driver->resume();
+        }
         return;
     }
     ALOGV("onResume — starting render thread");
     _paused  = false;
     _running = true;
+    // Resume the GVR audio engine. VRODriverOpenGLAndroid::resume() is the ONLY
+    // caller of _gvrAudio->Resume(), and every other Android backend drives it
+    // from its lifecycle (VROSceneRendererGVR:281, OVR:1343, SceneView:149).
+    // This backend never did, so the engine was constructed, Init()-ed and
+    // pumped per frame but never resumed — it rendered silence, and because
+    // sound CREATION still succeeded, nothing ever reported an error. That made
+    // every ViroSound/ViroSpatialSound/ViroSoundField silent on Quest and PICO.
+    if (_driver) {
+        _driver->resume();
+    }
     _renderThread = std::thread(&VROSceneRendererOpenXR::renderLoop, this);
 }
 
@@ -958,6 +974,11 @@ void VROSceneRendererOpenXR::onPause() {
     }
     ALOGV("onPause — pausing render thread");
     _paused = true;
+    // Mirror of onResume: park the GVR audio engine so a backgrounded headset
+    // app isn't still mixing audio while its render thread idles.
+    if (_driver) {
+        _driver->pause();
+    }
     // The render loop checks _paused and idles; session state will transition
     // to VISIBLE or IDLE via xrPollEvent naturally.
 }
