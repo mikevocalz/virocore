@@ -94,6 +94,21 @@ void VROSkeletalAnimation::execute(std::shared_ptr<VRONode> node, std::function<
         }
     }
 
+    // DIAG (skeletal-collapse hunt 2026-07-30): one line per execute — if
+    // keyTimes.back() >> 1 while transaction progress is normalized 0..1, the
+    // time domains are mismatched and only the head of the clip ever plays.
+    if (!boneKeyTimes.empty()) {
+        const std::vector<float> &kt0 = boneKeyTimes.begin()->second;
+        const std::vector<VROMatrix4f> &kv0 = boneKeyValues.begin()->second;
+        float det0 = kv0.empty() ? -999.f : kv0.front().extractScale().x;
+        pinfo("SkelAnim: execute name=%s bones=%d frames=%d t[%f..%f] dur=%f firstScaleX=%f",
+              _name.c_str(), (int) boneKeyTimes.size(), (int) kt0.size(),
+              kt0.empty() ? -1.f : kt0.front(), kt0.empty() ? -1.f : kt0.back(),
+              _duration, det0);
+    } else {
+        pinfo("SkelAnim: execute name=%s NO DRIVEN BONES", _name.c_str());
+    }
+
     VROTransaction::begin();
     VROTransaction::setAnimationDuration(_duration);
     VROTransaction::setAnimationTimeOffset(_timeOffset);
@@ -110,6 +125,18 @@ void VROSkeletalAnimation::execute(std::shared_ptr<VRONode> node, std::function<
             std::shared_ptr<VROSkeletalAnimation> shared = shared_w.lock();
             if (!shared) {
                 return;
+            }
+            // DIAG: sample bone 0's interpolated matrix ~once/second so a
+            // collapsing pose (near-zero scale / runaway translation) shows in
+            // logcat with numbers, not adjectives.
+            if (boneIndex == 0) {
+                static int diagTick = 0;
+                if ((diagTick++ % 60) == 0) {
+                    VROVector3f s = m.extractScale();
+                    VROVector3f tr = m.extractTranslation();
+                    pinfo("SkelAnim: bone0 scale=(%f,%f,%f) trans=(%f,%f,%f)",
+                          s.x, s.y, s.z, tr.x, tr.y, tr.z);
+                }
             }
             VROBone *bone = ((VROBone *)animatable);
             bone->setTransform(m, bone->getTransformType());

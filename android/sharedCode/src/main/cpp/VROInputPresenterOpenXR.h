@@ -120,6 +120,12 @@ private:
         laser.node = std::make_shared<VRONode>();
         laser.node->setName("AimLaser");
         laser.node->setGeometry(laser.geom);
+        // The beam lies ALONG the aim ray, so the (bounds-only) controller hit
+        // test strikes it at ~0 m every frame — the closest hit is always the
+        // laser itself, shadowing every real target (all clicks/hovers/drags
+        // resolve against an inert node). Exclude it from hit testing.
+        laser.node->setSelectable(false);
+        laser.node->setIgnoreEventHandling(true);
         laser.node->setHidden(true);  // hidden until first updateAimRay()
         _rootNode->addChildNode(laser.node);
 
