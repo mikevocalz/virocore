@@ -136,8 +136,15 @@ private:
     XrActionSet _actionSet = XR_NULL_HANDLE;
 
     // ── Aim pose actions (one per hand) ──────────────────────────────────────
+    // Aim drives the beam/hit ray; it tilts with the trigger pull.
     XrAction _leftAimPoseAction  = XR_NULL_HANDLE;
     XrAction _rightAimPoseAction = XR_NULL_HANDLE;
+
+    // ── Grip pose actions (one per hand) ─────────────────────────────────────
+    // Grip is the stable held-pose of the controller in the hand; it drives the
+    // controller mesh (aim would make the mesh bob when the trigger is pulled).
+    XrAction _leftGripPoseAction  = XR_NULL_HANDLE;
+    XrAction _rightGripPoseAction = XR_NULL_HANDLE;
 
     // ── Trigger (float, per hand — click detected at ≥0.5) ───────────────────
     XrAction _leftTriggerAction  = XR_NULL_HANDLE;
@@ -165,6 +172,10 @@ private:
     // ── Action spaces for aim poses ───────────────────────────────────────────
     XrSpace _leftSpace  = XR_NULL_HANDLE;
     XrSpace _rightSpace = XR_NULL_HANDLE;
+
+    // ── Action spaces for grip poses (drive the controller mesh) ──────────────
+    XrSpace _leftGripSpace  = XR_NULL_HANDLE;
+    XrSpace _rightGripSpace = XR_NULL_HANDLE;
 
     // ── Eye gaze (XR_EXT_eye_gaze_interaction; Quest Pro only) ────────────────
     // Additive input source: when the device reports eye-tracking support, the
@@ -277,6 +288,15 @@ private:
      */
     void updateLaserViz(int source, const VROVector3f &origin,
                         const VROVector3f &forward, bool visible);
+
+    /**
+     * Locate this hand's grip pose (via its grip action space) and position the
+     * controller mesh there, hiding it when the grip pose action is inactive
+     * (controller set down / hand tracking). Grip, not aim, so the mesh does not
+     * bob when the trigger is pulled. No-op when the presenter has no mesh.
+     */
+    void updateControllerMeshViz(int source, XrSession session, XrSpace baseSpace,
+                                 XrTime time, XrAction gripPoseAction, XrSpace gripSpace);
 
 public:
     /** Enable or disable hand tracking gesture processing. Thread-safe (atomic store). */

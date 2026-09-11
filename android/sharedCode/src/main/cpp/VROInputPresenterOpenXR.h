@@ -29,6 +29,10 @@
 #include "VRONode.h"
 #include "VROPolyline.h"
 #include "VROMaterial.h"
+#include "VROGLTFLoader.h"
+#include "VROPlatformUtil.h"
+#include "VROInputType.h"
+#include "VROLog.h"
 
 class VROInputPresenterOpenXR : public VROInputPresenter {
 public:
@@ -95,6 +99,58 @@ public:
         laser.geom->setPaths(paths);
     }
 
+    /**
+     * Load the bundled neutral controller GLB once and create a hidden per-hand
+     * node for each controller source, parented to the presenter root. The mesh
+     * is X-symmetric (grip + ring tilt only about the X axis), so both hands use
+     * it as-authored with no left/right mirror. Async: the geometry populates
+     * each node a few frames after this returns; the nodes exist immediately so
+     * updateControllerMesh() can position/hide them meanwhile.
+     */
+    void loadControllerMesh(std::shared_ptr<VRODriver> driver) {
+        if (!driver || _meshLoadStarted) return;
+        _meshLoadStarted = true;
+
+        const int sources[] = { ViroOculus::Controller, ViroOculus::LeftController };
+        for (int source : sources) {
+            auto node = std::make_shared<VRONode>();
+            node->setName("ControllerMesh");
+            node->setHidden(true);                 // shown once a grip pose arrives
+            node->setSelectable(false);            // never a hit-test target (own controller)
+            node->setIgnoreEventHandling(true);
+            _rootNode->addChildNode(node);
+            _meshNodes[source] = node;
+
+            std::string glbPath = VROPlatformCopyAssetToFile("controller_neutral.glb");
+            VROGLTFLoader::loadGLTFFromResource(
+                glbPath, {}, VROResourceType::LocalFile, node, /*isGLTFBinary=*/true, driver,
+                [source](std::shared_ptr<VRONode> n, bool success) {
+                    if (!success) {
+                        pwarn("[VROInputOpenXR] controller mesh load failed for source %d", source);
+                    }
+                });
+        }
+    }
+
+    /**
+     * Position the controller mesh for `source` at its grip pose, or hide it when
+     * `visible` is false (controller inactive / not located). No-op before the
+     * node exists.
+     */
+    void updateControllerMesh(int source, const VROVector3f &pos,
+                              const VROQuaternion &rot, bool visible) {
+        auto it = _meshNodes.find(source);
+        if (it == _meshNodes.end()) return;
+        std::shared_ptr<VRONode> &node = it->second;
+        if (!visible) {
+            node->setHidden(true);
+            return;
+        }
+        node->setHidden(false);
+        node->setPosition(pos);
+        node->setRotation(rot);
+    }
+
 private:
     struct Laser {
         std::shared_ptr<VRONode>     node;
@@ -131,6 +187,11 @@ private:
     }
 
     std::unordered_map<int, Laser> _lasers;
+
+    // Per-hand controller mesh nodes (source id → node). Populated by
+    // loadControllerMesh(); positioned each frame by updateControllerMesh().
+    std::unordered_map<int, std::shared_ptr<VRONode>> _meshNodes;
+    bool _meshLoadStarted = false;
 };
 
 #endif // ANDROID_VROINPUTPRESENTEROPENXR_H

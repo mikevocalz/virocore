@@ -90,6 +90,11 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     _rightAimPoseAction = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
                                        "right_aim", "Right Aim Pose");
 
+    _leftGripPoseAction  = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
+                                        "left_grip_pose",  "Left Grip Pose");
+    _rightGripPoseAction = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
+                                        "right_grip_pose", "Right Grip Pose");
+
     _leftTriggerAction  = createAction(_actionSet, XR_ACTION_TYPE_FLOAT_INPUT,
                                        "left_trigger",  "Left Trigger");
     _rightTriggerAction = createAction(_actionSet, XR_ACTION_TYPE_FLOAT_INPUT,
@@ -132,6 +137,7 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     }
 
     if (!_leftAimPoseAction  || !_rightAimPoseAction ||
+        !_leftGripPoseAction || !_rightGripPoseAction ||
         !_leftTriggerAction  || !_rightTriggerAction ||
         !_leftGripAction     || !_rightGripAction    ||
         !_aButtonAction      || !_bButtonAction      ||
@@ -157,6 +163,8 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     const XrActionSuggestedBinding bindings[] = {
         { _leftAimPoseAction,     makePath("/user/hand/left/input/aim/pose")       },
         { _rightAimPoseAction,    makePath("/user/hand/right/input/aim/pose")      },
+        { _leftGripPoseAction,    makePath("/user/hand/left/input/grip/pose")      },
+        { _rightGripPoseAction,   makePath("/user/hand/right/input/grip/pose")     },
         { _leftTriggerAction,     makePath("/user/hand/left/input/trigger/value")  },
         { _rightTriggerAction,    makePath("/user/hand/right/input/trigger/value") },
         { _leftGripAction,        makePath("/user/hand/left/input/squeeze/value")  },
@@ -284,8 +292,10 @@ void VROInputControllerOpenXR::logActiveInteractionProfiles(XrSession session) {
 }
 
 void VROInputControllerOpenXR::destroySpaces() {
-    if (_leftSpace    != XR_NULL_HANDLE) { xrDestroySpace(_leftSpace);    _leftSpace    = XR_NULL_HANDLE; }
-    if (_rightSpace   != XR_NULL_HANDLE) { xrDestroySpace(_rightSpace);   _rightSpace   = XR_NULL_HANDLE; }
+    if (_leftSpace     != XR_NULL_HANDLE) { xrDestroySpace(_leftSpace);     _leftSpace     = XR_NULL_HANDLE; }
+    if (_rightSpace    != XR_NULL_HANDLE) { xrDestroySpace(_rightSpace);    _rightSpace    = XR_NULL_HANDLE; }
+    if (_leftGripSpace  != XR_NULL_HANDLE) { xrDestroySpace(_leftGripSpace);  _leftGripSpace  = XR_NULL_HANDLE; }
+    if (_rightGripSpace != XR_NULL_HANDLE) { xrDestroySpace(_rightGripSpace); _rightGripSpace = XR_NULL_HANDLE; }
     if (_eyeGazeSpace != XR_NULL_HANDLE) { xrDestroySpace(_eyeGazeSpace); _eyeGazeSpace = XR_NULL_HANDLE; }
 }
 
@@ -300,6 +310,20 @@ bool VROInputControllerOpenXR::createActionSpaces(XrSession session) {
     spaceInfo.action = _rightAimPoseAction;
     r = xrCreateActionSpace(session, &spaceInfo, &_rightSpace);
     if (!XR_SUCCEEDED(r)) { ALOGE("xrCreateActionSpace right failed: %d", r); return false; }
+
+    // Grip pose spaces drive the controller mesh. Non-fatal if they fail: the
+    // beam/hit path uses the aim spaces above and keeps working; only the mesh
+    // is lost.
+    spaceInfo.action = _leftGripPoseAction;
+    if (XR_FAILED(xrCreateActionSpace(session, &spaceInfo, &_leftGripSpace))) {
+        ALOGW("xrCreateActionSpace left grip failed; controller mesh disabled on left");
+        _leftGripSpace = XR_NULL_HANDLE;
+    }
+    spaceInfo.action = _rightGripPoseAction;
+    if (XR_FAILED(xrCreateActionSpace(session, &spaceInfo, &_rightGripSpace))) {
+        ALOGW("xrCreateActionSpace right grip failed; controller mesh disabled on right");
+        _rightGripSpace = XR_NULL_HANDLE;
+    }
 
     if (_eyeGazeEnabled && _eyeGazePoseAction != XR_NULL_HANDLE) {
         spaceInfo.action = _eyeGazePoseAction;
@@ -627,6 +651,14 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     dispatchSide(rightValid, ViroOculus::Controller,     rightPos, rightRot, rightForward);
     dispatchSide(leftValid,  ViroOculus::LeftController, leftPos,  leftRot,  leftForward);
 
+    // Controller meshes follow the grip pose (independent of the aim/beam path
+    // above). Hidden automatically when the grip pose action is inactive — i.e.
+    // the controller is set down and the hand takes over.
+    updateControllerMeshViz(ViroOculus::Controller, session, baseSpace, time,
+                            _rightGripPoseAction, _rightGripSpace);
+    updateControllerMeshViz(ViroOculus::LeftController, session, baseSpace, time,
+                            _leftGripPoseAction, _leftGripSpace);
+
     // ── Eye gaze (Quest Pro) — additive onHover source ──────────────────────
     // Locate the eye-gaze pose and feed it through the same hit-test/onHover path
     // as the controllers, under its own source id. No laser line is drawn (a gaze
@@ -925,7 +957,47 @@ bool VROInputControllerOpenXR::stickyPose(PersistentAim &state, bool currentVali
 
 std::shared_ptr<VROInputPresenter>
 VROInputControllerOpenXR::createPresenter(std::shared_ptr<VRODriver> driver) {
-    return std::make_shared<VROInputPresenterOpenXR>();
+    auto presenter = std::make_shared<VROInputPresenterOpenXR>();
+    // Load the bundled controller mesh now that a driver exists (needed by the
+    // GLTF loader). Async — the mesh populates a few frames later; the nodes are
+    // created hidden immediately so updateControllerMeshViz can drive them.
+    presenter->loadControllerMesh(driver);
+    return presenter;
+}
+
+void VROInputControllerOpenXR::updateControllerMeshViz(int source, XrSession session,
+                                                       XrSpace baseSpace, XrTime time,
+                                                       XrAction gripPoseAction,
+                                                       XrSpace gripSpace) {
+    auto presenter = std::dynamic_pointer_cast<VROInputPresenterOpenXR>(getPresenter());
+    if (!presenter) return;
+
+    if (gripSpace == XR_NULL_HANDLE || gripPoseAction == XR_NULL_HANDLE) {
+        presenter->updateControllerMesh(source, {}, {}, false);
+        return;
+    }
+
+    // A controller that is set down (or replaced by hand tracking) reports its
+    // grip pose action inactive — hide the mesh within the frame.
+    XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+    getInfo.action = gripPoseAction;
+    XrActionStatePose poseState = { XR_TYPE_ACTION_STATE_POSE };
+    if (XR_FAILED(xrGetActionStatePose(session, &getInfo, &poseState)) ||
+        poseState.isActive == XR_FALSE) {
+        presenter->updateControllerMesh(source, {}, {}, false);
+        return;
+    }
+
+    XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+    if (XR_FAILED(xrLocateSpace(gripSpace, baseSpace, time, &loc)) ||
+        !(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
+        !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+        presenter->updateControllerMesh(source, {}, {}, false);
+        return;
+    }
+
+    presenter->updateControllerMesh(source, xrVec3ToVRO(loc.pose.position),
+                                    xrQuatToVRO(loc.pose.orientation), true);
 }
 
 void VROInputControllerOpenXR::updateLaserViz(int source,
