@@ -57,7 +57,8 @@ struct VROOpenXRSwapchain {
     std::vector<XrSwapchainImageOpenGLESKHR> images;
 };
 
-class VROSceneRendererOpenXR : public VROSceneRenderer {
+class VROSceneRendererOpenXR : public VROSceneRenderer,
+                               public std::enable_shared_from_this<VROSceneRendererOpenXR> {
 public:
 
     VROSceneRendererOpenXR(VRORendererConfiguration config,
@@ -147,7 +148,8 @@ public:
     enum class VROTrackingOrigin { Eye, Floor };
     // Request a tracking origin. Rebuilds the reference space when the session
     // is live; otherwise the value is cached and applied at session start. Safe
-    // to call before the renderer exists (via the pending flag in ViroViewOpenXR).
+    // to call before the renderer exists (via the pending flag in ViroViewOpenXR)
+    // and from any thread — a live-session rebuild is hopped to the render thread.
     void setTrackingOrigin(VROTrackingOrigin origin);
     VROTrackingOrigin getTrackingOrigin() const { return _trackingOrigin; }
 
@@ -161,6 +163,10 @@ private:
     // Locate the STAGE floor's Y offset below LOCAL at `time`. Returns false when
     // STAGE is not enumerated or its position is not locatable this frame.
     bool deriveFloorOffset(XrTime time, float *outOffsetY);
+    // Swap _appSpace over to `origin`. Render thread only: it destroys the space
+    // the frame loop locates against. setTrackingOrigin() is the public entry.
+    void applyTrackingOrigin(VROTrackingOrigin origin);
+    void resetFloorDiagnostic();   // re-arm after an app-space rebuild
 
     bool _foveationAvailable            = false;  // XR_FB_foveation present + fns loaded
     bool _eyeTrackedFoveationAvailable  = false;  // XR_META_foveation_eye_tracked present
@@ -188,6 +194,10 @@ private:
     // True once JS calls setTrackingOrigin. Until then a PICO runtime defaults
     // to Floor in createReferenceSpace; an explicit JS choice always wins.
     bool                 _trackingOriginExplicit = false;
+    // One-shot floor diagnostic, re-armed on every app-space rebuild. _floorDiagFrames
+    // counts tracked, renderable frames so the sample is taken from a settled pose.
+    bool                 _loggedEyeHeight = false;
+    int                  _floorDiagFrames = 0;
     bool                 _localFloorAvailable = false;  // XR_EXT_local_floor negotiated
     // Y offset (metres, >= 0) of the physical floor below the LOCAL origin, used
     // by the STAGE-emulation rung. Re-derived at session start and on recenter.

@@ -626,6 +626,14 @@ static bool referenceSpaceEnumerated(XrSession session, XrReferenceSpaceType wan
     return false;
 }
 
+// Re-arm the one-shot floor diagnostic. Any app-space rebuild (origin switch,
+// recenter, session restart) invalidates the previous sample, and those are the
+// cases where the measurement is most worth having.
+void VROSceneRendererOpenXR::resetFloorDiagnostic() {
+    _loggedEyeHeight = false;
+    _floorDiagFrames = 0;
+}
+
 bool VROSceneRendererOpenXR::deriveFloorOffset(XrTime time, float *outOffsetY) {
     // Emulate LOCAL_FLOOR (per the XR_EXT_local_floor spec text) by locating the
     // STAGE space against LOCAL: STAGE's origin sits on the physical floor, so
@@ -736,16 +744,34 @@ bool VROSceneRendererOpenXR::createReferenceSpace() {
     return buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
 }
 
+// Called on the JNI caller's thread (ViroViewOpenXR.setTrackingOrigin, driven by
+// the JS `trackingOrigin` prop), which is not the render thread.
 void VROSceneRendererOpenXR::setTrackingOrigin(VROTrackingOrigin origin) {
+    // Before session start nothing is reading _appSpace, so record the choice
+    // inline: createReferenceSpace must see it, and it runs before the first
+    // renderFrame drains the renderer queue.
+    if (_session == XR_NULL_HANDLE) {
+        _trackingOriginExplicit = true;
+        _trackingOrigin         = origin;
+        return;
+    }
+    // With a live session the render thread is locating views against _appSpace
+    // this very frame, so the rebuild — and the xrDestroySpace of the handle it
+    // replaces — has to happen on that thread. Doing it here would free a space
+    // mid-frame while xrLocateViews holds it.
+    std::shared_ptr<VROSceneRendererOpenXR> shared = shared_from_this();
+    VROPlatformDispatchAsyncRenderer([shared, origin] {
+        shared->applyTrackingOrigin(origin);
+    });
+}
+
+// Render thread only.
+void VROSceneRendererOpenXR::applyTrackingOrigin(VROTrackingOrigin origin) {
     _trackingOriginExplicit = true;
     if (origin == _trackingOrigin && _appSpace != XR_NULL_HANDLE) {
         return;
     }
     _trackingOrigin = origin;
-    // Cached only until session start when there is no live session yet.
-    if (_session == XR_NULL_HANDLE) {
-        return;
-    }
     XrSpace newSpace = XR_NULL_HANDLE;
     XrReferenceSpaceType newType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     if (!buildReferenceSpace(origin, &newSpace, &newType)) {
@@ -757,6 +783,7 @@ void VROSceneRendererOpenXR::setTrackingOrigin(VROTrackingOrigin origin) {
     if (old != XR_NULL_HANDLE) {
         xrDestroySpace(old);
     }
+    resetFloorDiagnostic();
 }
 
 bool VROSceneRendererOpenXR::createSwapchains() {
@@ -1408,6 +1435,7 @@ void VROSceneRendererOpenXR::recenterTracking() {
     if (XR_SUCCEEDED(xrCreateReferenceSpace(_session, &spaceInfo, &newSpace))) {
         xrDestroySpace(_appSpace);
         _appSpace = newSpace;
+        resetFloorDiagnostic();
         ALOGV("recenterTracking: recentered (yaw=%.2f rad, originY=%.3f)", yaw, originY);
     } else {
         ALOGE("recenterTracking: xrCreateReferenceSpace failed");
@@ -1498,6 +1526,7 @@ void VROSceneRendererOpenXR::pollEvents() {
                         _appSpace     = rebuilt;
                         _appSpaceType = rebuiltType;
                         if (old != XR_NULL_HANDLE) xrDestroySpace(old);
+                        resetFloorDiagnostic();
                         ALOGI("Reference space rebuilt after runtime recenter");
                     }
                 } else {
@@ -1545,6 +1574,7 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
                 XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             XR_CHECK(xrBeginSession(_session, &beginInfo));
             _sessionRunning = true;
+            resetFloorDiagnostic();   // a resumed session re-settles its tracking
             ALOGV("Session began");
             break;
         }
@@ -1575,6 +1605,13 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
 // Frame render
 // ──────────────────────────────────────────────────────────────────────────────
 
+// Tracked, renderable frames to let the runtime settle before sampling the floor
+// diagnostic (~0.3 s at 90 Hz). Sampled once, off the first frames: xrLocateViews
+// can report a valid-but-inferred pose at the origin while the session is only
+// SYNCHRONIZED, and the runtime may not have published its stage bounds yet —
+// either reads as "eye Y ~0", the exact value the log is meant to distinguish.
+static constexpr int kFloorDiagSettleFrames = 30;
+
 void VROSceneRendererOpenXR::renderFrame() {
     // Drain pending renderer tasks (setSceneController, texture uploads, etc.)
     // submitted via VROPlatformDispatchAsyncRenderer from any thread.
@@ -1600,6 +1637,31 @@ void VROSceneRendererOpenXR::renderFrame() {
     uint32_t    viewCount = 2;
     XrView      views[2]  = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
     XR_CHECK(xrLocateViews(_session, &locateInfo, &viewState, 2, &viewCount, views));
+
+    // Floor diagnostic: the eye Y above the app-space origin. With a true floor
+    // origin this is standing eye height (~1.3–1.8 m); if it reads ~0 the
+    // runtime's LOCAL_FLOOR is head-referenced (not calibrated to the physical
+    // floor) and the STAGE-derived offset below is the real floor height.
+    //
+    // Sampled once, kFloorDiagSettleFrames in: the probe below creates, locates and
+    // destroys reference spaces inside the xrBeginFrame/xrEndFrame window, so it
+    // must stay one-shot, and the first frames would feed it an unsettled pose.
+    // Re-armed by resetFloorDiagnostic() whenever the app space is rebuilt.
+    if (!_loggedEyeHeight && frameState.shouldRender &&
+        (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_TRACKED_BIT) &&
+        ++_floorDiagFrames >= kFloorDiagSettleFrames) {
+        _loggedEyeHeight = true;
+        float stageFloor = 0.0f;
+        if (deriveFloorOffset(frameState.predictedDisplayTime, &stageFloor)) {
+            ALOGI("[XR-DIAG] eye Y above appSpace(type=%d) = %.3f m; STAGE floor offset "
+                  "= %.3f m (true floor origin expects eye Y ~1.3-1.8)",
+                  (int)_appSpaceType, views[0].pose.position.y, stageFloor);
+        } else {
+            ALOGI("[XR-DIAG] eye Y above appSpace(type=%d) = %.3f m; STAGE floor offset "
+                  "unavailable (true floor origin expects eye Y ~1.3-1.8)",
+                  (int)_appSpaceType, views[0].pose.position.y);
+        }
+    }
 
     // Drive the Quest MR (AR) session: query XR_EXT_plane_detection and fan
     // detected planes through the VROARScene anchor pipeline. Runs before
