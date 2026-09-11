@@ -124,13 +124,24 @@
 
 ---
 
-## v2.56.0-pico.1 — mikevocalz/virocore fork (pico-support)
+## v2.58.1-pico — mikevocalz/virocore fork (pico-support)
 
-Fork of ReactVision/virocore v2.56.0 adding PICO OS 5.9+ / OS 6 / Swan support
-to the OpenXR backend. All changes are vendor-neutral OpenXR — Quest behaviour
-is unchanged. See docs/PICO-SUPPORT.md.
+Fork of ReactVision/virocore adding PICO OS 5.9+ / OS 6 / Swan support to the
+OpenXR backend, rebased onto upstream `develop` (post v2.58.1, PRs #367/#369/#370).
+All changes are vendor-neutral OpenXR — Quest behaviour is unchanged. See
+docs/PICO-SUPPORT.md and docs/pico/.
 
 ### Added
+- **Floor-level tracking origin** — `trackingOrigin: "eye" | "floor"` on the XR
+  navigator (default `"eye"`, unchanged from upstream). `"floor"` resolves through
+  a ladder: native `XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR` when the runtime enumerates
+  it (PICO 4 Ultra / OpenXR 1.1 core), else a `LOCAL` space offset by the STAGE floor
+  height, else it stays eye-level and reports the downgrade — never a hardcoded
+  human height. `recenterTracking` and the runtime-recenter event
+  (`REFERENCE_SPACE_CHANGE_PENDING`, e.g. PICO long-press Home) rebuild the space
+  like-for-like. See docs/pico/adr-0001-reference-space.md.
+- **Colour mode follows the swapchain format** — sRGB → Linear, RGBA8 → NonLinear,
+  fixing double-dark output on firmware that enumerates no sRGB swapchain format.
 - **PICO controller input** — `VROInputControllerOpenXR` suggests all ByteDance
   interaction profiles (Neo3 / 4 / 4 Pro / 4 Ultra `pico4s` / G3) plus
   `khr/simple_controller` fallback, alongside Oculus Touch. Fixes dead
@@ -147,10 +158,10 @@ is unchanged. See docs/PICO-SUPPORT.md.
   enumerated) so strict PICO firmware degrades cleanly instead of SIGSEGV.
 - `xrCreateInstance` / `xrGetSystem` failures now log the real `XrResult`.
 - **16KB page alignment (Android 15 / SDK 35, fixes ReactVision/viro#485)** —
-  OpenXR loader bumped 1.1.38 → 1.1.60 (first 16KB-aligned Khronos Android
-  loader); rebuilt AAR is 16KB-aligned via NDK r27.2 + `-Wl,-z,max-page-size=16384`.
-  `scripts/verify-16kb-alignment.py` gates the build/CI so a misaligned AAR can
-  never be published.
+  inherited from upstream develop: NDK r27.1 (16KB-aligned `libc++_shared.so`),
+  `-Wl,-z,max-page-size=16384`, and the vendored OpenXR loader 1.1.49 whose
+  arm64-v8a `libopenxr_loader.so` is 16KB-aligned. `scripts/verify-16kb-alignment.py`
+  gates the build/CI so a misaligned AAR can never be published.
 
 ### Not yet wired (flagged, follow-up)
 - Eye-tracked foveation (`XR_META_foveation_eye_tracked`) — detected only;
