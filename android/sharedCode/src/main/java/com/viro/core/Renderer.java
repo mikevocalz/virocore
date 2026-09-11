@@ -137,6 +137,15 @@ public class Renderer {
     }
 
     /**
+     * Select the vertical tracking origin: false = eye-level (LOCAL, default),
+     * true = floor-level (LOCAL_FLOOR or a STAGE-derived offset). No-op on
+     * non-OpenXR backends.
+     */
+    public void setTrackingOrigin(boolean floor) {
+        nativeSetTrackingOrigin(mNativeRef, floor);
+    }
+
+    /**
      * Apply a fixed-foveation level (0=OFF,1=LOW,2=MEDIUM,3=HIGH). No-op on
      * runtimes without XR_FB_foveation. (expo-pico fork.)
      */
@@ -374,6 +383,7 @@ public class Renderer {
     private native void nativeSetPassthroughStyle(long nativeRenderer, float opacity,
                                                   float edgeR, float edgeG, float edgeB, float edgeA);
     private native void nativeSetHandTrackingEnabled(long nativeRenderer, boolean enabled);
+    private native void nativeSetTrackingOrigin(long nativeRenderer, boolean floor);
     private native void nativeSetFoveationLevel(long nativeRenderer, int level, boolean dynamic);
     private native String[] nativeGetRuntimeInfo(long nativeRenderer);
     private native void nativeSetClearColor(long sceneRef, int color);

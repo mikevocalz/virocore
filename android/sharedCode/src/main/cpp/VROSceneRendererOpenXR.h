@@ -137,8 +137,30 @@ public:
     bool isFoveationAvailable()           const { return _foveationAvailable; }
     bool isEyeTrackedFoveationAvailable() const { return _eyeTrackedFoveationAvailable; }
 
+    // ── Tracking origin (eye-level vs floor-level) ─────────────────────────────
+    // Eye:   XR_REFERENCE_SPACE_TYPE_LOCAL, origin at the head pose at session
+    //        start. Every other Viro platform's convention; the upstream default.
+    // Floor: origin on the physical floor, so a node at y=0 sits on the floor.
+    //        Resolved via a ladder (see createReferenceSpace): native LOCAL_FLOOR
+    //        when enumerated, else a LOCAL space offset by the STAGE floor height,
+    //        else it stays Eye and reports so — never a hardcoded human height.
+    enum class VROTrackingOrigin { Eye, Floor };
+    // Request a tracking origin. Rebuilds the reference space when the session
+    // is live; otherwise the value is cached and applied at session start. Safe
+    // to call before the renderer exists (via the pending flag in ViroViewOpenXR).
+    void setTrackingOrigin(VROTrackingOrigin origin);
+    VROTrackingOrigin getTrackingOrigin() const { return _trackingOrigin; }
+
 private:
     bool initFoveation();   // called once after swapchain creation
+    // Build a reference space for `origin`, following the fallback ladder, into
+    // `outSpace` and reporting the type actually created via `outType`. Returns
+    // false only on an outright xrCreateReferenceSpace failure.
+    bool buildReferenceSpace(VROTrackingOrigin origin, XrSpace *outSpace,
+                             XrReferenceSpaceType *outType);
+    // Locate the STAGE floor's Y offset below LOCAL at `time`. Returns false when
+    // STAGE is not enumerated or its position is not locatable this frame.
+    bool deriveFloorOffset(XrTime time, float *outOffsetY);
 
     bool _foveationAvailable            = false;  // XR_FB_foveation present + fns loaded
     bool _eyeTrackedFoveationAvailable  = false;  // XR_META_foveation_eye_tracked present
@@ -151,7 +173,18 @@ private:
     XrInstance      _instance   = XR_NULL_HANDLE;
     XrSystemId      _systemId   = XR_NULL_SYSTEM_ID;
     XrSession       _session    = XR_NULL_HANDLE;
-    XrSpace         _stageSpace = XR_NULL_HANDLE;  // XR_REFERENCE_SPACE_TYPE_STAGE
+    // The reference space every subsystem (input, projection layer, plane
+    // sources) resolves against. Its type follows _trackingOrigin: LOCAL for
+    // Eye, LOCAL_FLOOR or an offset LOCAL for Floor. _appSpaceType records what
+    // was actually created so recenter and the change-pending handler rebuild
+    // like-for-like.
+    XrSpace              _appSpace     = XR_NULL_HANDLE;
+    XrReferenceSpaceType _appSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    VROTrackingOrigin    _trackingOrigin = VROTrackingOrigin::Eye;
+    bool                 _localFloorAvailable = false;  // XR_EXT_local_floor negotiated
+    // Y offset (metres, >= 0) of the physical floor below the LOCAL origin, used
+    // by the STAGE-emulation rung. Re-derived at session start and on recenter.
+    float                _floorOffsetY = 0.0f;
 
     XrSessionState  _sessionState             = XR_SESSION_STATE_UNKNOWN;
     XrTime          _lastPredictedDisplayTime = 0;  // updated each frame; used by recenterTracking()

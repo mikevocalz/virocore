@@ -128,6 +128,12 @@ public class ViroViewOpenXR extends ViroView {
     private Boolean mPendingHandTrackingEnabled = null;
     // {opacity, edgeR, edgeG, edgeB, edgeA} or null if never set.
     private float[] mPendingPassthroughStyle = null;
+    // Tracking origin (true = floor). Same deferral: a value set before the
+    // native Renderer exists must survive to initRenderer(). null = never set.
+    private Boolean mPendingTrackingOrigin = null;
+    // Foveation {level, dynamic?1:0} or null. Deferred like the props above;
+    // without this a level set before renderer creation was silently dropped.
+    private int[] mPendingFoveationLevel = null;
 
     // ── Constructors ─────────────────────────────────────────────────────────────
 
@@ -252,6 +258,13 @@ public class ViroViewOpenXR extends ViroView {
         if (mPendingPassthroughStyle != null) {
             float[] s = mPendingPassthroughStyle;
             mNativeRenderer.setPassthroughStyle(s[0], s[1], s[2], s[3], s[4]);
+        }
+        if (mPendingTrackingOrigin != null) {
+            mNativeRenderer.setTrackingOrigin(mPendingTrackingOrigin);
+        }
+        if (mPendingFoveationLevel != null) {
+            mNativeRenderer.setFoveationLevel(mPendingFoveationLevel[0],
+                                              mPendingFoveationLevel[1] != 0);
         }
 
         // Notify caller that the renderer is ready. Posted async to keep the
@@ -449,12 +462,26 @@ public class ViroViewOpenXR extends ViroView {
     }
 
     /**
+     * Select the vertical tracking origin: {@code false} = eye-level (default),
+     * {@code true} = floor-level. Cached and re-applied if the renderer isn't
+     * ready yet, so an initial trackingOrigin prop set during mount survives.
+     * No-op on non-OpenXR backends.
+     */
+    public void setTrackingOrigin(boolean floor) {
+        mPendingTrackingOrigin = floor;
+        if (mNativeRenderer != null) {
+            mNativeRenderer.setTrackingOrigin(floor);
+        }
+    }
+
+    /**
      * Apply a fixed-foveation level (XR_FB_foveation): 0=OFF, 1=LOW, 2=MEDIUM,
      * 3=HIGH. dynamic lets the runtime scale the level with GPU load. No-op when
      * the runtime lacks foveation. High-value on high-PPD panels (PICO 4 Ultra /
      * Swan). (expo-pico fork.)
      */
     public void setFoveationLevel(int level, boolean dynamic) {
+        mPendingFoveationLevel = new int[]{ level, dynamic ? 1 : 0 };
         if (mNativeRenderer != null) {
             mNativeRenderer.setFoveationLevel(level, dynamic);
         }

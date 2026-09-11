@@ -28,10 +28,16 @@ public:
     virtual ~VRODriverOpenGLAndroidOpenXR() {}
 
     /*
-     * Quest uses an sRGB swapchain, so we can always render in linear space.
+     * The renderer picks the swapchain format at session start and sets the
+     * matching colour mode here. An sRGB swapchain (GL_SRGB8_ALPHA8) gamma-
+     * encodes on write, so Viro renders Linear; a plain GL_RGBA8 swapchain does
+     * not, so Viro must gamma-encode itself (NonLinear) or the image is dark.
+     * Defaults to Linear because every conformant runtime enumerates sRGB;
+     * NonLinear is the fallback path some PICO firmware forces.
      */
+    void setColorRenderingMode(VROColorRenderingMode mode) { _colorMode = mode; }
     VROColorRenderingMode getColorRenderingMode() override {
-        return VROColorRenderingMode::Linear;
+        return _colorMode;
     }
 
     /*
@@ -55,6 +61,7 @@ public:
 
 private:
     std::shared_ptr<VRORenderTarget> _display;
+    VROColorRenderingMode _colorMode = VROColorRenderingMode::Linear;
 };
 
 #endif  // ANDROID_VRODRIVEROPENGLANDROIDOPENXR_H

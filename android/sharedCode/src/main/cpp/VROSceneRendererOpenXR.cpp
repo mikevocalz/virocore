@@ -68,6 +68,7 @@ static const char *const kOptionalExtensions[] = {
     XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME,      // apply foveation profile to live swapchain
     "XR_META_foveation_eye_tracked",                  // gaze-driven foveation (perm-gated; flagged only)
     XR_FB_SPACE_WARP_EXTENSION_NAME,                  // ASW motion-vector reprojection (flagged; loop TODO)
+    XR_EXT_LOCAL_FLOOR_EXTENSION_NAME,                // floor-level reference space (PICO 4 Ultra; OpenXR 1.1 core)
 };
 
 // PICO (ByteDance) controller-interaction extensions. These gate the
@@ -322,6 +323,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                     _eyeTrackedFoveationAvailable = true;
                 if (strcmp(optExt, XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME) == 0)
                     _swapchainUpdateStateAvailable = true;
+                if (strcmp(optExt, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME) == 0)
+                    _localFloorAvailable = true;
                 break;
             }
         }
@@ -568,7 +571,7 @@ bool VROSceneRendererOpenXR::createSession() {
     initPassthrough();
 
     // Create the Quest MR (AR) session if a plane source is available. Two
-    // sources are tried; planes are reported in _stageSpace so anchors land in
+    // sources are tried; planes are reported in _appSpace so anchors land in
     // the same world frame as rendered content:
     //   • XR_EXT_plane_detection — cross-vendor real-time (absent on Meta runtime)
     //   • XR_FB_scene + spatial_entity(_query) — Meta room model (Space Setup)
@@ -577,9 +580,9 @@ bool VROSceneRendererOpenXR::createSession() {
     if (_planeDetectionAvailable || fbSceneUsable) {
         _arSession = std::make_shared<VROARSessionOpenXR>();
         bool ext = _planeDetectionAvailable &&
-                   _arSession->initPlaneDetection(_instance, _session, _stageSpace);
+                   _arSession->initPlaneDetection(_instance, _session, _appSpace);
         bool fb  = fbSceneUsable &&
-                   _arSession->initSceneDetection(_instance, _session, _stageSpace);
+                   _arSession->initSceneDetection(_instance, _session, _appSpace);
         if (!ext && !fb) {
             ALOGW("No usable plane source initialised — AR-on-Quest planes disabled");
             _arSession.reset();
@@ -599,24 +602,141 @@ bool VROSceneRendererOpenXR::initHandTracking() {
     return ok;
 }
 
-bool VROSceneRendererOpenXR::createReferenceSpace() {
-    // Use LOCAL space so the Viro world origin matches the eye level at session start.
-    // STAGE space places Y=0 at the floor (~1.6 m below the eye), which causes objects
-    // placed at Viro world (0,0,-2) to appear ~39° below the horizon — near or past
-    // the bottom of the Quest 3's physical FOV. LOCAL space matches every other Viro
-    // platform's convention (camera at scene origin, looking forward).
-    // Floor-relative placement (STAGE) can be addressed in a dedicated M-series milestone.
-    XrReferenceSpaceCreateInfo spaceInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
-    spaceInfo.referenceSpaceType    = XR_REFERENCE_SPACE_TYPE_LOCAL;
-    spaceInfo.poseInReferenceSpace  = { {0, 0, 0, 1}, {0, 0, 0} };  // identity
+// Report whether a reference-space type is enumerated by the runtime this frame.
+static bool referenceSpaceEnumerated(XrSession session, XrReferenceSpaceType want) {
+    uint32_t count = 0;
+    if (XR_FAILED(xrEnumerateReferenceSpaces(session, 0, &count, nullptr)) || count == 0) {
+        return false;
+    }
+    std::vector<XrReferenceSpaceType> spaces(count);
+    if (XR_FAILED(xrEnumerateReferenceSpaces(session, count, &count, spaces.data()))) {
+        return false;
+    }
+    for (XrReferenceSpaceType s : spaces) {
+        if (s == want) return true;
+    }
+    return false;
+}
 
-    XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, &_stageSpace);
+bool VROSceneRendererOpenXR::deriveFloorOffset(XrTime time, float *outOffsetY) {
+    // Emulate LOCAL_FLOOR (per the XR_EXT_local_floor spec text) by locating the
+    // STAGE space against LOCAL: STAGE's origin sits on the physical floor, so
+    // its Y in LOCAL is the negative floor height. Requires both spaces and a
+    // valid position this frame.
+    if (!referenceSpaceEnumerated(_session, XR_REFERENCE_SPACE_TYPE_STAGE) ||
+        !referenceSpaceEnumerated(_session, XR_REFERENCE_SPACE_TYPE_LOCAL)) {
+        return false;
+    }
+    XrSpace localSpace = XR_NULL_HANDLE, stageSpace = XR_NULL_HANDLE;
+    XrReferenceSpaceCreateInfo info = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
+    info.poseInReferenceSpace = { {0, 0, 0, 1}, {0, 0, 0} };
+    info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    if (XR_FAILED(xrCreateReferenceSpace(_session, &info, &localSpace))) {
+        return false;
+    }
+    info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    if (XR_FAILED(xrCreateReferenceSpace(_session, &info, &stageSpace))) {
+        xrDestroySpace(localSpace);
+        return false;
+    }
+
+    XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+    XrResult r = xrLocateSpace(stageSpace, localSpace, time, &loc);
+    xrDestroySpace(stageSpace);
+    xrDestroySpace(localSpace);
+
+    if (XR_FAILED(r) || !(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
+        return false;
+    }
+    // STAGE origin is on the floor; its Y in LOCAL is negative. The floor is
+    // that far below the eye-level origin.
+    *outOffsetY = -loc.pose.position.y;
+    return true;
+}
+
+bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
+                                                 XrSpace *outSpace,
+                                                 XrReferenceSpaceType *outType) {
+    XrReferenceSpaceCreateInfo spaceInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
+    spaceInfo.poseInReferenceSpace = { {0, 0, 0, 1}, {0, 0, 0} };  // identity
+
+    if (origin == VROTrackingOrigin::Floor) {
+        // Rung 1: native LOCAL_FLOOR when the runtime enumerates it.
+        if (_localFloorAvailable &&
+            referenceSpaceEnumerated(_session, XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR)) {
+            spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
+            XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
+            if (XR_SUCCEEDED(r)) {
+                *outType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
+                _floorOffsetY = 0.0f;
+                ALOGI("Reference space: LOCAL_FLOOR (native floor origin)");
+                return true;
+            }
+            ALOGW("LOCAL_FLOOR create failed (%d); falling back to STAGE emulation", r);
+        }
+        // Rung 2: emulate — offset a LOCAL space down to the STAGE floor height.
+        float offsetY = 0.0f;
+        if (deriveFloorOffset(_lastPredictedDisplayTime, &offsetY)) {
+            spaceInfo.referenceSpaceType   = XR_REFERENCE_SPACE_TYPE_LOCAL;
+            spaceInfo.poseInReferenceSpace.position.y = offsetY;
+            XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
+            if (XR_SUCCEEDED(r)) {
+                *outType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+                _floorOffsetY = offsetY;
+                ALOGI("Reference space: LOCAL offset %.3f m (STAGE-emulated floor)", offsetY);
+                return true;
+            }
+            ALOGW("Emulated floor space create failed (%d); staying eye-level", r);
+        } else {
+            // Rung 3: neither source available. Do not guess a human height —
+            // stay eye-level and let the JS layer report the downgrade.
+            ALOGW("Floor origin requested but neither LOCAL_FLOOR nor STAGE is "
+                  "available; staying eye-level");
+        }
+    }
+
+    // Eye origin (and every Floor fallthrough): plain LOCAL.
+    spaceInfo.referenceSpaceType   = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    spaceInfo.poseInReferenceSpace = { {0, 0, 0, 1}, {0, 0, 0} };
+    XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
     if (XR_FAILED(r)) {
         ALOGE("LOCAL reference space creation failed: %d", r);
         return false;
     }
-    ALOGV("Reference space created (LOCAL — eye-level origin)");
+    *outType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    _floorOffsetY = 0.0f;
+    ALOGI("Reference space: LOCAL (eye-level origin)");
     return true;
+}
+
+bool VROSceneRendererOpenXR::createReferenceSpace() {
+    // Default (Eye) matches every other Viro platform: origin at head level at
+    // session start. STAGE placed Y=0 on the floor (~1.6 m below the eye), which
+    // dropped content at world (0,0,-2) ~39° below the horizon on Quest 3. Floor
+    // origin is opt-in via setTrackingOrigin and resolved by buildReferenceSpace.
+    return buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
+}
+
+void VROSceneRendererOpenXR::setTrackingOrigin(VROTrackingOrigin origin) {
+    if (origin == _trackingOrigin && _appSpace != XR_NULL_HANDLE) {
+        return;
+    }
+    _trackingOrigin = origin;
+    // Cached only until session start when there is no live session yet.
+    if (_session == XR_NULL_HANDLE) {
+        return;
+    }
+    XrSpace newSpace = XR_NULL_HANDLE;
+    XrReferenceSpaceType newType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    if (!buildReferenceSpace(origin, &newSpace, &newType)) {
+        return;  // build logged; keep the existing space
+    }
+    XrSpace old = _appSpace;
+    _appSpace     = newSpace;
+    _appSpaceType = newType;
+    if (old != XR_NULL_HANDLE) {
+        xrDestroySpace(old);
+    }
 }
 
 bool VROSceneRendererOpenXR::createSwapchains() {
@@ -645,7 +765,18 @@ bool VROSceneRendererOpenXR::createSwapchains() {
     for (int64_t f : formats) {
         if (f == GL_SRGB8_ALPHA8_EXT) { chosenFormat = f; break; }
     }
-    ALOGV("Swapchain format: 0x%llx", (long long)chosenFormat);
+    ALOGI("Swapchain format: 0x%llx (%s)", (long long)chosenFormat,
+          chosenFormat == GL_SRGB8_ALPHA8_EXT ? "sRGB" : "linear RGBA8");
+
+    // The colour mode must track the format actually chosen, not a constant: an
+    // sRGB swapchain encodes gamma on write (render Linear), a plain RGBA8 one
+    // does not (render NonLinear, else the image is too dark). PICO firmware
+    // that enumerates no sRGB format takes the RGBA8 branch.
+    if (_openxrDriver) {
+        _openxrDriver->setColorRenderingMode(chosenFormat == GL_SRGB8_ALPHA8_EXT
+                                                 ? VROColorRenderingMode::Linear
+                                                 : VROColorRenderingMode::NonLinear);
+    }
 
     // Create one swapchain per eye
     for (uint32_t eye = 0; eye < 2; ++eye) {
@@ -965,9 +1096,9 @@ void VROSceneRendererOpenXR::destroySession() {
         _passthrough = XR_NULL_HANDLE;
     }
     destroySwapchains();
-    if (_stageSpace != XR_NULL_HANDLE) {
-        xrDestroySpace(_stageSpace);
-        _stageSpace = XR_NULL_HANDLE;
+    if (_appSpace != XR_NULL_HANDLE) {
+        xrDestroySpace(_appSpace);
+        _appSpace = XR_NULL_HANDLE;
     }
     if (_session != XR_NULL_HANDLE) {
         xrDestroySession(_session);
@@ -1100,10 +1231,10 @@ void VROSceneRendererOpenXR::recenterTracking() {
         return;
     }
 
-    // Locate head (VIEW) relative to the current stage space.
+    // Locate head (VIEW) relative to the current app space.
     // Use _lastPredictedDisplayTime so the pose is from the most recent frame.
     XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
-    xrLocateSpace(viewSpace, _stageSpace, _lastPredictedDisplayTime, &headLoc);
+    xrLocateSpace(viewSpace, _appSpace, _lastPredictedDisplayTime, &headLoc);
     xrDestroySpace(viewSpace);
 
     if (!(headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
@@ -1116,11 +1247,23 @@ void VROSceneRendererOpenXR::recenterTracking() {
     float yaw = atan2f(2.0f * (q.w * q.y + q.x * q.z),
                        1.0f - 2.0f * (q.y * q.y + q.z * q.z));
 
-    // Create a new LOCAL space centered at current head XZ position, facing forward.
+    // Rebuild the same origin type at the current head XZ and yaw. The vertical
+    // origin is preserved per mode: eye-level keeps y=0; native LOCAL_FLOOR
+    // keeps the floor at y=0; the emulated floor re-derives the STAGE offset now
+    // (the user may have moved to a different floor height).
     XrReferenceSpaceCreateInfo spaceInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
-    spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    spaceInfo.referenceSpaceType = _appSpaceType;
+    float originY = 0.0f;
+    if (_appSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL &&
+        _trackingOrigin == VROTrackingOrigin::Floor) {
+        float offsetY = 0.0f;
+        if (deriveFloorOffset(_lastPredictedDisplayTime, &offsetY)) {
+            _floorOffsetY = offsetY;
+        }
+        originY = _floorOffsetY;  // keep the last good offset if this probe missed
+    }
     spaceInfo.poseInReferenceSpace.position    = { headLoc.pose.position.x,
-                                                    0.0f,
+                                                    originY,
                                                     headLoc.pose.position.z };
     spaceInfo.poseInReferenceSpace.orientation = { 0.0f,
                                                     sinf(yaw * 0.5f),
@@ -1129,9 +1272,9 @@ void VROSceneRendererOpenXR::recenterTracking() {
 
     XrSpace newSpace = XR_NULL_HANDLE;
     if (XR_SUCCEEDED(xrCreateReferenceSpace(_session, &spaceInfo, &newSpace))) {
-        xrDestroySpace(_stageSpace);
-        _stageSpace = newSpace;
-        ALOGV("recenterTracking: recentered (yaw=%.2f rad)", yaw);
+        xrDestroySpace(_appSpace);
+        _appSpace = newSpace;
+        ALOGV("recenterTracking: recentered (yaw=%.2f rad, originY=%.3f)", yaw, originY);
     } else {
         ALOGE("recenterTracking: xrCreateReferenceSpace failed");
     }
@@ -1204,9 +1347,31 @@ void VROSceneRendererOpenXR::pollEvents() {
                 handleSessionStateChange(stateEvent);
                 break;
             }
-            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
-                ALOGV("Reference space change pending — content may shift");
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
+                // The runtime is recentering our reference-space type (e.g. the
+                // user long-pressed Home on PICO / held the Oculus button). The
+                // pose we located content against is about to move, so rebuild
+                // the app space to match — otherwise the world stays pinned to
+                // the pre-recenter origin and drifts off from the user.
+                auto *changeEvent =
+                    reinterpret_cast<XrEventDataReferenceSpaceChangePending *>(&event);
+                if (changeEvent->referenceSpaceType == _appSpaceType &&
+                    _session != XR_NULL_HANDLE) {
+                    XrSpace rebuilt = XR_NULL_HANDLE;
+                    XrReferenceSpaceType rebuiltType = _appSpaceType;
+                    if (buildReferenceSpace(_trackingOrigin, &rebuilt, &rebuiltType)) {
+                        XrSpace old = _appSpace;
+                        _appSpace     = rebuilt;
+                        _appSpaceType = rebuiltType;
+                        if (old != XR_NULL_HANDLE) xrDestroySpace(old);
+                        ALOGI("Reference space rebuilt after runtime recenter");
+                    }
+                } else {
+                    ALOGV("Reference space change pending (type %d) — ignored",
+                          (int)changeEvent->referenceSpaceType);
+                }
                 break;
+            }
             case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
                 ALOGE("Instance loss pending — shutting down");
                 _running = false;
@@ -1279,7 +1444,7 @@ void VROSceneRendererOpenXR::renderFrame() {
     XrViewLocateInfo locateInfo = { XR_TYPE_VIEW_LOCATE_INFO };
     locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     locateInfo.displayTime            = frameState.predictedDisplayTime;
-    locateInfo.space                  = _stageSpace;
+    locateInfo.space                  = _appSpace;
 
     XrViewState viewState = { XR_TYPE_VIEW_STATE };
     uint32_t    viewCount = 2;
@@ -1335,7 +1500,7 @@ void VROSceneRendererOpenXR::renderFrame() {
 
         // Process input after prepareFrame so the camera is valid for hit-testing.
         if (_inputController && _renderer && _renderer->hasRenderContext()) {
-            _inputController->onProcess(_session, _stageSpace,
+            _inputController->onProcess(_session, _appSpace,
                                          frameState.predictedDisplayTime,
                                          _renderer->getCamera());
         }
@@ -1379,7 +1544,7 @@ void VROSceneRendererOpenXR::renderFrame() {
     // Projection layer (3D scene)
     XrCompositionLayerProjection projLayer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     if (viewsValid && frameState.shouldRender) {
-        projLayer.space      = _stageSpace;
+        projLayer.space      = _appSpace;
         projLayer.viewCount  = 2;
         projLayer.views      = projViews.data();
         // When passthrough is on, the scene is rendered with a transparent clear

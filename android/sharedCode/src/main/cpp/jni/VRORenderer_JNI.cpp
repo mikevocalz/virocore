@@ -173,6 +173,18 @@ VRO_METHOD(void, nativeSetHandTrackingEnabled)(VRO_ARGS
     }
 }
 
+VRO_METHOD(void, nativeSetTrackingOrigin)(VRO_ARGS
+                                          jlong rendererRef,
+                                          jboolean floor) {
+    auto base = Renderer::native(rendererRef);
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(base);
+    if (xrRenderer) {
+        xrRenderer->setTrackingOrigin(
+            floor ? VROSceneRendererOpenXR::VROTrackingOrigin::Floor
+                  : VROSceneRendererOpenXR::VROTrackingOrigin::Eye);
+    }
+}
+
 // PICO support (expo-pico fork): apply a fixed-foveation level. level maps to
 // VROFoveationLevel (0=OFF,1=LOW,2=MEDIUM,3=HIGH). No-op on non-foveation runtimes.
 VRO_METHOD(void, nativeSetFoveationLevel)(VRO_ARGS
