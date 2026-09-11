@@ -159,9 +159,15 @@ docs/PICO-SUPPORT.md and docs/pico/.
 - `xrCreateInstance` / `xrGetSystem` failures now log the real `XrResult`.
 - **16KB page alignment (Android 15 / SDK 35, fixes ReactVision/viro#485)** —
   inherited from upstream develop: NDK r27.1 (16KB-aligned `libc++_shared.so`),
-  `-Wl,-z,max-page-size=16384`, and the vendored OpenXR loader 1.1.49 whose
+  `-Wl,-z,max-page-size=16384`, and the vendored OpenXR loader 1.1.62 whose
   arm64-v8a `libopenxr_loader.so` is 16KB-aligned. `scripts/verify-16kb-alignment.py`
   gates the build/CI so a misaligned AAR can never be published.
+- **OpenXR loader + headers bumped 1.1.49 → 1.1.62** (matches the dependabot bump
+  in ReactVision/virocore#356). Both the linked loader and the vendored headers
+  under `cpp/include/openxr` move together, so there is no header/loader skew, and
+  the stale 1.1.38 loader AAR is removed from the tree. 1.1.62 carries the current
+  ByteDance/PICO interaction-profile registry (Neo3 / 4 / 4 Ultra `pico4s` /
+  `pico_ultra_controller_bd` / G3).
 
 ### Not yet wired (flagged, follow-up)
 - Eye-tracked foveation (`XR_META_foveation_eye_tracked`) — detected only;

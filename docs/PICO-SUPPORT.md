@@ -77,7 +77,7 @@ symbols, so removing it crashes at launch with `UnsatisfiedLinkError`.
   whose `libc++_shared.so` is 16KB-aligned.
 - `-Wl,-z,max-page-size=16384` linker flag (CMakeLists) — makes
   `libviro_renderer.so` and every lib we compile 16KB-aligned.
-- OpenXR loader at **1.1.49**, vendored in `android/openxr_sdk/maven/` — its
+- OpenXR loader at **1.1.62**, vendored in `android/openxr_sdk/maven/` — its
   arm64-v8a `libopenxr_loader.so` reports `PT_LOAD` align `0x4000` (verified by
   parsing the vendored AAR's ELF headers).
 
@@ -91,7 +91,7 @@ provably never publish a misaligned AAR the way upstream did. Verified to flag
 the exact two libs from #485 on the upstream artifact.
 
 **Loader is vendored.** The local Maven mirror under
-`android/openxr_sdk/maven/` carries 1.1.49, which the build resolves offline —
+`android/openxr_sdk/maven/` carries 1.1.62, which the build resolves offline —
 no population step needed. To bump the loader later, mirror the new version
 into that directory from `repo1.maven.org` and update the pin in
 `android/viroreact/build.gradle`, then re-run the alignment gate.
