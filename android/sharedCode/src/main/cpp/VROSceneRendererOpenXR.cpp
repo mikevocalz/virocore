@@ -10,7 +10,9 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cstdio>
 #include <string>
+#include <vector>
 
 #include "VRORendererConfiguration.h"
 #include "VRODriverOpenGLAndroidOpenXR.h"
@@ -353,6 +355,7 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     strncpy(appInfo.engineName, "ViroRenderer", XR_MAX_ENGINE_NAME_SIZE);
     appInfo.engineVersion      = 1;
     appInfo.apiVersion         = XR_CURRENT_API_VERSION;
+    _requestedApiVersion       = appInfo.apiVersion;  // captured for diagnostics
 
     XrInstanceCreateInfo createInfo = { XR_TYPE_INSTANCE_CREATE_INFO };
     // Only chain XrInstanceCreateInfoAndroidKHR when the extension is enabled.
@@ -566,6 +569,11 @@ bool VROSceneRendererOpenXR::createSession() {
 
     if (!createReferenceSpace()) return false;
     if (!createSwapchains())    return false;
+
+    // "Facts before code": one-shot dump of the runtime's actual capabilities
+    // (reference spaces, swapchain formats, requested API version, refresh
+    // rates, negotiated extensions) on first device boot. Pure logging.
+    logRuntimeDiagnostics();
 
     // Try to enable passthrough (optional — graceful degradation if unavailable)
     initPassthrough();
@@ -818,6 +826,120 @@ bool VROSceneRendererOpenXR::createSwapchains() {
         }
     }
     return true;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Runtime diagnostics (one-shot, pure logging — no state change)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Human-readable name for a reference-space type; numeric fallback for anything
+// this build does not recognise. `scratch` backs the numeric case.
+static const char *xrReferenceSpaceName(XrReferenceSpaceType type,
+                                        char *scratch, size_t scratchLen) {
+    switch (type) {
+        case XR_REFERENCE_SPACE_TYPE_VIEW:        return "VIEW";
+        case XR_REFERENCE_SPACE_TYPE_LOCAL:       return "LOCAL";
+        case XR_REFERENCE_SPACE_TYPE_STAGE:       return "STAGE";
+        case XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR: return "LOCAL_FLOOR";
+        default:
+            snprintf(scratch, scratchLen, "0x%x", (unsigned)type);
+            return scratch;
+    }
+}
+
+void VROSceneRendererOpenXR::logRuntimeDiagnostics() {
+    // ── Runtime identity + API versions ───────────────────────────────────────
+    ALOGI("[XR-DIAG] runtime=\"%s\" vendor=%d runtimeVersion=%u.%u.%u requestedApi=%u.%u.%u",
+          _runtimeInfo.runtimeName, (int)_runtimeInfo.vendor,
+          _runtimeInfo.apiMajor, _runtimeInfo.apiMinor, _runtimeInfo.apiPatch,
+          (unsigned)XR_VERSION_MAJOR(_requestedApiVersion),
+          (unsigned)XR_VERSION_MINOR(_requestedApiVersion),
+          (unsigned)XR_VERSION_PATCH(_requestedApiVersion));
+
+    // ── Enumerated reference spaces ───────────────────────────────────────────
+    {
+        uint32_t count = 0;
+        bool localFloorPresent = false;
+        if (XR_SUCCEEDED(xrEnumerateReferenceSpaces(_session, 0, &count, nullptr)) &&
+            count > 0) {
+            std::vector<XrReferenceSpaceType> spaces(count);
+            if (XR_SUCCEEDED(xrEnumerateReferenceSpaces(_session, count, &count,
+                                                        spaces.data()))) {
+                for (XrReferenceSpaceType s : spaces) {
+                    char scratch[16];
+                    ALOGI("[XR-DIAG] reference space: %s",
+                          xrReferenceSpaceName(s, scratch, sizeof(scratch)));
+                    if (s == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR) {
+                        localFloorPresent = true;
+                    }
+                }
+            }
+        } else {
+            ALOGI("[XR-DIAG] reference spaces: none enumerated");
+        }
+        ALOGI("[XR-DIAG] LOCAL_FLOOR present: %s", localFloorPresent ? "yes" : "no");
+    }
+
+    // ── Enumerated swapchain formats ──────────────────────────────────────────
+    // createSwapchains() logs the exact value it selected; here we dump the full
+    // list the runtime offered and note which branch the chooser would take.
+    {
+        uint32_t fmtCount = 0;
+        xrEnumerateSwapchainFormats(_session, 0, &fmtCount, nullptr);
+        std::vector<int64_t> formats(fmtCount);
+        if (fmtCount > 0) {
+            xrEnumerateSwapchainFormats(_session, fmtCount, &fmtCount, formats.data());
+        }
+        bool haveSrgb = false;
+        for (int64_t f : formats) {
+            ALOGI("[XR-DIAG] swapchain format: 0x%llx", (long long)f);
+            if (f == GL_SRGB8_ALPHA8_EXT) haveSrgb = true;
+        }
+        ALOGI("[XR-DIAG] swapchain format chosen: %s",
+              haveSrgb ? "GL_SRGB8_ALPHA8_EXT" : "GL_RGBA8");
+    }
+
+    // ── Capability flags (already tracked; read, do not recompute) ────────────
+    auto yn = [](bool b) { return b ? "yes" : "no"; };
+    ALOGI("[XR-DIAG] caps: localFloor=%s handTracking=%s handAim=%s passthrough=%s "
+          "planeDetection=%s fbScene=%s eyeGaze=%s foveation=%s displayRefreshRate=%s",
+          yn(_localFloorAvailable), yn(_runtimeInfo.handTrackingAvailable),
+          yn(_runtimeInfo.handAimExtAvailable), yn(_runtimeInfo.passthroughAvailable),
+          yn(_planeDetectionAvailable), yn(_fbSceneAvailable), yn(_eyeGazeAvailable),
+          yn(_foveationAvailable), yn(_runtimeInfo.displayRefreshRateAvailable));
+
+    // ── Display refresh rates (XR_FB_display_refresh_rate) ────────────────────
+    // Read-only: enumerate + current. Never xrRequestDisplayRefreshRateFB — that
+    // would change device state, and this is diagnostics.
+    if (_runtimeInfo.displayRefreshRateAvailable) {
+        PFN_xrEnumerateDisplayRefreshRatesFB pfnEnumRates = nullptr;
+        PFN_xrGetDisplayRefreshRateFB        pfnGetRate   = nullptr;
+        xrGetInstanceProcAddr(_instance, "xrEnumerateDisplayRefreshRatesFB",
+                              (PFN_xrVoidFunction *)&pfnEnumRates);
+        xrGetInstanceProcAddr(_instance, "xrGetDisplayRefreshRateFB",
+                              (PFN_xrVoidFunction *)&pfnGetRate);
+        if (pfnEnumRates) {
+            uint32_t rateCount = 0;
+            if (XR_SUCCEEDED(pfnEnumRates(_session, 0, &rateCount, nullptr)) &&
+                rateCount > 0) {
+                std::vector<float> rates(rateCount);
+                if (XR_SUCCEEDED(pfnEnumRates(_session, rateCount, &rateCount,
+                                              rates.data()))) {
+                    for (float r : rates) {
+                        ALOGI("[XR-DIAG] display refresh rate: %.2f Hz", r);
+                    }
+                }
+            }
+        }
+        if (pfnGetRate) {
+            float current = 0.0f;
+            if (XR_SUCCEEDED(pfnGetRate(_session, &current))) {
+                ALOGI("[XR-DIAG] display refresh rate current: %.2f Hz", current);
+            }
+        }
+    } else {
+        ALOGI("[XR-DIAG] display refresh rate: ext absent");
+    }
 }
 
 // ── Foveation (XR_FB_foveation) ───────────────────────────────────────────────
@@ -1376,6 +1498,13 @@ void VROSceneRendererOpenXR::pollEvents() {
                 ALOGE("Instance loss pending — shutting down");
                 _running = false;
                 break;
+            case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
+                // A controller pick-up / put-down (or hand-tracking handoff)
+                // rebinds the active profile. Re-log so [XR-DIAG] reflects it.
+                if (_inputController) {
+                    _inputController->logActiveInteractionProfiles(_session);
+                }
+                break;
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB:
@@ -1407,6 +1536,15 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
             ALOGV("Session began");
             break;
         }
+        case XR_SESSION_STATE_FOCUSED:
+            // The runtime binds an interaction profile only once the app is
+            // focused. Log the active profiles the first time we reach FOCUSED;
+            // XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED handles rebinds.
+            if (!_loggedFocusProfiles && _inputController) {
+                _inputController->logActiveInteractionProfiles(_session);
+                _loggedFocusProfiles = true;
+            }
+            break;
         case XR_SESSION_STATE_STOPPING:
             XR_CHECK(xrEndSession(_session));
             _sessionRunning = false;

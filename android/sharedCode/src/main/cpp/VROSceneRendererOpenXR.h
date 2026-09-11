@@ -173,6 +173,10 @@ private:
     XrInstance      _instance   = XR_NULL_HANDLE;
     XrSystemId      _systemId   = XR_NULL_SYSTEM_ID;
     XrSession       _session    = XR_NULL_HANDLE;
+    // The XrApplicationInfo::apiVersion actually requested at xrCreateInstance.
+    // Captured so logRuntimeDiagnostics() can report it verbatim (there is no
+    // fallback negotiation — it is simply XR_CURRENT_API_VERSION).
+    XrVersion       _requestedApiVersion = 0;
     // The reference space every subsystem (input, projection layer, plane
     // sources) resolves against. Its type follows _trackingOrigin: LOCAL for
     // Eye, LOCAL_FLOOR or an offset LOCAL for Floor. _appSpaceType records what
@@ -185,6 +189,10 @@ private:
     // Y offset (metres, >= 0) of the physical floor below the LOCAL origin, used
     // by the STAGE-emulation rung. Re-derived at session start and on recenter.
     float                _floorOffsetY = 0.0f;
+
+    // Log the active interaction profiles only on the first entry to FOCUSED;
+    // the INTERACTION_PROFILE_CHANGED event handles subsequent rebinds.
+    bool            _loggedFocusProfiles      = false;
 
     XrSessionState  _sessionState             = XR_SESSION_STATE_UNKNOWN;
     XrTime          _lastPredictedDisplayTime = 0;  // updated each frame; used by recenterTracking()
@@ -253,6 +261,9 @@ private:
     bool createSession();        // xrCreateSession with GLES binding
     bool createReferenceSpace();
     bool createSwapchains();
+    // One-shot runtime facts dump (ALOGI, "[XR-DIAG]" prefix). Pure logging, no
+    // state change. Called once after createSwapchains() succeeds.
+    void logRuntimeDiagnostics();
     bool initPassthrough();
     bool initHandTracking();     // XR_EXT_hand_tracking — no-op if extension unavailable
     void destroySwapchains();

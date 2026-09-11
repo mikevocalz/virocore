@@ -17,6 +17,7 @@
 #define LOG_TAG "VROInputOpenXR"
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR,   LOG_TAG, __VA_ARGS__)
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN,    LOG_TAG, __VA_ARGS__)
+#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO,    LOG_TAG, __VA_ARGS__)
 #define ALOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
 
 static constexpr float kTriggerThreshold   = 0.5f;
@@ -69,6 +70,7 @@ VROInputControllerOpenXR::~VROInputControllerOpenXR() {
 bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession session,
                                                bool eyeGazeSupported) {
     _eyeGazeEnabled = eyeGazeSupported;
+    _instance       = instance;  // captured for logActiveInteractionProfiles()
 
     // ── 1. Create action set ──────────────────────────────────────────────────
     XrActionSetCreateInfo asInfo = { XR_TYPE_ACTION_SET_CREATE_INFO };
@@ -252,6 +254,33 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
 
     ALOGV("OpenXR action set created and attached (M2 — full dual-controller)");
     return true;
+}
+
+void VROInputControllerOpenXR::logActiveInteractionProfiles(XrSession session) {
+    if (_instance == XR_NULL_HANDLE) {
+        return;  // createActionSet not yet run — nothing to query against
+    }
+    static const char *const kHands[] = { "/user/hand/left", "/user/hand/right" };
+    for (const char *hand : kHands) {
+        XrPath handPath = XR_NULL_PATH;
+        if (XR_FAILED(xrStringToPath(_instance, hand, &handPath))) {
+            continue;
+        }
+        XrInteractionProfileState state = { XR_TYPE_INTERACTION_PROFILE_STATE };
+        if (XR_FAILED(xrGetCurrentInteractionProfile(session, handPath, &state))) {
+            continue;
+        }
+        if (state.interactionProfile == XR_NULL_PATH) {
+            ALOGI("[XR-DIAG] active profile %s: none bound yet", hand);
+            continue;
+        }
+        char     buf[XR_MAX_PATH_LENGTH] = {0};
+        uint32_t len = 0;
+        if (XR_SUCCEEDED(xrPathToString(_instance, state.interactionProfile,
+                                        sizeof(buf), &len, buf))) {
+            ALOGI("[XR-DIAG] active profile %s: %s", hand, buf);
+        }
+    }
 }
 
 void VROInputControllerOpenXR::destroySpaces() {

@@ -87,6 +87,15 @@ public:
     void triggerHaptic(XrSession session, int hand,
                        float amplitude = 0.5f, float durationSec = 0.05f);
 
+    /*
+     * One-shot diagnostics: log the interaction profile the runtime has bound to
+     * /user/hand/left and /user/hand/right (ALOGI, "[XR-DIAG]" prefix), or
+     * "none bound yet" when unbound. Pure logging; no state change. Meaningful
+     * only once the session is focused. Uses the instance captured in
+     * createActionSet() for xrPathToString.
+     */
+    void logActiveInteractionProfiles(XrSession session);
+
     VROVector3f getDragForwardOffset() override;
 
     std::string getHeadset()    override { return "quest"; }
@@ -121,6 +130,9 @@ private:
     std::vector<std::pair<int, VROEventDelegate::ClickState>> _pendingButtons;
 
     // ── Action set ────────────────────────────────────────────────────────────
+    // Instance captured in createActionSet(); needed by xrStringToPath /
+    // xrPathToString in logActiveInteractionProfiles(). Non-owning.
+    XrInstance  _instance  = XR_NULL_HANDLE;
     XrActionSet _actionSet = XR_NULL_HANDLE;
 
     // ── Aim pose actions (one per hand) ──────────────────────────────────────
