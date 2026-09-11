@@ -71,15 +71,15 @@ still 4KB-aligned (`0x1000`), causing Play Console `.aab` rejection. You can't
 work around it by stripping the loader — `libviro_renderer.so` hard-links OpenXR
 symbols, so removing it crashes at launch with `UnsatisfiedLinkError`.
 
-**Why the fork fixes it automatically.** virocore's *source* build config at
-v2.56.0 is already correct — it's only the upstream *published binary* that was
-stale. Specifically:
-- NDK pinned to **r27.2** — first NDK whose `libc++_shared.so` is 16KB-aligned.
+**Why the fork fixes it automatically.** Since the rebase onto upstream
+`develop` (post-2.58.1), upstream's own build config already handles alignment:
+- NDK pinned to **r27.1** (`27.1.12297006`) tree-wide — r27 is the first NDK
+  whose `libc++_shared.so` is 16KB-aligned.
 - `-Wl,-z,max-page-size=16384` linker flag (CMakeLists) — makes
   `libviro_renderer.so` and every lib we compile 16KB-aligned.
-- OpenXR loader bumped to **1.1.60** — Khronos switched the Android loader to
-  16KB pages in 1.1.57; 1.1.38 (what the stale AAR bundled) was 4KB. 1.1.60 also
-  carries newer ByteDance/PICO controller XML fixes (e.g. `pico_g3_controller`).
+- OpenXR loader at **1.1.49**, vendored in `android/openxr_sdk/maven/` — its
+  arm64-v8a `libopenxr_loader.so` reports `PT_LOAD` align `0x4000` (verified by
+  parsing the vendored AAR's ELF headers).
 
 Because the fork **rebuilds** the AAR from this source, the output is
 16KB-aligned. We don't inherit the stale binary.
@@ -90,20 +90,11 @@ arm64-v8a `.so` in the built AAR and fails the build if any `PT_LOAD` segment is
 provably never publish a misaligned AAR the way upstream did. Verified to flag
 the exact two libs from #485 on the upstream artifact.
 
-**Populate the loader before building.** The local Maven mirror under
-`android/openxr_sdk/maven/` only carries 1.1.38. The build resolves 1.1.60 from
-`mavenCentral()` (already in the repo list), but to keep the build hermetic you
-can mirror it locally:
-
-```bash
-VER=1.1.60
-DIR=android/openxr_sdk/maven/org/khronos/openxr/openxr_loader_for_android/$VER
-mkdir -p "$DIR"
-curl -L -o "$DIR/openxr_loader_for_android-$VER.aar" \
-  "https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/$VER/openxr_loader_for_android-$VER.aar"
-curl -L -o "$DIR/openxr_loader_for_android-$VER.pom" \
-  "https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/$VER/openxr_loader_for_android-$VER.pom"
-```
+**Loader is vendored.** The local Maven mirror under
+`android/openxr_sdk/maven/` carries 1.1.49, which the build resolves offline —
+no population step needed. To bump the loader later, mirror the new version
+into that directory from `repo1.maven.org` and update the pin in
+`android/viroreact/build.gradle`, then re-run the alignment gate.
 
 **Consumer side.** In the app, set `android.packagingOptions.jniLibs.useLegacyPackaging = false`
 (the default on AGP 8+ / `compileSdk 35`) so libs are page-aligned and loaded
