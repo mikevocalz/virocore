@@ -185,6 +185,9 @@ private:
     XrSpace              _appSpace     = XR_NULL_HANDLE;
     XrReferenceSpaceType _appSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     VROTrackingOrigin    _trackingOrigin = VROTrackingOrigin::Eye;
+    // True once JS calls setTrackingOrigin. Until then a PICO runtime defaults
+    // to Floor in createReferenceSpace; an explicit JS choice always wins.
+    bool                 _trackingOriginExplicit = false;
     bool                 _localFloorAvailable = false;  // XR_EXT_local_floor negotiated
     // Y offset (metres, >= 0) of the physical floor below the LOCAL origin, used
     // by the STAGE-emulation rung. Re-derived at session start and on recenter.

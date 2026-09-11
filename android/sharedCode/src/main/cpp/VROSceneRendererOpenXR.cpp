@@ -722,10 +722,22 @@ bool VROSceneRendererOpenXR::createReferenceSpace() {
     // session start. STAGE placed Y=0 on the floor (~1.6 m below the eye), which
     // dropped content at world (0,0,-2) ~39° below the horizon on Quest 3. Floor
     // origin is opt-in via setTrackingOrigin and resolved by buildReferenceSpace.
+    //
+    // PICO exception: unless JS has explicitly chosen an origin, a PICO runtime
+    // defaults to Floor. PICO is a standing/room-scale-first platform and its
+    // 4 Ultra enumerates a native LOCAL_FLOOR (verified on device), so floor
+    // origin here is the true physical floor — not a guessed head-height offset.
+    // Quest stays Eye for upstream parity (this only trips when the vendor probe
+    // says PICO). A `trackingOrigin` prop from JS still wins via _explicit.
+    if (!_trackingOriginExplicit && _runtimeInfo.vendor == VROOpenXRVendor::PICO) {
+        _trackingOrigin = VROTrackingOrigin::Floor;
+        ALOGI("[XR-DIAG] PICO detected — defaulting tracking origin to Floor");
+    }
     return buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
 }
 
 void VROSceneRendererOpenXR::setTrackingOrigin(VROTrackingOrigin origin) {
+    _trackingOriginExplicit = true;
     if (origin == _trackingOrigin && _appSpace != XR_NULL_HANDLE) {
         return;
     }
