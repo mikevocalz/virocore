@@ -30,6 +30,8 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <utility>
+#include <vector>
 #include <openxr/openxr.h>
 #include "VROInputControllerBase.h"
 #include "VROInputType.h"
@@ -84,20 +86,6 @@ public:
                source == ViroOculus::LeftGrip || source == ViroOculus::RightGrip;
     }
 
-    // A / right-grip drags follow the right aim pose; X / Y / left-grip
-    // follow the left. onMove fires per-hand, so this pins the drag to the
-    // initiating hand instead of flip-flopping between both rays.
-    int getDragPoseSource(int source) override {
-        switch (source) {
-            case ViroOculus::XButton:
-            case ViroOculus::YButton:
-            case ViroOculus::LeftGrip:
-            case ViroOculus::LeftController:
-                return ViroOculus::LeftController;
-            default:
-                return ViroOculus::Controller;
-        }
-    }
 
     void onProcess(XrSession session, XrSpace baseSpace,
                    XrTime time, const VROCamera &camera);
@@ -135,7 +123,21 @@ protected:
     std::shared_ptr<VROInputPresenter> createPresenter(
         std::shared_ptr<VRODriver> driver) override;
 
+    /*
+     * Buttons ride their hand's aim ray: grip / A / thumbstick → Controller,
+     * grip / X / Y / thumbstick → LeftController. BackButton is shared by B
+     * and Menu, so it stays unmapped.
+     */
+    int rayForSource(int source) const override;
+
 private:
+    /*
+     * Buttons and gestures are polled before this frame's hit update, so
+     * their edges are queued and flushed at the end of onProcess.
+     */
+    void queueButtonEvent(int source, VROEventDelegate::ClickState state);
+    std::vector<std::pair<int, VROEventDelegate::ClickState>> _pendingButtons;
+
     // ── Action set ────────────────────────────────────────────────────────────
     XrActionSet _actionSet = XR_NULL_HANDLE;
 

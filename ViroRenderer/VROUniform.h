@@ -30,11 +30,15 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include "VRODefines.h"
+#include "VROVector2f.h"
 #include "VROVector3f.h"
 #include "VROVector4f.h"
 #include "VROMatrix4f.h"
 #include "VROLog.h"
+#if !VRO_METAL
 #include "VROOpenGL.h"
+#endif
 
 static const float kInitialValue = -9999;
 
@@ -99,6 +103,14 @@ public:
         //sublcass to reset any cached value
     }
     
+    void setVec2(VROVector2f value) {
+        if (_location == -1) {
+            return;
+        }
+        float array[2] = { value.x, value.y };
+        set(array);
+    }
+
     void setVec3(VROVector3f value) {
         if (_location == -1) {
             return;
@@ -126,7 +138,9 @@ public:
         if (_location == -1) {
             return;
         }
+#if !VRO_METAL
         GL( glUniform1i(_location, value) );
+#endif
     }
     
     void setFloat(float value) {
@@ -147,6 +161,8 @@ private:
     const std::string _name;
     
 };
+
+#if !VRO_METAL
 
 class VROUniform1i: public VROUniform {
 public:
@@ -407,6 +423,8 @@ private:
     GLfloat _curValue[16];
     
 };
+
+#endif  // !VRO_METAL
 
 class VROUniformBinder {
 public:

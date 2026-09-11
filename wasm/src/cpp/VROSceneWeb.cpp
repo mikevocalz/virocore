@@ -43,12 +43,14 @@
 #include "VROParticleModifier.h"
 #include "VROMaterial.h"
 #include "VROMaterialVisual.h"
+#include "VROShaderModifier.h"
 #include "VROTexture.h"
 #include "VROData.h"
 #include "VROTransaction.h"
 #include "VROEventDelegate.h"
 #include "VROGLTFLoader.h"
 #include "VROFBXLoader.h"
+#include "VROOBJLoader.h"
 #include "VROHDRLoader.h"
 #include "VROModelIOUtil.h"
 #include "VROExecutableAnimation.h"
@@ -59,6 +61,7 @@
 
 #include <unordered_map>
 #include <vector>
+#include <sstream>
 
 static VROSceneWeb *sInstance = nullptr;
 
@@ -268,7 +271,8 @@ void VROSceneWeb::drawFrame() {
     }
 
     VROFieldOfView fov = _renderer->computeUserFieldOfView(viewport.getWidth(), viewport.getHeight());
-    VROMatrix4f projection = fov.toPerspectiveProjection(kZNear, _renderer->getFarClippingPlane());
+    VROMatrix4f projection = _renderer->computeProjection(viewport.getWidth(), viewport.getHeight(),
+                                                         kZNear, _renderer->getFarClippingPlane());
 
     // Give the input controller the same view/projection/viewport used to render
     // this frame, so screen touches unproject into matching world rays.
@@ -766,6 +770,98 @@ static void viroSetMaterialReadsFromDepthBuffer(int material, bool reads) {
     if (auto m = getMaterial(material)) m->setReadsFromDepthBuffer(reads);
 }
 
+// entryPoint: "geometry"|"vertex"|"surface"|"fragment"|"lightingModel"|"image".
+// Mirrors parseShaderEntryPoint in capi/Material_JNI.cpp (kept local rather than
+// reused across that file's JNI macros, since this file has no JNI dependency
+// otherwise); unknown names fall back to Fragment, same as the JNI side.
+static VROShaderEntryPoint webParseShaderEntryPoint(const std::string &name) {
+    if (name == "geometry") return VROShaderEntryPoint::Geometry;
+    if (name == "vertex") return VROShaderEntryPoint::Vertex;
+    if (name == "surface") return VROShaderEntryPoint::Surface;
+    if (name == "fragment") return VROShaderEntryPoint::Fragment;
+    if (name == "lightingModel") return VROShaderEntryPoint::LightingModel;
+    if (name == "image") return VROShaderEntryPoint::Image;
+    pwarn("viroAddMaterialShaderModifier: unknown entry point [%s], defaulting to Fragment", name.c_str());
+    return VROShaderEntryPoint::Fragment;
+}
+
+// shaderCode is the modifier body, with any `uniforms` block already prepended
+// by the JS bridge (same convention as MaterialManager.java's
+// parseShaderModifiers: uniforms + "\n" + body) — this API takes one blob of
+// GLSL text and splits it into lines the way VROShaderModifier expects.
+// varyings is an optional JS array of strings; pass undefined/null for none.
+static void viroAddMaterialShaderModifier(int material, std::string entryPoint, std::string shaderCode,
+                                           emscripten::val varyings,
+                                           bool requiresSceneDepth, bool requiresCameraTexture) {
+    auto m = getMaterial(material);
+    if (!m) return;
+
+    VROShaderEntryPoint entry = webParseShaderEntryPoint(entryPoint);
+
+    std::vector<std::string> lines;
+    std::stringstream ss(shaderCode);
+    std::string line;
+    while (std::getline(ss, line)) {
+        lines.push_back(line);
+    }
+
+    std::vector<std::string> varyingsVec;
+    if (!varyings.isNull() && !varyings.isUndefined()) {
+        int len = varyings["length"].as<int>();
+        for (int i = 0; i < len; i++) {
+            varyingsVec.push_back(varyings[i].as<std::string>());
+        }
+    }
+
+    // Match the JNI side: shader modifiers are added synchronously, so disable
+    // thread-restriction the same way the immutable-material constructor does.
+    m->setThreadRestrictionEnabled(false);
+    auto modifier = std::make_shared<VROShaderModifier>(entry, lines);
+    if (!varyingsVec.empty()) {
+        modifier->setVaryings(varyingsVec);
+    }
+    modifier->setRequiresSceneDepth(requiresSceneDepth);
+    modifier->setRequiresCameraTexture(requiresCameraTexture);
+    m->addShaderModifier(modifier);
+    m->setThreadRestrictionEnabled(true);
+}
+static void viroRemoveAllMaterialShaderModifiers(int material) {
+    if (auto m = getMaterial(material)) m->removeAllShaderModifiers();
+}
+
+// Dynamic shader-uniform updates (ViroMaterials.updateShaderUniform). Mirrors
+// MaterialManager.java's updateShaderUniform: it does the type-string
+// dispatch itself (float/vec3/vec4/mat4/sampler2D — there is no vec2 here,
+// matching the native bridge, which has no VROMaterial vec2 overload either)
+// and calls straight into VROMaterial::setShaderUniform. That just stores the
+// value in a map on the material; VROMaterialShaderBinding::bindMaterialUniforms
+// re-pushes every entry to the GL uniform of the same name every frame, so
+// there's no per-frame work to do here and no thread hop needed (this file is
+// synchronous, unlike the JNI/ObjC bridges these mirror).
+static void viroSetMaterialShaderUniformFloat(int material, std::string name, float value) {
+    if (auto m = getMaterial(material)) m->setShaderUniform(name, value);
+}
+static void viroSetMaterialShaderUniformVec2(int material, std::string name, float x, float y) {
+    if (auto m = getMaterial(material)) m->setShaderUniform(name, VROVector2f(x, y));
+}
+static void viroSetMaterialShaderUniformVec3(int material, std::string name, float x, float y, float z) {
+    if (auto m = getMaterial(material)) m->setShaderUniform(name, VROVector3f(x, y, z));
+}
+static void viroSetMaterialShaderUniformVec4(int material, std::string name, float x, float y, float z, float w) {
+    if (auto m = getMaterial(material)) m->setShaderUniform(name, VROVector4f(x, y, z, w));
+}
+// matrix: JS array/typed array of 16 floats, matching VROMatrix4f's flat-array constructor.
+static void viroSetMaterialShaderUniformMat4(int material, std::string name, emscripten::val matrix) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    std::vector<float> elements = emscripten::convertJSArrayToNumberVector<float>(matrix);
+    if (elements.size() != 16) {
+        pwarn("viroSetMaterialShaderUniformMat4: matrix must have 16 elements, got %zu", elements.size());
+        return;
+    }
+    m->setShaderUniform(name, VROMatrix4f(elements.data()));
+}
+
 // --- Textures ---
 
 static std::unordered_map<int, std::shared_ptr<VROTexture>> sTextures;
@@ -838,6 +934,12 @@ static void viroSetMaterialTexture(int material, int channel, int texture) {
 }
 static void viroDestroyTexture(int texture) {
     sTextures.erase(texture);
+}
+// sampler2D shader uniform. texture may be VIRO_INVALID_HANDLE (0) to clear it.
+static void viroSetMaterialShaderUniformTexture(int material, std::string name, int texture) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setShaderUniform(name, getTexture(texture));
 }
 
 // Create a cube texture from six RGBA8 faces (order: +X,-X,+Y,-Y,+Z,-Z), each
@@ -1063,7 +1165,28 @@ static void viroSetActiveCameraNode(int node) {
     if (sScene) sScene->setActiveCameraNode(getNode(node));
 }
 
-// --- Model loading (GLB / glTF / VRX) ---
+// type: 0=perspective, 1=orthographic. VRORenderer::computeProjection reads these
+// off the point-of-view camera, so the whole effect is in the two setters below.
+static void viroSetCameraProjection(int node, int type) {
+    auto n = getNode(node);
+    if (!n || !n->getCamera()) {
+        return;
+    }
+    n->getCamera()->setProjectionType(type == 1 ? VROCameraProjectionType::Orthographic
+                                               : VROCameraProjectionType::Perspective);
+}
+
+// The full vertical height in world units; the width follows from the viewport
+// aspect ratio, so only the height is set here.
+static void viroSetCameraOrthographicScale(int node, float scale) {
+    auto n = getNode(node);
+    if (!n || !n->getCamera()) {
+        return;
+    }
+    n->getCamera()->setOrthographicHeight(scale);
+}
+
+// --- Model loading (GLB / glTF / VRX / OBJ) ---
 
 // cb(nodeHandle, success). Registered by the bridge to know when a load finishes.
 static emscripten::val sModelLoadCallback = emscripten::val::undefined();
@@ -1072,8 +1195,16 @@ static void viroSetModelLoadCallback(emscripten::val callback) {
 }
 
 // Loads a model at `path` (already written to the emscripten virtual FS by JS)
-// into the node. format: 0=GLB, 1=glTF, 2=VRX. Self-contained assets (GLB/VRX)
-// need only the single file; the VRX loader handles gzip.
+// into the node. format: 0=GLB, 1=glTF, 2=VRX, 3=OBJ. Self-contained assets
+// (GLB/VRX) need only the single file; the VRX loader handles gzip.
+//
+// OBJ is the exception: it names a .mtl, which in turn names textures, and both
+// are resolved against the *directory* of `path` — VROOBJLoader takes everything
+// before the last '/' and tinyobj joins that with the referenced name. So the JS
+// side writes an OBJ and its companions into a directory of their own. A flat
+// layout at the FS root happens to resolve too (an empty base yields "/tex.png"
+// for textures and a CWD-relative open for the .mtl), but then two models that
+// both reference "wood.png" overwrite each other.
 static void viroLoadModel(int nodeHandle, std::string path, int format) {
     auto node = getNode(nodeHandle);
     if (!node || !sScene) {
@@ -1087,7 +1218,9 @@ static void viroLoadModel(int nodeHandle, std::string path, int format) {
         }
     };
 
-    if (format == 2) {
+    if (format == 3) {
+        VROOBJLoader::loadOBJFromResource(path, VROResourceType::LocalFile, node, driver, onFinish);
+    } else if (format == 2) {
         VROFBXLoader::loadFBXFromResource(path, VROResourceType::LocalFile, node, driver, onFinish);
     } else {
         bool isBinary = (format == 0); // 0=GLB binary, 1=glTF text
@@ -1248,6 +1381,17 @@ static void viroARSetCameraImageSize(float width, float height) {
     if (session) session->setCameraImageSize(width, height);
 }
 
+// The camera's real intrinsics. Prefer this over viroARSetCameraImageSize
+// wherever the host knows them: without them the frustum is a fixed 60-degree
+// vertical field of view, and 3-D content is then projected through a different
+// camera from the one that produced the background image.
+static void viroARSetCameraIntrinsics(float fx, float fy, float cx, float cy,
+                                      float width, float height) {
+    if (!sScene) return;
+    std::shared_ptr<VROARSessionWeb> session = sScene->getARSession();
+    if (session) session->setCameraIntrinsics(fx, fy, cx, cy, width, height);
+}
+
 EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("initViroScene", &initViroScene);
     emscripten::function("setViroSceneSize", &setViroSceneSize);
@@ -1290,12 +1434,20 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetMaterialBlendMode", &viroSetMaterialBlendMode);
     emscripten::function("viroSetMaterialWritesToDepthBuffer", &viroSetMaterialWritesToDepthBuffer);
     emscripten::function("viroSetMaterialReadsFromDepthBuffer", &viroSetMaterialReadsFromDepthBuffer);
+    emscripten::function("viroAddMaterialShaderModifier", &viroAddMaterialShaderModifier);
+    emscripten::function("viroRemoveAllMaterialShaderModifiers", &viroRemoveAllMaterialShaderModifiers);
+    emscripten::function("viroSetMaterialShaderUniformFloat", &viroSetMaterialShaderUniformFloat);
+    emscripten::function("viroSetMaterialShaderUniformVec2", &viroSetMaterialShaderUniformVec2);
+    emscripten::function("viroSetMaterialShaderUniformVec3", &viroSetMaterialShaderUniformVec3);
+    emscripten::function("viroSetMaterialShaderUniformVec4", &viroSetMaterialShaderUniformVec4);
+    emscripten::function("viroSetMaterialShaderUniformMat4", &viroSetMaterialShaderUniformMat4);
 
     emscripten::function("viroCreateTextureRGBA", &viroCreateTextureRGBA);
     emscripten::function("viroSetTextureWrap", &viroSetTextureWrap);
     emscripten::function("viroSetTextureFilter", &viroSetTextureFilter);
     emscripten::function("viroSetMaterialTexture", &viroSetMaterialTexture);
     emscripten::function("viroDestroyTexture", &viroDestroyTexture);
+    emscripten::function("viroSetMaterialShaderUniformTexture", &viroSetMaterialShaderUniformTexture);
     emscripten::function("viroCreateTextureCubeRGBA", &viroCreateTextureCubeRGBA);
     emscripten::function("viroLoadRadianceHDRTexture", &viroLoadRadianceHDRTexture);
     emscripten::function("viroSetLightingEnvironment", &viroSetLightingEnvironment);
@@ -1327,6 +1479,8 @@ EMSCRIPTEN_BINDINGS(viro_web) {
 
     emscripten::function("viroSetNodeCamera", &viroSetNodeCamera);
     emscripten::function("viroSetActiveCameraNode", &viroSetActiveCameraNode);
+    emscripten::function("viroSetCameraProjection", &viroSetCameraProjection);
+    emscripten::function("viroSetCameraOrthographicScale", &viroSetCameraOrthographicScale);
 
     emscripten::function("viroSetModelLoadCallback", &viroSetModelLoadCallback);
     emscripten::function("viroLoadModel", &viroLoadModel);
@@ -1345,6 +1499,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroARSetPose", &viroARSetPose);
     emscripten::function("viroARSetCameraBackground", &viroARSetCameraBackground);
     emscripten::function("viroARSetCameraImageSize", &viroARSetCameraImageSize);
+    emscripten::function("viroARSetCameraIntrinsics", &viroARSetCameraIntrinsics);
 }
 
 // The module has no work to do at startup — JS calls initViroScene() once the
