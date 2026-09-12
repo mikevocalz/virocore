@@ -26,6 +26,8 @@
 #include "VROTime.h"
 #include "VROThreadRestricted.h"
 #include "VROPlatformUtil.h"
+#include "VRONode.h"
+#include "VRONodeCamera.h"
 
 #define LOG_TAG "VRORendererOpenXR"
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR,   LOG_TAG, __VA_ARGS__)
@@ -209,6 +211,21 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
     // VROSceneRenderer::_renderer is null until explicitly set here — every other
     // platform (GVR, OVR) does the equivalent in their constructor.
     _renderer = std::make_shared<VRORenderer>(config, _inputController);
+
+    // Give the renderer a point of view so the culling camera tracks the head.
+    // With none, VRORenderer::updateCamera falls back to position (0,0,0) — the
+    // app-space origin. That was survivable while the origin sat at head height,
+    // but under a LOCAL_FLOOR origin it parks the camera on the physical floor:
+    // the view frustum's apex drops ~1.6 m, culling anything held near the hands
+    // (controller mesh, pointer beam), and every shader reading camera_position
+    // (VROPolyline's billboarding, specular) bills toward the floor. The per-eye
+    // view matrices in renderEye() already use the full pose, so this only
+    // corrects culling, hit-testing and shader inputs — not the rendered viewpoint.
+    // An identity VRONodeCamera keeps baseRotation identity, so head rotation
+    // still drives orientation exactly as before.
+    _pointOfView = std::make_shared<VRONode>();
+    _pointOfView->setCamera(std::make_shared<VRONodeCamera>());
+    _renderer->setPointOfView(_pointOfView);
 
     // OpenXR owns its own render thread — bypass the GLSurfaceView dispatcher.
     // VROPlatformDrainRendererQueue() is called at the top of each renderFrame().
@@ -677,14 +694,30 @@ bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
     spaceInfo.poseInReferenceSpace = { {0, 0, 0, 1}, {0, 0, 0} };  // identity
 
     if (origin == VROTrackingOrigin::Floor) {
-        // Rung 1: native LOCAL_FLOOR when the runtime enumerates it.
-        if (_localFloorAvailable &&
+        // Rung 1: native LOCAL_FLOOR when the runtime enumerates it — except on PICO.
+        //
+        // PICO enumerates LOCAL_FLOOR and xrLocateViews against it returns correct
+        // floor-relative poses (measured on a 4 Ultra: eye Y 1.594 m above the origin).
+        // Its compositor does not agree. The runtime keeps the app's *global* tracking
+        // origin at EYELEVEL and carries floor level as a global Y delta — logcat says
+        //   APxrRuntime: pxr_set_trackingorigin level type 0, xrEnableFloorLevel 1
+        // where type 0 is EYELEVEL — so the projection layer is composited as though
+        // its poses were eye-level, and the world floats one LOCAL-to-floor distance
+        // above the physical floor. Device-confirmed: the ground rendered at waist
+        // height, matching the 1.059 m STAGE probe rather than the 1.594 m eye height.
+        //
+        // Baking the same offset into a LOCAL space (rung 2) keeps the query path and
+        // the compositor in one frame, so both agree on where the floor is.
+        const bool useNativeLocalFloor =
+            _localFloorAvailable && _runtimeInfo.vendor != VROOpenXRVendor::PICO;
+        if (useNativeLocalFloor &&
             referenceSpaceEnumerated(_session, XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR)) {
             spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
             XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
             if (XR_SUCCEEDED(r)) {
                 *outType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
                 _floorOffsetY = 0.0f;
+                _floorOriginPending = false;
                 ALOGI("Reference space: LOCAL_FLOOR (native floor origin)");
                 return true;
             }
@@ -694,11 +727,17 @@ bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
         float offsetY = 0.0f;
         if (deriveFloorOffset(_lastPredictedDisplayTime, &offsetY)) {
             spaceInfo.referenceSpaceType   = XR_REFERENCE_SPACE_TYPE_LOCAL;
-            spaceInfo.poseInReferenceSpace.position.y = offsetY;
+            // poseInReferenceSpace is the NEW origin's pose within LOCAL, and the
+            // floor sits offsetY *below* that origin — so this Y is negative. With
+            // +offsetY the emulated floor lands offsetY above LOCAL, i.e. roughly two
+            // floor-heights above the real floor. Dormant wherever LOCAL_FLOOR is
+            // enumerated (rung 1 wins), and wrong everywhere it is not.
+            spaceInfo.poseInReferenceSpace.position.y = -offsetY;
             XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
             if (XR_SUCCEEDED(r)) {
                 *outType = XR_REFERENCE_SPACE_TYPE_LOCAL;
                 _floorOffsetY = offsetY;
+                _floorOriginPending = false;
                 ALOGI("Reference space: LOCAL offset %.3f m (STAGE-emulated floor)", offsetY);
                 return true;
             }
@@ -706,8 +745,13 @@ bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
         } else {
             // Rung 3: neither source available. Do not guess a human height —
             // stay eye-level and let the JS layer report the downgrade.
+            // STAGE is not locatable this early — PICO doesn't publish it until a few
+            // frames into the session. Stay eye-level for now, but flag that the floor
+            // is still owed so renderFrame retries once STAGE comes up, instead of
+            // stranding the world a head-height high for the whole session.
+            _floorOriginPending = true;
             ALOGW("Floor origin requested but neither LOCAL_FLOOR nor STAGE is "
-                  "available; staying eye-level");
+                  "available yet; eye-level for now, will retry per-frame");
         }
     }
 
@@ -1421,7 +1465,9 @@ void VROSceneRendererOpenXR::recenterTracking() {
         if (deriveFloorOffset(_lastPredictedDisplayTime, &offsetY)) {
             _floorOffsetY = offsetY;
         }
-        originY = _floorOffsetY;  // keep the last good offset if this probe missed
+        // Negative for the same reason as buildReferenceSpace: _floorOffsetY is the
+        // floor's depth BELOW the LOCAL origin, and this is the new origin's pose.
+        originY = -_floorOffsetY;  // keep the last good offset if this probe missed
     }
     spaceInfo.poseInReferenceSpace.position    = { headLoc.pose.position.x,
                                                     originY,
@@ -1623,6 +1669,28 @@ void VROSceneRendererOpenXR::renderFrame() {
     XR_CHECK(xrWaitFrame(_session, &waitInfo, &frameState));
     _lastPredictedDisplayTime = frameState.predictedDisplayTime;
 
+    // Deferred floor origin. buildReferenceSpace needs a locatable STAGE, which PICO
+    // withholds until a few frames in, so createReferenceSpace() at session start
+    // fell to eye-level and set _floorOriginPending. Now that we have a valid
+    // predicted display time, retry; buildReferenceSpace clears the flag the frame
+    // it lands a real floor. Cheap and self-terminating — a few OpenXR calls, gated
+    // on the flag, and it stops the moment the floor takes.
+    if (_floorOriginPending && _trackingOrigin == VROTrackingOrigin::Floor) {
+        XrSpace rebuilt = XR_NULL_HANDLE;
+        XrReferenceSpaceType rebuiltType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        bool ok = buildReferenceSpace(VROTrackingOrigin::Floor, &rebuilt, &rebuiltType);
+        if (ok && !_floorOriginPending) {
+            XrSpace old = _appSpace;
+            _appSpace     = rebuilt;
+            _appSpaceType = rebuiltType;
+            if (old != XR_NULL_HANDLE) xrDestroySpace(old);
+            resetFloorDiagnostic();
+            ALOGI("Floor origin applied on frame retry (offset %.3f m)", _floorOffsetY);
+        } else if (rebuilt != XR_NULL_HANDLE) {
+            xrDestroySpace(rebuilt);  // still eye-level — keep the existing space, retry next frame
+        }
+    }
+
     // ── Begin frame ───────────────────────────────────────────────────────────
     XrFrameBeginInfo beginInfo = { XR_TYPE_FRAME_BEGIN_INFO };
     XR_CHECK(xrBeginFrame(_session, &beginInfo));
@@ -1705,6 +1773,22 @@ void VROSceneRendererOpenXR::renderFrame() {
             headPoseMatrix[13] = 0.0f;
             headPoseMatrix[14] = 0.0f;
             VROMatrix4f leftProjMatrix  = xrFovToProjection(fov0);
+
+            // The translation stripped above still has to reach the camera, or the
+            // frustum and camera_position stay at the app-space origin.
+            if (_pointOfView) {
+                // VRTScene.setPointOfView(null) fires when a <ViroCamera> unmounts,
+                // which would silently drop the camera back to that origin — the floor
+                // — for the rest of the session. Re-assert ours only when nothing else
+                // owns the POV, so an app-supplied ViroCamera still wins.
+                if (!_renderer->getPointOfView()) {
+                    _renderer->setPointOfView(_pointOfView);
+                }
+                if (_pointOfView->getCamera()) {
+                    const XrVector3f &eye = views[0].pose.position;
+                    _pointOfView->getCamera()->setPosition({ eye.x, eye.y, eye.z });
+                }
+            }
 
             _renderer->prepareFrame(_frame++, leftViewport, viroFov,
                                     headPoseMatrix, leftProjMatrix, _driver);

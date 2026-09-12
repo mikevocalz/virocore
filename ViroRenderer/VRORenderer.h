@@ -89,6 +89,10 @@ public:
      scene.
      */
     void setPointOfView(std::shared_ptr<VRONode> node);
+    /* Current point of view, or nullptr when none is set (VRTScene nulls it when a
+       <ViroCamera> unmounts). Platform renderers that install their own head-tracking
+       POV need this to tell "nobody owns it" from "the app owns it". */
+    std::shared_ptr<VRONode> getPointOfView() const { return _pointOfView; }
 
     /*
      Set the delegate that can be used to respond to renderer state changes.

@@ -24,6 +24,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <unistd.h>
 #include "VROInputPresenter.h"
 #include "VROReticle.h"
 #include "VRONode.h"
@@ -107,6 +108,26 @@ public:
      * each node a few frames after this returns; the nodes exist immediately so
      * updateControllerMesh() can position/hide them meanwhile.
      */
+    // Resolve the GLB for a controller source. Prefer the REAL model the PICO
+    // runtime itself renders — shipped in the system image, world-readable, and
+    // authored per hand (left/right are distinct files, so no mirror). Fall back
+    // to the bundled neutral GLB on Quest, older PICO models, or if the read is
+    // denied.
+    //
+    // ponytail: hardcoded PICO 4 Ultra ("sparrow") path — the shortest route to the
+    // correct model on this device. The portable upgrade is XR_EXT_render_model /
+    // XR_EXT_interaction_render_model, which the PICO runtime implements: ask it for
+    // the model bytes per interaction profile instead of knowing the file layout.
+    static std::string controllerGlbPath(int source) {
+        const char *real = (source == ViroOculus::LeftController)
+            ? "/system/media/PvrRes/controller/PICO4U/o_com_sparrow_left_01.glb"
+            : "/system/media/PvrRes/controller/PICO4U/o_com_sparrow_right_01.glb";
+        if (access(real, R_OK) == 0) {
+            return std::string(real);
+        }
+        return VROPlatformCopyAssetToFile("controller_neutral.glb");
+    }
+
     void loadControllerMesh(std::shared_ptr<VRODriver> driver) {
         if (!driver || _meshLoadStarted) return;
         _meshLoadStarted = true;
@@ -121,7 +142,7 @@ public:
             _rootNode->addChildNode(node);
             _meshNodes[source] = node;
 
-            std::string glbPath = VROPlatformCopyAssetToFile("controller_neutral.glb");
+            std::string glbPath = controllerGlbPath(source);
             VROGLTFLoader::loadGLTFFromResource(
                 glbPath, {}, VROResourceType::LocalFile, node, /*isGLTFBinary=*/true, driver,
                 [source](std::shared_ptr<VRONode> n, bool success) {
@@ -165,7 +186,7 @@ private:
 
         Laser laser;
         std::vector<VROVector3f> initialPath = { {0, 0, 0}, {0, 0, -1} };
-        laser.geom = VROPolyline::createPolyline(initialPath, 0.003f /* thickness */);
+        laser.geom = VROPolyline::createPolyline(initialPath, 0.006f /* thickness */);
         laser.geom->setName("AimLaserGeom");
         auto material = laser.geom->getMaterials().front();
         material->getDiffuse().setColor({ 0.33f, 0.976f, 0.968f, 1.0f }); // cyan

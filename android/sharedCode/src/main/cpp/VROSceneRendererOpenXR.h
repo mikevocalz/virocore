@@ -46,6 +46,7 @@ class VROInputControllerOpenXR;
 class VRODisplayOpenGLOpenXR;
 class VROARSessionOpenXR;
 class VROSceneController;
+class VRONode;
 
 namespace gvr { class AudioApi; }
 
@@ -191,6 +192,11 @@ private:
     XrSpace              _appSpace     = XR_NULL_HANDLE;
     XrReferenceSpaceType _appSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     VROTrackingOrigin    _trackingOrigin = VROTrackingOrigin::Eye;
+    // Carries the head position into VRORenderer::updateCamera. Without a point of
+    // view the camera sits at the app-space origin — which is the physical FLOOR
+    // once the origin is LOCAL_FLOOR, putting the culling frustum's apex on the
+    // ground and the shaders' camera_position 1.6 m below the eye.
+    std::shared_ptr<VRONode> _pointOfView;
     // True once JS calls setTrackingOrigin. Until then a PICO runtime defaults
     // to Floor in createReferenceSpace; an explicit JS choice always wins.
     bool                 _trackingOriginExplicit = false;
@@ -202,6 +208,10 @@ private:
     // Y offset (metres, >= 0) of the physical floor below the LOCAL origin, used
     // by the STAGE-emulation rung. Re-derived at session start and on recenter.
     float                _floorOffsetY = 0.0f;
+    // True when a Floor origin was requested but STAGE wasn't locatable yet, so the
+    // app space is a temporary eye-level LOCAL. renderFrame retries the floor build
+    // each frame until it lands, then clears this.
+    bool                 _floorOriginPending = false;
 
     // Log the active interaction profiles only on the first entry to FOCUSED;
     // the INTERACTION_PROFILE_CHANGED event handles subsequent rebinds.
