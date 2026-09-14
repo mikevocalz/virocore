@@ -313,6 +313,70 @@ public class Object3D extends Node {
     }
 
     /**
+     * Sets the weights of several morph targets in one native crossing.
+     * <p>
+     * Equivalent to calling {@link #setMorphTargetWeight(String, float)} once per entry, but
+     * dispatched to the rendering thread as a single block — which is what makes driving a
+     * 52-shape face at frame rate affordable from the bridge.
+     *
+     * @param names   The morph target names. Must be the same length as {@code weights}.
+     * @param weights The weight for each name, between 0 and 1.
+     */
+    public void setMorphTargetWeights(String[] names, float[] weights) {
+        if (mNativeRef != 0 && names.length == weights.length) {
+            nativeSetMorphTargetWeights(mNativeRef, names, weights);
+        }
+    }
+
+    /**
+     * Get the names of the bones in this model's skeleton, if it has one.
+     * <p>
+     * Empty when the model carries no skin. Names come from the source file's joint nodes.
+     *
+     * @return The bone names, in skeleton order.
+     */
+    public String[] getSkeletonBoneKeys() {
+        if (mNativeRef == 0) {
+            return new String[0];
+        }
+        return nativeGetSkeletonBoneKeys(mNativeRef);
+    }
+
+    /**
+     * Get the current world transform of the named bone as a 16-float column-major matrix.
+     * <p>
+     * For a model that has not been animated this is the bone's rest transform — the matrix a
+     * caller composes deltas against when driving the skeleton procedurally.
+     *
+     * @param boneName The bone whose transform to read.
+     * @return The 16-float column-major world matrix, or an empty array if the bone is unknown.
+     */
+    public float[] getSkeletonBoneWorldTransform(String boneName) {
+        if (mNativeRef == 0) {
+            return new float[0];
+        }
+        return nativeGetSkeletonBoneWorldTransform(mNativeRef, boneName);
+    }
+
+    /**
+     * Sets the world transforms of several bones in one native crossing.
+     * <p>
+     * Matrices are 16 floats each, column-major, concatenated in the order of {@code names} —
+     * the same layout {@link #getSkeletonBoneWorldTransform(String)} returns. When
+     * {@code recurse} is true each bone's descendants keep their relative offsets, which is the
+     * behaviour a procedural head turn or breath wants.
+     *
+     * @param names    The bone names to move.
+     * @param matrices {@code 16 * names.length} floats, column-major.
+     * @param recurse  Whether each write carries the bone's children with it.
+     */
+    public void setSkeletonBoneWorldTransforms(String[] names, float[] matrices, boolean recurse) {
+        if (mNativeRef != 0 && matrices.length == names.length * 16) {
+            nativeSetSkeletonBoneWorldTransforms(mNativeRef, names, matrices, recurse);
+        }
+    }
+
+    /**
      * Sets the {@link MorphMode} this Object3D will use to render applied morph target weights.
      *
      * @param mode The MorphMode to apply.
@@ -460,6 +524,11 @@ public class Object3D extends Node {
     private native Node[] nativeCreateChildNodes(long nodeRef);
     private native void nativeIntializeNode(Node node, long nodeRef);
     private native void nativeSetMorphTargetWithWeight(long nodeReference, String target, float weight);
+    private native void nativeSetMorphTargetWeights(long nodeReference, String[] targets, float[] weights);
     private native void nativeSetMorphMode(long nodeRef, String mode);
     private native String[] nativeGetMorphTargetKeys(long nodeReference);
+    private native String[] nativeGetSkeletonBoneKeys(long nodeReference);
+    private native float[] nativeGetSkeletonBoneWorldTransform(long nodeReference, String boneName);
+    private native void nativeSetSkeletonBoneWorldTransforms(long nodeReference, String[] names,
+                                                             float[] matrices, boolean recurse);
 }

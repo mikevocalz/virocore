@@ -439,6 +439,21 @@ public class ViroViewOpenXR extends ViroView {
      * [0,1]; {@code edge*} is the edge-highlight colour (alpha 0 disables the edge).
      * Cached and re-applied if the renderer isn't ready yet.
      */
+    /**
+     * Fire a controller haptic pulse. hand: 0 = left, 1 = right, 2 = both,
+     * -1 = whichever controller last pressed its trigger.
+     * <p>
+     * NOT WIRED IN THIS BUILD, and deliberately a warning rather than an
+     * absence: the decax9 line's requestHaptic chain lives in input-controller
+     * work this branch has not taken, and the bridge's VRTVRSceneNavigator
+     * compiles against this signature. A build without the method throws
+     * NoSuchMethodError at the first JS haptic call; this logs and returns.
+     */
+    public void triggerHaptic(int hand, float amplitude, float durationSec) {
+        android.util.Log.w("VRORendererOpenXR",
+                "triggerHaptic: no haptic path in this renderer build (pico-support)");
+    }
+
     public void setPassthroughStyle(float opacity, float edgeR, float edgeG,
                                     float edgeB, float edgeA) {
         mPendingPassthroughStyle = new float[]{ opacity, edgeR, edgeG, edgeB, edgeA };

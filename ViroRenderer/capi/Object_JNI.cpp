@@ -31,6 +31,9 @@
 #include "VROGeometry.h"
 #include "VRONode.h"
 #include "VROMorpher.h"
+#include "VROSkinner.h"
+#include "VROSkeleton.h"
+#include "VROBone.h"
 #include "Node_JNI.h"
 #include "OBJLoaderDelegate_JNI.h"
 #include "ViroContext_JNI.h"
@@ -245,6 +248,131 @@ VRO_METHOD(VRO_STRING_ARRAY, nativeGetMorphTargetKeys)(VRO_ARGS
         ++i;
     }
     return array;
+}
+
+VRO_METHOD(void, nativeSetMorphTargetWeights)(VRO_ARGS
+                                              VRO_REF(VRONode) nativeRef,
+                                              VRO_STRING_ARRAY jTargets,
+                                              VRO_FLOAT_ARRAY jWeights) {
+    VRO_METHOD_PREAMBLE;
+    std::weak_ptr<VRONode> node_w = VRO_REF_GET(VRONode, nativeRef);
+
+    // Copy the names and weights out on the calling thread — the render-thread
+    // block must not touch JNI handles.
+    int count = VRO_ARRAY_LENGTH(jTargets);
+    std::vector<std::pair<std::string, float>> weights;
+    weights.reserve(count);
+    VRO_FLOAT *weightArray = VRO_FLOAT_ARRAY_GET_ELEMENTS(jWeights);
+    for (int i = 0; i < count; i++) {
+        VRO_STRING jTarget = (VRO_STRING) VRO_STRING_ARRAY_GET(jTargets, i);
+        weights.emplace_back(VRO_STRING_STL(jTarget), weightArray[i]);
+    }
+    VRO_FLOAT_ARRAY_RELEASE_ELEMENTS(jWeights, weightArray);
+
+    // One dispatch for the whole face. The per-target setter dispatches once per
+    // shape, which is 52 render-thread blocks a frame for an avatar; this is the
+    // same work as one.
+    VROPlatformDispatchAsyncRenderer([node_w, weights] {
+        std::shared_ptr<VRONode> node = node_w.lock();
+        if (node == nullptr) {
+            return;
+        }
+        std::set<std::shared_ptr<VROMorpher>> morphers = node->getMorphers(true);
+        for (auto &entry : weights) {
+            for (auto morpher : morphers) {
+                morpher->setWeightForTarget(entry.first, entry.second);
+            }
+        }
+    });
+}
+
+/*
+ The first skeleton at or below this node. A GLB avatar is one skin; a model
+ with several would need a skeleton index added to this API — returning the
+ first is the honest behaviour for the models this seam exists for.
+ */
+static std::shared_ptr<VROSkeleton> VROGetSkeleton(std::shared_ptr<VRONode> node) {
+    if (node == nullptr) {
+        return nullptr;
+    }
+    std::vector<std::shared_ptr<VROSkinner>> skinners;
+    node->getSkinner(skinners, true);
+    if (skinners.empty()) {
+        return nullptr;
+    }
+    return skinners.front()->getSkeleton();
+}
+
+VRO_METHOD(VRO_STRING_ARRAY, nativeGetSkeletonBoneKeys)(VRO_ARGS
+                                                        VRO_REF(VRONode) nativeRef) {
+    std::shared_ptr<VRONode> node = VRO_REF_GET(VRONode, nativeRef);
+    std::shared_ptr<VROSkeleton> skeleton = VROGetSkeleton(node);
+    if (skeleton == nullptr) {
+        return VRO_NEW_STRING_ARRAY(0);
+    }
+
+    int count = skeleton->getNumBones();
+    VRO_STRING_ARRAY array = VRO_NEW_STRING_ARRAY(count);
+    for (int i = 0; i < count; i++) {
+        VRO_STRING_ARRAY_SET(array, i, skeleton->getBone(i)->getName());
+    }
+    return array;
+}
+
+VRO_METHOD(VRO_FLOAT_ARRAY, nativeGetSkeletonBoneWorldTransform)(VRO_ARGS
+                                                                 VRO_REF(VRONode) nativeRef,
+                                                                 VRO_STRING jBoneName) {
+    VRO_METHOD_PREAMBLE;
+    std::shared_ptr<VRONode> node = VRO_REF_GET(VRONode, nativeRef);
+    std::shared_ptr<VROSkeleton> skeleton = VROGetSkeleton(node);
+    std::string boneName = VRO_STRING_STL(jBoneName);
+    if (skeleton == nullptr || skeleton->getBone(boneName) == nullptr) {
+        return VRO_NEW_FLOAT_ARRAY(0);
+    }
+
+    // Read on the calling thread. The transform is a snapshot for composing
+    // deltas against — the rest pose in practice, read once before driving.
+    VROMatrix4f transform = skeleton->getCurrentBoneWorldTransform(boneName);
+    VRO_FLOAT_ARRAY array = VRO_NEW_FLOAT_ARRAY(16);
+    VRO_FLOAT_ARRAY_SET(array, 0, 16, transform.getArray());
+    return array;
+}
+
+VRO_METHOD(void, nativeSetSkeletonBoneWorldTransforms)(VRO_ARGS
+                                                       VRO_REF(VRONode) nativeRef,
+                                                       VRO_STRING_ARRAY jNames,
+                                                       VRO_FLOAT_ARRAY jMatrices,
+                                                       VRO_BOOL jRecurse) {
+    VRO_METHOD_PREAMBLE;
+    std::weak_ptr<VRONode> node_w = VRO_REF_GET(VRONode, nativeRef);
+
+    int count = VRO_ARRAY_LENGTH(jNames);
+    if (VRO_ARRAY_LENGTH(jMatrices) != count * 16) {
+        return;
+    }
+
+    std::vector<std::pair<std::string, VROMatrix4f>> transforms;
+    transforms.reserve(count);
+    VRO_FLOAT *matrixArray = VRO_FLOAT_ARRAY_GET_ELEMENTS(jMatrices);
+    for (int i = 0; i < count; i++) {
+        VRO_STRING jName = (VRO_STRING) VRO_STRING_ARRAY_GET(jNames, i);
+        transforms.emplace_back(VRO_STRING_STL(jName), VROMatrix4f(matrixArray + i * 16));
+    }
+    VRO_FLOAT_ARRAY_RELEASE_ELEMENTS(jMatrices, matrixArray);
+    bool recurse = jRecurse;
+
+    // Bones are VROAnimatable state — written on the rendering thread, the same
+    // rule the morph setters follow. One dispatch carries the whole pose.
+    VROPlatformDispatchAsyncRenderer([node_w, transforms, recurse] {
+        std::shared_ptr<VRONode> node = node_w.lock();
+        std::shared_ptr<VROSkeleton> skeleton = VROGetSkeleton(node);
+        if (skeleton == nullptr) {
+            return;
+        }
+        for (auto &entry : transforms) {
+            skeleton->setCurrentBoneWorldTransform(entry.first, entry.second, recurse);
+        }
+    });
 }
 
 VRO_METHOD(void, nativeSetMorphMode)(VRO_ARGS
