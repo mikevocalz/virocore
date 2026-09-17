@@ -5,6 +5,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+import warnings
 import zipfile
 
 spec = importlib.util.spec_from_file_location('alignment', Path(__file__).with_name('verify-16kb-alignment.py'))
@@ -26,11 +27,15 @@ def elf(alignments=(0x4000,)):
 
 class AlignmentTests(unittest.TestCase):
     def archive_result(self, entries):
+        # A sequence of pairs, unlike a mapping, can repeat a member name.
+        members = entries.items() if hasattr(entries, 'items') else entries
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'renderer.aar'
-            with zipfile.ZipFile(file, 'w') as archive:
-                for name, data in entries.items():
-                    archive.writestr(name, data)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')  # zipfile warns on duplicate names
+                with zipfile.ZipFile(file, 'w') as archive:
+                    for name, data in members:
+                        archive.writestr(name, data)
             with contextlib.redirect_stdout(io.StringIO()):
                 return alignment.main([str(file)])
 
@@ -52,6 +57,15 @@ class AlignmentTests(unittest.TestCase):
         for offset, value in ((4, 1), (5, 2), (18, 62)):
             data = elf(); data[offset] = value
             self.assertEqual(self.archive_result({'jni/arm64-v8a/libviro.so': data}), 1)
+
+    def test_duplicate_entry_names_are_all_checked(self):
+        # read(name) resolves through NameToInfo, which keeps only the last
+        # member, so an under-aligned duplicate must fail in either order.
+        name = 'jni/arm64-v8a/libviro.so'
+        good, stale = elf(), elf((0x1000,))
+        self.assertEqual(self.archive_result([(name, stale), (name, good)]), 1)
+        self.assertEqual(self.archive_result([(name, good), (name, stale)]), 1)
+        self.assertEqual(self.archive_result([(name, good), (name, good)]), 0)
 
     def test_prefab_and_bad_offset_alignment(self):
         self.assertEqual(self.archive_result({'prefab/modules/x/libs/android.arm64-v8a/libx.so': elf()}), 0)

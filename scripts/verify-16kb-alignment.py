@@ -72,12 +72,17 @@ def main(argv=None) -> int:
                 check(artifact, Path(artifact).read_bytes())
             else:
                 with zipfile.ZipFile(artifact) as archive:
-                    entries = [n for n in archive.namelist() if n.endswith(".so") and
-                               any(part in (args.abi, f"android.{args.abi}") for part in n.split("/"))]
+                    # infolist(), not namelist(): a zip may carry several members
+                    # under one name, and read(name) resolves through NameToInfo,
+                    # which keeps only the last. Reading each ZipInfo checks every
+                    # member, so a stale .so shadowed by a good one cannot pass.
+                    entries = [i for i in archive.infolist() if i.filename.endswith(".so") and
+                               any(part in (args.abi, f"android.{args.abi}")
+                                   for part in i.filename.split("/"))]
                     if not entries:
                         raise ValueError(f"no {args.abi} shared libraries")
-                    for name in sorted(entries):
-                        check(f"{artifact}!{name}", archive.read(name))
+                    for info in sorted(entries, key=lambda i: i.filename):
+                        check(f"{artifact}!{info.filename}", archive.read(info))
         except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
             failures += 1
             print(f"FAIL  {artifact}: {error}")
