@@ -23,6 +23,8 @@ android {
         // checks regardless of linker flags (cf. ReactVision/viro#485). r27 is the
         // first NDK with 16KB STL binaries; libviro_renderer.so itself is already
         // 16KB-aligned via -Wl,-z,max-page-size=16384 in CMakeLists.txt.
+        // Upstream pins 27.1.12297006; 27.2.12479018 is the newer r27 patch and
+        // satisfies the same 16KB requirement, so keep the higher one.
         ndkVersion = "27.2.12479018"
 
         ndk {
