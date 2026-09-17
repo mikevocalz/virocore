@@ -188,6 +188,11 @@ public class Renderer {
         nativeSetFoveationLevel(mNativeRef, level, dynamic);
     }
 
+    /** -1: session pending; 0: no initialized plane source; 1: initialized source. */
+    public int getPlaneDetectionStatus() {
+        return mNativeRef != 0 ? nativeGetPlaneDetectionStatus(mNativeRef) : -1;
+    }
+
     /**
      * Negotiated OpenXR runtime facts as a String[10], or null if no immersive
      * instance exists. Read reflectively by expo-pico-core. (expo-pico fork.)
@@ -460,6 +465,7 @@ public class Renderer {
     private native void nativePerformARHitTestWithOriginDestOpenXR(long nativeRenderer, float[] origin, float[] destination, ARHitTestListener callback);
     private native void nativeSetTrackingOrigin(long nativeRenderer, boolean floor);
     private native void nativeSetFoveationLevel(long nativeRenderer, int level, boolean dynamic);
+    private native int nativeGetPlaneDetectionStatus(long nativeRenderer);
     private native String[] nativeGetRuntimeInfo(long nativeRenderer);
     private native String[] nativeGetRuntimeCapabilities(long nativeRenderer);
     private native void nativeSetClearColor(long sceneRef, int color);
