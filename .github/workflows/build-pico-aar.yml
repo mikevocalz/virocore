@@ -28,11 +28,14 @@ jobs:
 
       - name: Install NDK (match virocore ndkVersion)
         run: |
-          # Pin to the ndkVersion declared in android/build.gradle.
-          NDK_VER=$(grep -oE "ndkVersion[\" ]+[0-9.]+" android/build.gradle | grep -oE "[0-9.]+" | head -1 || echo "26.1.10909125")
-          echo "Installing NDK $NDK_VER"
-          yes | sdkmanager "ndk;$NDK_VER" || true
+          NDK_VER=$(sed -nE 's/^[[:space:]]*ndkVersion "([0-9.]+)"/\1/p' android/viroreact/build.gradle)
+          test -n "$NDK_VER"
+          sdkmanager "ndk;$NDK_VER"
+          test -d "$ANDROID_HOME/ndk/$NDK_VER"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
+
+      - name: Test alignment verifier
+        run: python3 scripts/test_verify_16kb_alignment.py
 
       - name: Build AAR
         run: ./scripts/build-pico-aar.sh --out "$RUNNER_TEMP/aar"
@@ -44,5 +47,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: viro_renderer-release-aar
-          path: ${{ runner.temp }}/aar/viro_renderer-release.aar
+          path: |
+            ${{ runner.temp }}/aar/viro_renderer-release.aar
+            ${{ runner.temp }}/aar/viro_renderer-release.json
           if-no-files-found: error

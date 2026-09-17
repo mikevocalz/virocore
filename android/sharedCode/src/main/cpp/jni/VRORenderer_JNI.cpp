@@ -199,6 +199,11 @@ VRO_METHOD(void, nativeSetFoveationLevel)(VRO_ARGS
     }
 }
 
+VRO_METHOD(jint, nativeGetPlaneDetectionStatus)(VRO_ARGS jlong rendererRef) {
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(Renderer::native(rendererRef));
+    return xrRenderer ? xrRenderer->getPlaneDetectionStatus() : -1;
+}
+
 // PICO support (expo-pico fork): negotiated OpenXR runtime facts as a String[10],
 // or null when no immersive instance exists. Indices:
 //   [0]=runtimeName [1..3]=major/minor/patch [4]=vendorOrdinal

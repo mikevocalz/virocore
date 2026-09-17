@@ -502,6 +502,11 @@ public class ViroViewOpenXR extends ViroView {
         }
     }
 
+    /** -1: session pending; 0: no initialized plane source; 1: initialized source. */
+    public int getPlaneDetectionStatus() {
+        return mNativeRenderer != null ? mNativeRenderer.getPlaneDetectionStatus() : -1;
+    }
+
     /**
      * Negotiated OpenXR runtime facts (runtime name, API version, vendor,
      * extension flags) as a String[10], or null when no immersive instance has

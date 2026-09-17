@@ -126,6 +126,7 @@ private:
         bool            handAimExtAvailable          = false;  // XR_FB_hand_tracking_aim
     };
     VROOpenXRRuntimeInfo _runtimeInfo;
+    std::atomic<int> _planeDetectionStatus{-1};
 
 public:
     const VROOpenXRRuntimeInfo &getRuntimeInfo() const { return _runtimeInfo; }
@@ -136,6 +137,8 @@ public:
     // runtime scale the level with GPU load. No-op (returns false) when
     // FB_foveation was not negotiated. Safe to call after session start.
     bool setFoveationLevel(VROFoveationLevel level, bool dynamic);
+    int getPlaneDetectionStatus() const { return _planeDetectionStatus.load(); }
+
     bool isFoveationAvailable()           const { return _foveationAvailable; }
     bool isEyeTrackedFoveationAvailable() const { return _eyeTrackedFoveationAvailable; }
 
