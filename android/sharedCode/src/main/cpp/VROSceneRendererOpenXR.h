@@ -126,7 +126,31 @@ private:
         bool            handAimExtAvailable          = false;  // XR_FB_hand_tracking_aim
     };
     VROOpenXRRuntimeInfo _runtimeInfo;
-    std::atomic<int> _planeDetectionStatus{-1};
+
+    // ── Plane-detection status ────────────────────────────────────────────────
+    // Pending/None/Active are the three values the Java and JS layers already
+    // know. TornDown is internal: destroySession() used to store Pending, which
+    // made a finished session indistinguishable from one that had never started,
+    // so the JS poller kept retrying a session that no longer existed.
+    static constexpr int kPlaneDetectionPending  = -1;
+    static constexpr int kPlaneDetectionNone     =  0;
+    static constexpr int kPlaneDetectionActive   =  1;
+    static constexpr int kPlaneDetectionTornDown = -2;
+
+    // Thread ownership:
+    //   store Active/None — render thread, at the end of initSession()
+    //   store TornDown    — JVM main thread, in destroySession()
+    //   load              — React Native UI thread, through a Fabric UIBlock
+    //                       that calls ViroViewOpenXR.getPlaneDetectionStatus()
+    // Three unrelated threads with no other synchronisation between them. The
+    // default seq_cst ordering is kept deliberately: this is a lone int with no
+    // dependent data, so relaxed would be sound for the value itself, but
+    // seq_cst is what puts the render-thread and main-thread stores in one total
+    // order that the UI-thread load observes — without it a load could still see
+    // Active after destroySession() has run on the other core. The load happens
+    // a handful of times per session, never per frame, so the fence costs
+    // nothing measurable.
+    std::atomic<int> _planeDetectionStatus{kPlaneDetectionPending};
 
 public:
     const VROOpenXRRuntimeInfo &getRuntimeInfo() const { return _runtimeInfo; }
@@ -137,7 +161,14 @@ public:
     // runtime scale the level with GPU load. No-op (returns false) when
     // FB_foveation was not negotiated. Safe to call after session start.
     bool setFoveationLevel(VROFoveationLevel level, bool dynamic);
-    int getPlaneDetectionStatus() const { return _planeDetectionStatus.load(); }
+    // Reports the JS-visible status: -1 pending, 0 no plane source, 1 active. A
+    // torn-down session reports 0 — a terminal answer the poller stops on —
+    // rather than -1, which it would keep retrying. This introduces no new value
+    // to the JS side, which only distinguishes <0 (still unknown) from 0 and 1.
+    int getPlaneDetectionStatus() const {
+        int status = _planeDetectionStatus.load();
+        return status == kPlaneDetectionTornDown ? kPlaneDetectionNone : status;
+    }
 
     bool isFoveationAvailable()           const { return _foveationAvailable; }
     bool isEyeTrackedFoveationAvailable() const { return _eyeTrackedFoveationAvailable; }

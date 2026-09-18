@@ -73,6 +73,10 @@ VRO_METHOD(VRO_INT, nativeGetCameraTextureId)(VRO_ARGS
                                               jlong renderer_j) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(renderer_j);
     std::shared_ptr<VROSceneRendererARCore> arRenderer = std::dynamic_pointer_cast<VROSceneRendererARCore>(renderer);
+    if (!arRenderer) {
+        // 0 is the GL "no texture" name.
+        return 0;
+    }
     return arRenderer->getCameraTextureId();
 }
 
@@ -81,7 +85,9 @@ VRO_METHOD(void, nativeSetARCoreSession)(VRO_ARGS
                                          jlong session_j) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(renderer_j);
     std::shared_ptr<VROSceneRendererARCore> arRenderer = std::dynamic_pointer_cast<VROSceneRendererARCore>(renderer);
-    arRenderer->setARCoreSession(reinterpret_cast<arcore::Session *>(session_j));
+    if (arRenderer) {
+        arRenderer->setARCoreSession(reinterpret_cast<arcore::Session *>(session_j));
+    }
 }
 
 VRO_METHOD(void, nativeSetARDisplayGeometry)(VRO_ARGS
@@ -89,7 +95,9 @@ VRO_METHOD(void, nativeSetARDisplayGeometry)(VRO_ARGS
                                              jint rotation, jint width, jint height) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(renderer_j);
     std::shared_ptr<VROSceneRendererARCore> arRenderer = std::dynamic_pointer_cast<VROSceneRendererARCore>(renderer);
-    arRenderer->setDisplayGeometry(rotation, width, height);
+    if (arRenderer) {
+        arRenderer->setDisplayGeometry(rotation, width, height);
+    }
 }
 
 VRO_METHOD(void, nativeSetAnchorDetectionTypes)(VRO_ARGS
@@ -97,6 +105,9 @@ VRO_METHOD(void, nativeSetAnchorDetectionTypes)(VRO_ARGS
                                                 VRO_STRING_ARRAY typeStrArray) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(renderer_j);
     std::shared_ptr<VROSceneRendererARCore> arRenderer = std::dynamic_pointer_cast<VROSceneRendererARCore>(renderer);
+    if (!arRenderer) {
+        return;
+    }
 
     std::set<VROAnchorDetection> types;
 
@@ -234,6 +245,9 @@ VRO_METHOD(void, nativePerformARHitTestWithPosition) (VRO_ARGS
                                                       jfloatArray position,
                                                       jobject callback) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (!renderer) {
+        return;
+    }
 
     // Calculate ray to perform the AR hit test
     VRO_FLOAT *positionStart = VRO_FLOAT_ARRAY_GET_ELEMENTS(position);
@@ -353,6 +367,9 @@ VRO_METHOD(VRO_BOOL, nativeisCameraAutoFocusEnabled) (VRO_ARGS
                                                    jlong nativeRenderer) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(nativeRenderer);
     std::shared_ptr<VROSceneRendererARCore> arRenderer = std::dynamic_pointer_cast<VROSceneRendererARCore>(renderer);
+    if (!arRenderer) {
+        return false;
+    }
     return arRenderer->isCameraAutoFocusEnabled();
 }
 
