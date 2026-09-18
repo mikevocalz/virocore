@@ -1211,6 +1211,18 @@ void VROSceneRendererOpenXR::setPassthroughStyle(float opacity, float edgeR, flo
           opacity, edgeR, edgeG, edgeB, edgeA);
 }
 
+void VROSceneRendererOpenXR::triggerHaptic(int hand, float amplitude, float durationSec) {
+    // Both halves live here and nowhere else: the input controller owns the
+    // vibrate actions, the renderer owns the session xrApplyHapticFeedback
+    // needs. Guarded rather than asserted — a call before the session exists is
+    // ordinary, not a programming error.
+    if (_session == XR_NULL_HANDLE || !_inputController) {
+        return;
+    }
+    _inputController->triggerHaptic(_session, hand, amplitude, durationSec);
+}
+
+
 void VROSceneRendererOpenXR::setHandTrackingEnabled(bool enabled) {
     if (_inputController) {
         _inputController->setHandTrackingEnabled(enabled);

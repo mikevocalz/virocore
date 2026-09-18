@@ -96,6 +96,17 @@ public:
      * disables the edge effect). No-op if passthrough is unavailable.
      */
     void setPassthroughStyle(float opacity, float edgeR, float edgeG, float edgeB, float edgeA);
+
+    /**
+     * Vibrate one controller. hand: 0 = left, 1 = right. amplitude is 0..1,
+     * duration is in seconds.
+     *
+     * The renderer owns both halves the input controller needs — the XrSession
+     * and the controller itself — so it is the only place the two meet. No-op
+     * when there is no session yet, or when the runtime never bound a haptic
+     * output path for that hand.
+     */
+    void triggerHaptic(int hand, float amplitude, float durationSec);
     void setHandTrackingEnabled(bool enabled);
     void onStart();
     void onResume();

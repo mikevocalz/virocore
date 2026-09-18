@@ -150,6 +150,22 @@ VRO_METHOD(void, nativeSetPassthroughEnabled)(VRO_ARGS
     }
 }
 
+// PICO support (expo-pico fork): vibrate one controller. hand 0 = left,
+// 1 = right; amplitude 0..1; duration in seconds. Silently does nothing when
+// no immersive session exists or the runtime bound no haptic output for that
+// hand — both are ordinary states, not errors.
+VRO_METHOD(void, nativeTriggerHaptic)(VRO_ARGS
+                                      jlong rendererRef,
+                                      jint hand,
+                                      jfloat amplitude,
+                                      jfloat durationSec) {
+    auto base = Renderer::native(rendererRef);
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(base);
+    if (xrRenderer) {
+        xrRenderer->triggerHaptic((int)hand, (float)amplitude, (float)durationSec);
+    }
+}
+
 VRO_METHOD(void, nativeSetPassthroughStyle)(VRO_ARGS
                                             jlong rendererRef,
                                             jfloat opacity,

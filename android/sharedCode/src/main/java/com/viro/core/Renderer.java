@@ -140,6 +140,22 @@ public class Renderer {
         nativeSetPassthroughStyle(mNativeRef, opacity, edgeR, edgeG, edgeB, edgeA);
     }
 
+    /**
+     * Vibrate one controller. hand is 0 for left and 1 for right, amplitude is
+     * [0,1], duration is in seconds.
+     *
+     * <p>Does nothing when no immersive session exists yet, or when the runtime
+     * bound no haptic output path for that hand. Both are ordinary states on a
+     * device whose controllers are asleep or absent, so neither throws.
+     */
+    public void triggerHaptic(int hand, float amplitude, float durationSec) {
+        final long ref = mNativeRef;
+        if (ref == 0) {
+            return;
+        }
+        nativeTriggerHaptic(ref, hand, amplitude, durationSec);
+    }
+
     /** Enable or disable XR_EXT_hand_tracking gesture processing (Quest only). */
     public void setHandTrackingEnabled(boolean enabled) {
         nativeSetHandTrackingEnabled(mNativeRef, enabled);
@@ -413,6 +429,8 @@ public class Renderer {
     private native void nativeSetPassthroughEnabled(long nativeRenderer, boolean enabled);
     private native void nativeSetPassthroughStyle(long nativeRenderer, float opacity,
                                                   float edgeR, float edgeG, float edgeB, float edgeA);
+    private native void nativeTriggerHaptic(long nativeRenderer, int hand,
+                                            float amplitude, float durationSec);
     private native void nativeSetHandTrackingEnabled(long nativeRenderer, boolean enabled);
     private native void nativeSetTrackingOrigin(long nativeRenderer, boolean floor);
     private native void nativeSetFoveationLevel(long nativeRenderer, int level, boolean dynamic);
