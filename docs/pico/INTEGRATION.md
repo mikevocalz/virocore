@@ -30,3 +30,21 @@ ELF headers, and source review. Android, WASM, iOS and visionOS builds require t
 native toolchains and have not been run in the integration workspace. In particular,
 reconcile Viro's imported 15.1 podspec declaration with the renderer Xcode project's
 17.6 targets when rebuilding the iOS binary set.
+
+## Design and QA documents
+
+Alongside this file: `research-plan.md` (first-run script and the G5 moderated
+usability pass), `handoff.md` (as-built spec for surfaces S1–S5),
+`ux-copy.md` (final strings S1–S6), `code-review.md` (blockers and majors across
+all three repositories), plus `device-profiles.md`,
+`adr-0001-reference-space.md` and `mobbin-refs.md`.
+
+Two documents live in
+[Viro's `docs/pico/`](https://github.com/mikevocalz/viro/tree/codex/pico-cli-bridge/docs/pico)
+rather than here, because they describe components in that repository:
+
+- `g5-runbook.md` — the on-device gate, cases K01–K12. `research-plan.md` names
+  these cases; `StudioSceneNavigator.tsx:577` defers to K07 for the PICO HDR
+  decision.
+- `design-system-audit.md` — hardcoded values in the in-scene HUD and alert,
+  measured against the spatial layout tokens.
