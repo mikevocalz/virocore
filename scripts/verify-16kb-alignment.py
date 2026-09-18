@@ -55,12 +55,19 @@ def main(argv=None) -> int:
     parser.add_argument("artifacts", nargs="+")
     parser.add_argument("--abi", choices=["arm64-v8a", "x86_64"], default="arm64-v8a")
     parser.add_argument("--min-align", type=lambda x: int(x, 0), default=0x4000)
+    parser.add_argument(
+        "--allow", action="append", default=[], metavar="BASENAME",
+        help="Library basename permitted to be under-aligned, repeatable. Reported "
+             "as ALLOW and excluded from the exit code. For third-party binaries "
+             "you cannot rebuild; every entry needs a reason at the call site. An "
+             "--allow that nothing matches is an error, so the list cannot rot.")
     args = parser.parse_args(argv)
     if args.min_align < 1 or args.min_align & (args.min_align - 1):
         parser.error("--min-align must be a positive power of two")
     machine = 183 if args.abi == "arm64-v8a" else 62
     checked = 0
     failures = 0
+    allowed = set()
 
     def check(name, data):
         nonlocal checked, failures
@@ -71,6 +78,11 @@ def main(argv=None) -> int:
                 raise ValueError(f"PT_LOAD alignment {hex(align)} < {hex(args.min_align)}")
             print(f"OK    {name}: {hex(align)}")
         except (ValueError, struct.error) as error:
+            basename = name.rsplit("/", 1)[-1]
+            if basename in args.allow:
+                allowed.add(basename)
+                print(f"ALLOW {name}: {error}")
+                return
             failures += 1
             print(f"FAIL  {name}: {error}")
 
@@ -94,7 +106,20 @@ def main(argv=None) -> int:
         except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
             failures += 1
             print(f"FAIL  {artifact}: {error}")
-    print(f"Checked {checked} libraries; {failures} failure(s).")
+    summary = f"Checked {checked} libraries; {failures} failure(s)"
+    if allowed:
+        summary += f"; {len(allowed)} allowed ({', '.join(sorted(allowed))})"
+    print(summary + ".")
+
+    # An --allow that matched nothing is itself a failure. Either the library was
+    # rebuilt and the entry should go, or its name changed and the allowance is
+    # now silently covering a different file. Both need a human.
+    stale = [name for name in dict.fromkeys(args.allow) if name not in allowed]
+    if stale:
+        print(f"FAIL  unused --allow: {', '.join(stale)} matched no under-aligned "
+              f"library. Remove the entry, or check whether the file was renamed.")
+        failures += len(stale)
+
     return 1 if failures else 0
 
 
