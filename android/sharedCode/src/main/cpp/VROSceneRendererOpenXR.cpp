@@ -1377,6 +1377,24 @@ void VROSceneRendererOpenXR::setPassthroughStyle(float opacity, float edgeR, flo
           opacity, edgeR, edgeG, edgeB, edgeA);
 }
 
+void VROSceneRendererOpenXR::triggerHaptic(int hand, float amplitude, float durationSec) {
+    // Both halves live here and nowhere else: the input controller owns the
+    // vibrate actions, the renderer owns the session xrApplyHapticFeedback
+    // needs. Guarded rather than asserted — a call before the session exists is
+    // ordinary, not a programming error.
+    if (_session == XR_NULL_HANDLE || !_inputController) {
+        return;
+    }
+    // The input controller treats any hand other than 0 as the right hand, so
+    // 2 ("both", per ViroViewOpenXR.triggerHaptic) is split here.
+    if (hand == 2) {
+        _inputController->triggerHaptic(_session, 0, amplitude, durationSec);
+        _inputController->triggerHaptic(_session, 1, amplitude, durationSec);
+        return;
+    }
+    _inputController->triggerHaptic(_session, hand, amplitude, durationSec);
+}
+
 void VROSceneRendererOpenXR::setHandTrackingEnabled(bool enabled) {
     if (_inputController) {
         _inputController->setHandTrackingEnabled(enabled);
