@@ -443,15 +443,18 @@ public class ViroViewOpenXR extends ViroView {
      * Fire a controller haptic pulse. hand: 0 = left, 1 = right, 2 = both,
      * -1 = whichever controller last pressed its trigger.
      * <p>
-     * NOT WIRED IN THIS BUILD, and deliberately a warning rather than an
-     * absence: the decax9 line's requestHaptic chain lives in input-controller
-     * work this branch has not taken, and the bridge's VRTVRSceneNavigator
-     * compiles against this signature. A build without the method throws
-     * NoSuchMethodError at the first JS haptic call; this logs and returns.
+     * -1 selects whichever controller last pressed its trigger; it maps to the
+     * right hand, which is where an unqualified haptic belongs by default.
+     *
+     * <p>Does nothing when no immersive session exists yet, or when the runtime
+     * bound no haptic output path for that hand. Both are ordinary on a device
+     * whose controllers are asleep, so neither throws.
      */
     public void triggerHaptic(int hand, float amplitude, float durationSec) {
-        android.util.Log.w("VRORendererOpenXR",
-                "triggerHaptic: no haptic path in this renderer build (pico-support)");
+        if (mNativeRenderer == null) {
+            return;
+        }
+        mNativeRenderer.triggerHaptic(hand < 0 ? 1 : hand, amplitude, durationSec);
     }
 
     public void setPassthroughStyle(float opacity, float edgeR, float edgeG,
@@ -502,11 +505,20 @@ public class ViroViewOpenXR extends ViroView {
         }
     }
 
+    /** -1: session pending; 0: no initialized plane source; 1: initialized source. */
+    public int getPlaneDetectionStatus() {
+        return mNativeRenderer != null ? mNativeRenderer.getPlaneDetectionStatus() : -1;
+    }
+
     /**
      * Negotiated OpenXR runtime facts (runtime name, API version, vendor,
      * extension flags) as a String[10], or null when no immersive instance has
-     * been created. Read reflectively by expo-pico-core's runtime probe to report
-     * true on-device facts. (expo-pico fork.)
+     * been created. (expo-pico fork.)
+     *
+     * <p>No caller today. This was documented as being read reflectively by
+     * expo-pico-core's runtime probe; no such probe exists — grepping either
+     * expo-pico or the JS fork for getRuntimeInfo returns nothing. Kept because
+     * these facts are otherwise unreachable from Java, but it is unexercised.
      */
     public String[] getRuntimeInfo() {
         return mNativeRenderer != null ? mNativeRenderer.getRuntimeInfo() : null;

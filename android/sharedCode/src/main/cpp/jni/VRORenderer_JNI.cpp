@@ -150,6 +150,22 @@ VRO_METHOD(void, nativeSetPassthroughEnabled)(VRO_ARGS
     }
 }
 
+// PICO support (expo-pico fork): vibrate one controller. hand 0 = left,
+// 1 = right; amplitude 0..1; duration in seconds. Silently does nothing when
+// no immersive session exists or the runtime bound no haptic output for that
+// hand — both are ordinary states, not errors.
+VRO_METHOD(void, nativeTriggerHaptic)(VRO_ARGS
+                                      jlong rendererRef,
+                                      jint hand,
+                                      jfloat amplitude,
+                                      jfloat durationSec) {
+    auto base = Renderer::native(rendererRef);
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(base);
+    if (xrRenderer) {
+        xrRenderer->triggerHaptic((int)hand, (float)amplitude, (float)durationSec);
+    }
+}
+
 VRO_METHOD(void, nativeSetPassthroughStyle)(VRO_ARGS
                                             jlong rendererRef,
                                             jfloat opacity,
@@ -199,11 +215,21 @@ VRO_METHOD(void, nativeSetFoveationLevel)(VRO_ARGS
     }
 }
 
+VRO_METHOD(jint, nativeGetPlaneDetectionStatus)(VRO_ARGS jlong rendererRef) {
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(Renderer::native(rendererRef));
+    return xrRenderer ? xrRenderer->getPlaneDetectionStatus() : -1;
+}
+
 // PICO support (expo-pico fork): negotiated OpenXR runtime facts as a String[10],
 // or null when no immersive instance exists. Indices:
 //   [0]=runtimeName [1..3]=major/minor/patch [4]=vendorOrdinal
 //   [5]=androidCI [6]=passthrough [7]=refreshRate [8]=handTracking [9]=handAim
-// Booleans encoded "0"/"1". Read reflectively by expo-pico-core's runtime probe.
+// Booleans encoded "0"/"1".
+//
+// No caller today. A comment here used to claim expo-pico-core read this
+// reflectively; it does not, and neither does the JS fork — grepping either
+// repo for getRuntimeInfo returns nothing. Kept because the facts it reports
+// are otherwise unreachable from Java, but treat it as unexercised.
 VRO_METHOD(jobjectArray, nativeGetRuntimeInfo)(VRO_ARGS
                                                jlong rendererRef) {
     auto base = Renderer::native(rendererRef);
@@ -227,13 +253,21 @@ VRO_METHOD(jobjectArray, nativeGetRuntimeInfo)(VRO_ARGS
         boolStr(info.handTrackingAvailable),
         boolStr(info.handAimExtAvailable),
     };
-    JNIEnv *jniEnv = VROPlatformGetJNIEnv();
-    jclass strClass = jniEnv->FindClass("java/lang/String");
-    jobjectArray arr = jniEnv->NewObjectArray(10, strClass, nullptr);
+    // VRO_ARGS already supplies env for this call's thread; looking one up
+    // again through VROPlatformGetJNIEnv() was redundant.
+    jclass strClass = env->FindClass("java/lang/String");
+    if (strClass == nullptr) return nullptr;
+    jobjectArray arr = env->NewObjectArray(10, strClass, nullptr);
+    // The class reference is a local ref like any other. Released as soon as
+    // the array is built rather than left to accumulate against the frame's
+    // local-reference capacity.
+    env->DeleteLocalRef(strClass);
+    if (arr == nullptr) return nullptr;
     for (int i = 0; i < 10; ++i) {
-        jstring s = jniEnv->NewStringUTF(vals[i]);
-        jniEnv->SetObjectArrayElement(arr, i, s);
-        jniEnv->DeleteLocalRef(s);
+        jstring s = env->NewStringUTF(vals[i]);
+        if (s == nullptr) return nullptr;
+        env->SetObjectArrayElement(arr, i, s);
+        env->DeleteLocalRef(s);
     }
     return arr;
 }
@@ -289,7 +323,12 @@ VRO_METHOD(jlong, nativeCreateRendererSceneView)(VRO_ARGS
 
 VRO_METHOD(void, nativeDestroyRenderer)(VRO_ARGS
                                         jlong native_renderer) {
-    Renderer::native(native_renderer)->onDestroy();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (!renderer) {
+        return;
+    }
+    renderer->onDestroy();
+    renderer.reset();
     VROThreadRestricted::unsetThread();
 
     delete reinterpret_cast<PersistentRef<VROSceneRenderer> *>(native_renderer);
@@ -305,9 +344,14 @@ VRO_METHOD(void, nativeInitializeGL)(VRO_ARGS
 
     VROThreadRestricted::setThread(VROThreadName::Renderer);
     std::shared_ptr<VROSceneRenderer> sceneRenderer = Renderer::native(native_renderer);
+    if (!sceneRenderer) {
+        return;
+    }
 
     std::shared_ptr<VRODriverOpenGLAndroid> driver = std::dynamic_pointer_cast<VRODriverOpenGLAndroid>(sceneRenderer->getDriver());
-    driver->setSRGBFramebuffer(sRGBFramebuffer);
+    if (driver) {
+        driver->setSRGBFramebuffer(sRGBFramebuffer);
+    }
 
     kRunRendererTest = testingMode;
     if (kRunRendererTest) {
@@ -326,7 +370,10 @@ VRO_METHOD(void, nativeInitializeGL)(VRO_ARGS
 
 VRO_METHOD(void, nativeDrawFrame)(VRO_ARGS
                                   jlong native_renderer) {
-    Renderer::native(native_renderer)->onDrawFrame();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onDrawFrame();
+    }
 }
 
 VRO_METHOD (void, nativeOnKeyEvent)(VRO_ARGS
@@ -404,22 +451,34 @@ VRO_METHOD(void, nativeSetVRModeEnabled)(VRO_ARGS
 
 VRO_METHOD(void, nativeOnStart)(VRO_ARGS
                                 jlong native_renderer) {
-        Renderer::native(native_renderer)->onStart();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onStart();
+    }
 }
 
 VRO_METHOD(void, nativeOnPause)(VRO_ARGS
                                 jlong native_renderer) {
-        Renderer::native(native_renderer)->onPause();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onPause();
+    }
 }
 
 VRO_METHOD(void, nativeOnResume)(VRO_ARGS
                                  jlong native_renderer) {
-        Renderer::native(native_renderer)->onResume();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onResume();
+    }
 }
 
 VRO_METHOD(void, nativeOnStop)(VRO_ARGS
                                jlong native_renderer) {
-        Renderer::native(native_renderer)->onStop();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onStop();
+    }
 }
 
 VRO_METHOD(void, nativeSetSceneController)(VRO_ARGS
@@ -497,7 +556,10 @@ VRO_METHOD(void, nativeOnSurfaceCreated)(VRO_ARGS
                                          jobject surface,
                                          jlong native_renderer) {
 
-    Renderer::native(native_renderer)->onSurfaceCreated(surface);
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onSurfaceCreated(surface);
+    }
 }
 
 VRO_METHOD(void, nativeOnSurfaceChanged)(VRO_ARGS
@@ -505,23 +567,39 @@ VRO_METHOD(void, nativeOnSurfaceChanged)(VRO_ARGS
                                          VRO_INT width,
                                          VRO_INT height,
                                          jlong native_renderer) {
-    Renderer::native(native_renderer)->onSurfaceChanged(surface, width, height);
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onSurfaceChanged(surface, width, height);
+    }
 }
 
 VRO_METHOD(void, nativeOnSurfaceDestroyed)(VRO_ARGS
                                            jlong native_renderer) {
-    Renderer::native(native_renderer)->onSurfaceDestroyed();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (renderer) {
+        renderer->onSurfaceDestroyed();
+    }
 }
 
 VRO_METHOD(VRO_STRING, nativeGetHeadset)(VRO_ARGS
                                          jlong nativeRenderer) {
-    std::string headset = Renderer::native(nativeRenderer)->getRenderer()->getInputController()->getHeadset();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(nativeRenderer);
+    if (!renderer) {
+        // Java callers treat this as a plain String and compare it against known
+        // headset names; an empty name matches none of them, a null would NPE.
+        return VRO_NEW_STRING("");
+    }
+    std::string headset = renderer->getRenderer()->getInputController()->getHeadset();
     return VRO_NEW_STRING(headset.c_str());
 }
 
 VRO_METHOD(VRO_STRING, nativeGetController)(VRO_ARGS
                                             jlong nativeRenderer) {
-    std::string controller = Renderer::native(nativeRenderer)->getRenderer()->getInputController()->getController();
+    std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(nativeRenderer);
+    if (!renderer) {
+        return VRO_NEW_STRING("");
+    }
+    std::string controller = renderer->getRenderer()->getInputController()->getController();
     return VRO_NEW_STRING(controller.c_str());
 }
 
@@ -529,7 +607,9 @@ VRO_METHOD(void, nativeSetDebugHUDEnabled)(VRO_ARGS
                                            jlong native_renderer,
                                            jboolean enabled) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
-    renderer->getRenderer()->setDebugHUDEnabled(enabled);
+    if (renderer) {
+        renderer->getRenderer()->setDebugHUDEnabled(enabled);
+    }
 }
 
 // VR-only (OpenXR / Quest). The legacy OVR (VrApi) path was removed in 2.57.3.
@@ -545,14 +625,24 @@ VRO_METHOD(void, nativeRecenterTracking)(VRO_ARGS
 VRO_METHOD(VRO_FLOAT_ARRAY, nativeProjectPoint)(VRO_ARGS
                                                 jlong renderer_j,
                                                 VRO_FLOAT x, VRO_FLOAT y, VRO_FLOAT z) {
-    std::shared_ptr<VRORenderer> renderer = Renderer::native(renderer_j)->getRenderer();
+    std::shared_ptr<VROSceneRenderer> sceneRenderer = Renderer::native(renderer_j);
+    if (!sceneRenderer) {
+        // Renderer.projectPoint() already maps a null array to a null Vector.
+        return nullptr;
+    }
+    std::shared_ptr<VRORenderer> renderer = sceneRenderer->getRenderer();
     return ARUtilsCreateFloatArrayFromVector3f(renderer->projectPoint({ x, y, z }));
 }
 
 VRO_METHOD(VRO_FLOAT_ARRAY, nativeUnprojectPoint)(VRO_ARGS
                                                   jlong renderer_j,
                                                   VRO_FLOAT x, VRO_FLOAT y, VRO_FLOAT z) {
-    std::shared_ptr<VRORenderer> renderer = Renderer::native(renderer_j)->getRenderer();
+    std::shared_ptr<VROSceneRenderer> sceneRenderer = Renderer::native(renderer_j);
+    if (!sceneRenderer) {
+        // Renderer.unprojectPoint() already maps a null array to a null Vector.
+        return nullptr;
+    }
+    std::shared_ptr<VRORenderer> renderer = sceneRenderer->getRenderer();
     return ARUtilsCreateFloatArrayFromVector3f(renderer->unprojectPoint({ x, y, z }));
 }
 
@@ -630,30 +720,50 @@ VRO_METHOD(void, nativeRemoveFrameListener)(VRO_ARGS
 VRO_METHOD(jboolean, nativeIsReticlePointerFixed)(VRO_ARGS
                                                   jlong native_renderer) {
     std::shared_ptr<VROSceneRenderer> sceneRenderer = Renderer::native(native_renderer);
+    if (!sceneRenderer) {
+        // No renderer, no reticle: report "not headlocked" rather than crash.
+        return false;
+    }
     return sceneRenderer->getRenderer()->getInputController()->getPresenter()->getReticle()->isHeadlocked();
 }
 
 VRO_METHOD(VRO_FLOAT_ARRAY, nativeGetCameraPositionRealtime)(VRO_ARGS
                                                              jlong native_renderer) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (!renderer) {
+        // Renderer.getLastCameraPositionRealtime() feeds this straight into
+        // new Vector(float[]), which indexes the array — a null would NPE, so
+        // return the zero vector.
+        return ARUtilsCreateFloatArrayFromVector3f({ 0, 0, 0 });
+    }
     return ARUtilsCreateFloatArrayFromVector3f(renderer->getRenderer()->getCameraPositionRealTime());
 }
 
 VRO_METHOD(VRO_FLOAT_ARRAY, nativeGetCameraRotationRealtime)(VRO_ARGS
                                                              jlong native_renderer) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (!renderer) {
+        return ARUtilsCreateFloatArrayFromVector3f({ 0, 0, 0 });
+    }
     return ARUtilsCreateFloatArrayFromVector3f(renderer->getRenderer()->getCameraRotationRealTime());
 }
 
 VRO_METHOD(VRO_FLOAT_ARRAY, nativeGetCameraForwardRealtime)(VRO_ARGS
                                                             jlong native_renderer) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (!renderer) {
+        return ARUtilsCreateFloatArrayFromVector3f({ 0, 0, 0 });
+    }
     return ARUtilsCreateFloatArrayFromVector3f(renderer->getRenderer()->getCameraForwardRealTime());
 }
 
 VRO_METHOD(VRO_FLOAT, nativeGetFieldOfView)(VRO_ARGS
                                             jlong native_ref) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_ref);
+    if (!renderer) {
+        // 0 degrees is the natural "no active camera" answer for a float FOV.
+        return 0;
+    }
     return renderer->getRenderer()->getActiveFieldOfView();
 }
 
@@ -661,6 +771,9 @@ VRO_METHOD(void, nativeSetCameraListener)(VRO_ARGS
                                           jlong native_renderer,
                                           jboolean enabled) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
+    if (!renderer) {
+        return;
+    }
     if (enabled) {
         std::shared_ptr<CameraDelegateJNI> listener = std::make_shared<CameraDelegateJNI>(obj);
         renderer->getRenderer()->setCameraDelegate(listener);

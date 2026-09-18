@@ -43,7 +43,16 @@ import java.lang.ref.WeakReference;
  */
 public class Renderer {
 
-    protected long mNativeRef;
+    /*
+     Volatile because this handle is read and written from several threads: the
+     GL/render thread (drawFrame, initializeGL), the Android main thread
+     (lifecycle, ViroView.dispose), and the finalizer thread (ViroView.finalize).
+     JLS 17.7 exempts non-volatile long from atomic access, so a plain read
+     racing the destroy() store could observe a half-written word that is
+     neither the old pointer nor 0 and would pass every != 0 guard below.
+     Stays protected: RendererARCore extends Renderer and uses this field.
+     */
+    protected volatile long mNativeRef;
     private CameraListener mCameraListener;
     private FrameListener mFrameListener;
     protected NativeFrameListenerImpl mNativeFrameListener;
@@ -131,6 +140,22 @@ public class Renderer {
         nativeSetPassthroughStyle(mNativeRef, opacity, edgeR, edgeG, edgeB, edgeA);
     }
 
+    /**
+     * Vibrate one controller. hand is 0 for left and 1 for right, amplitude is
+     * [0,1], duration is in seconds.
+     *
+     * <p>Does nothing when no immersive session exists yet, or when the runtime
+     * bound no haptic output path for that hand. Both are ordinary states on a
+     * device whose controllers are asleep or absent, so neither throws.
+     */
+    public void triggerHaptic(int hand, float amplitude, float durationSec) {
+        final long ref = mNativeRef;
+        if (ref == 0) {
+            return;
+        }
+        nativeTriggerHaptic(ref, hand, amplitude, durationSec);
+    }
+
     /** Enable or disable XR_EXT_hand_tracking gesture processing (Quest only). */
     public void setHandTrackingEnabled(boolean enabled) {
         nativeSetHandTrackingEnabled(mNativeRef, enabled);
@@ -142,7 +167,10 @@ public class Renderer {
      * non-OpenXR backends.
      */
     public void setTrackingOrigin(boolean floor) {
-        nativeSetTrackingOrigin(mNativeRef, floor);
+        long nativeRef = mNativeRef;
+        if (nativeRef != 0) {
+            nativeSetTrackingOrigin(nativeRef, floor);
+        }
     }
 
     /**
@@ -150,7 +178,16 @@ public class Renderer {
      * runtimes without XR_FB_foveation. (expo-pico fork.)
      */
     public void setFoveationLevel(int level, boolean dynamic) {
-        nativeSetFoveationLevel(mNativeRef, level, dynamic);
+        long nativeRef = mNativeRef;
+        if (nativeRef != 0) {
+            nativeSetFoveationLevel(nativeRef, level, dynamic);
+        }
+    }
+
+    /** -1: session pending; 0: no initialized plane source; 1: initialized source. */
+    public int getPlaneDetectionStatus() {
+        long nativeRef = mNativeRef;
+        return nativeRef != 0 ? nativeGetPlaneDetectionStatus(nativeRef) : -1;
     }
 
     /**
@@ -158,7 +195,8 @@ public class Renderer {
      * instance exists. Read reflectively by expo-pico-core. (expo-pico fork.)
      */
     public String[] getRuntimeInfo() {
-        return nativeGetRuntimeInfo(mNativeRef);
+        long nativeRef = mNativeRef;
+        return nativeRef != 0 ? nativeGetRuntimeInfo(nativeRef) : null;
     }
 
     /* ----------     Common lifecycle methods    ---------- */
@@ -169,10 +207,19 @@ public class Renderer {
         }
         mNativeFrameListener = null;
 
-        if (mNativeRef != 0) {
-            nativeDestroyRenderer(mNativeRef);
-        }
+        /*
+         Zero the field before the native call, not after. nativeDestroyRenderer
+         deletes the PersistentRef the handle points at, so for the whole
+         duration of that call the old value is a dangling pointer that still
+         passes every != 0 guard. Publishing 0 first means a concurrent caller
+         either sees the live handle (and holds a shared_ptr that outlives this
+         call) or sees 0 and does nothing.
+         */
+        long nativeRef = mNativeRef;
         mNativeRef = 0;
+        if (nativeRef != 0) {
+            nativeDestroyRenderer(nativeRef);
+        }
     }
 
     public void initializeGL(boolean framebufferSRGB) {
@@ -382,9 +429,12 @@ public class Renderer {
     private native void nativeSetPassthroughEnabled(long nativeRenderer, boolean enabled);
     private native void nativeSetPassthroughStyle(long nativeRenderer, float opacity,
                                                   float edgeR, float edgeG, float edgeB, float edgeA);
+    private native void nativeTriggerHaptic(long nativeRenderer, int hand,
+                                            float amplitude, float durationSec);
     private native void nativeSetHandTrackingEnabled(long nativeRenderer, boolean enabled);
     private native void nativeSetTrackingOrigin(long nativeRenderer, boolean floor);
     private native void nativeSetFoveationLevel(long nativeRenderer, int level, boolean dynamic);
+    private native int nativeGetPlaneDetectionStatus(long nativeRenderer);
     private native String[] nativeGetRuntimeInfo(long nativeRenderer);
     private native void nativeSetClearColor(long sceneRef, int color);
     private native void nativeSetShadowsEnabled(long nativeRef, boolean enabled);

@@ -429,8 +429,14 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                   (int)_runtimeInfo.displayRefreshRateAvailable,
                   (int)_runtimeInfo.handTrackingAvailable,
                   (int)_foveationAvailable);
+            // Inside the success branch: valid means the fields below it were
+            // actually filled. Set unconditionally, a failed query still
+            // published an empty runtimeName and 0.0.0, which reads downstream
+            // as a runtime that answered rather than one that did not.
+            _runtimeInfo.valid = true;
+        } else {
+            ALOGI("OpenXR: xrGetInstanceProperties failed; runtime info unavailable");
         }
-        _runtimeInfo.valid = true;
     }
 
     // ── Get system (HMD) ──────────────────────────────────────────────────────
@@ -616,6 +622,7 @@ bool VROSceneRendererOpenXR::createSession() {
         }
     }
 
+    _planeDetectionStatus.store(_arSession ? kPlaneDetectionActive : kPlaneDetectionNone);
     return true;
 }
 
@@ -1204,6 +1211,18 @@ void VROSceneRendererOpenXR::setPassthroughStyle(float opacity, float edgeR, flo
           opacity, edgeR, edgeG, edgeB, edgeA);
 }
 
+void VROSceneRendererOpenXR::triggerHaptic(int hand, float amplitude, float durationSec) {
+    // Both halves live here and nowhere else: the input controller owns the
+    // vibrate actions, the renderer owns the session xrApplyHapticFeedback
+    // needs. Guarded rather than asserted — a call before the session exists is
+    // ordinary, not a programming error.
+    if (_session == XR_NULL_HANDLE || !_inputController) {
+        return;
+    }
+    _inputController->triggerHaptic(_session, hand, amplitude, durationSec);
+}
+
+
 void VROSceneRendererOpenXR::setHandTrackingEnabled(bool enabled) {
     if (_inputController) {
         _inputController->setHandTrackingEnabled(enabled);
@@ -1285,6 +1304,11 @@ void VROSceneRendererOpenXR::destroySwapchains() {
 }
 
 void VROSceneRendererOpenXR::destroySession() {
+    _planeDetectionStatus.store(kPlaneDetectionTornDown);
+    // Clear the runtime facts with it. They describe an XrInstance that no
+    // longer exists, and getRuntimeInfo() has no other way to tell a caller
+    // that what it is reading is from a torn-down session.
+    _runtimeInfo = VROOpenXRRuntimeInfo{};
     // AR session teardown — destroy the plane detector before the XrSession.
     if (_arSession) {
         _arSession->destroyPlaneDetector();
