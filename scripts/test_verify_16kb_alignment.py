@@ -72,6 +72,30 @@ class AlignmentTests(unittest.TestCase):
         data = elf(); struct.pack_into('<Q', data, 72, 1)
         self.assertEqual(self.archive_result({'jni/arm64-v8a/libviro.so': data}), 1)
 
+    def test_twin_copy_has_not_drifted(self):
+        """The identical copy in the sibling repo must stay identical.
+
+        Skipped when the sibling is not checked out beside this one, which is
+        the normal case in CI for a single repo. When it is present, a drift
+        fails here rather than silently leaving one repo enforcing less than
+        the other.
+        """
+        here = Path(__file__).resolve()
+        repo = here.parent.parent
+        siblings = ('virocore', 'expo-pico')
+        for name in siblings:
+            candidate = repo.parent / name / 'scripts' / here.name
+            if candidate.resolve() == here or not candidate.is_file():
+                continue
+            self.assertEqual(
+                candidate.read_bytes(), here.read_bytes(),
+                f'{candidate} has drifted from {here}; change both or neither')
+            twin = candidate.with_name('verify-16kb-alignment.py')
+            mine = here.with_name('verify-16kb-alignment.py')
+            self.assertEqual(
+                twin.read_bytes(), mine.read_bytes(),
+                f'{twin} has drifted from {mine}; change both or neither')
+
 
 if __name__ == '__main__':
     unittest.main()

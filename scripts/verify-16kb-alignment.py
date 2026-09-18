@@ -8,6 +8,14 @@ size. This checks ELF headers, not APK ZIP offsets: also run
 Usage: python3 verify-16kb-alignment.py artifact [artifact ...] [--abi arm64-v8a]
 Exit 0: every selected library passed; 1: invalid, missing, or under-aligned
 libraries; 2: argument error. No third-party dependencies.
+
+This file exists byte-identically in two repositories: mikevocalz/virocore and
+mikevocalz/expo-pico, both at scripts/verify-16kb-alignment.py, with its test
+alongside it. There is no shared source and no package — a change to one is only
+in the other if someone copies it. The alignment check gates release artifacts
+in both, so the copies drifting apart means one repo silently stops enforcing
+what the other does. Change both, or neither. test_verify_16kb_alignment.py
+asserts they still match.
 """
 import argparse
 import struct
