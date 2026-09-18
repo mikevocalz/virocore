@@ -58,12 +58,20 @@ AAR_PATH="viroreact/build/outputs/aar/viroreact-release.aar"
 # evidence of page size. APK ZIP alignment must also be verified after app packaging.
 echo "==> Verifying 16KB page alignment of arm64-v8a libraries"
 cd ..  # back to repo root for the verifier
-if ! python3 scripts/verify-16kb-alignment.py "android/$AAR_PATH"; then
+# Keep the verifier's output: the alignment it measured is what the provenance
+# record reports, rather than a constant asserting what it ought to have been.
+if ! ALIGN_REPORT="$(python3 scripts/verify-16kb-alignment.py "android/$AAR_PATH")"; then
+    printf '%s\n' "$ALIGN_REPORT"
     echo "ERROR: AAR contains 4KB-aligned arm64-v8a libraries — refusing to stage."
     echo "       Check NDK version (need r27+), the -Wl,-z,max-page-size=16384"
     echo "       linker flag, and the openxr_loader_for_android version (need >=1.1.57)."
     exit 1
 fi
+printf '%s\n' "$ALIGN_REPORT"
+# Smallest alignment across every library checked — the one that decides whether
+# the AAR loads on a 16KB-page device.
+MIN_ALIGN="$(printf '%s\n' "$ALIGN_REPORT" | sed -n 's/^OK  *.*: \(0x[0-9a-f]*\)$/\1/p' \
+    | sort -u | python3 -c 'import sys; v=[int(l,16) for l in sys.stdin.read().split()]; print(min(v) if v else 0)')"
 cd android
 
 mkdir -p "$OUT_DIR"
@@ -71,22 +79,40 @@ mkdir -p "$OUT_DIR"
 cp "$AAR_PATH" "$OUT_DIR/viro_renderer-release.aar"
 
 echo "==> AAR staged: $OUT_DIR/viro_renderer-release.aar"
-echo "    sha256: $(sha256sum "$OUT_DIR/viro_renderer-release.aar" | cut -d' ' -f1)"
+# sha256sum is coreutils; stock macOS ships shasum instead. Resolve once and
+# fail loudly — inside "$(...)" a missing tool is swallowed and prints an empty
+# hash, which reads as a successful build with no checksum.
+if command -v sha256sum >/dev/null 2>&1; then
+    AAR_SHA256="$(sha256sum "$OUT_DIR/viro_renderer-release.aar" | cut -d' ' -f1)"
+elif command -v shasum >/dev/null 2>&1; then
+    AAR_SHA256="$(shasum -a 256 "$OUT_DIR/viro_renderer-release.aar" | cut -d' ' -f1)"
+else
+    echo "ERROR: neither sha256sum nor shasum found; cannot record artifact provenance." >&2
+    exit 1
+fi
+echo "    sha256: $AAR_SHA256"
 echo ""
 echo "Next: in the mikevocalz/viro JS fork,"
 echo "  cp $OUT_DIR/viro_renderer-release.aar android/viro_renderer/viro_renderer-release.aar"
 echo "  Rebuild Viro's react_viro bridge AAR against this renderer before packaging."
 echo "  Validate the final APK and headset lifecycle before publishing a release."
-python3 - "$OUT_DIR/viro_renderer-release.aar" "$REPO_ROOT" <<'PYMETA'
+python3 - "$OUT_DIR/viro_renderer-release.aar" "$REPO_ROOT" "$MIN_ALIGN" <<'PYMETA'
 import hashlib, json, pathlib, subprocess, sys
-artifact, root = pathlib.Path(sys.argv[1]), sys.argv[2]
+artifact, root, min_align = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+# --untracked-files=no: dirty must mean the tracked sources drifted from the
+# recorded commit. Untracked files do not change what was compiled, and the
+# build itself leaves some behind, so counting them marks every artifact dirty
+# and the flag stops carrying information.
+dirty = subprocess.check_output(
+    ["git", "-C", root, "status", "--porcelain", "--untracked-files=no"], text=True
+).strip()
 metadata = {
     "repository": "mikevocalz/virocore",
     "commit": subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip(),
-    "dirty": bool(subprocess.check_output(["git", "-C", root, "status", "--porcelain"], text=True).strip()),
+    "dirty": bool(dirty),
     "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
     "artifact": artifact.name,
-    "elf_alignment_verified": "arm64-v8a >= 16384",
+    "elf_alignment_verified": {"abi": "arm64-v8a", "min_p_align": min_align},
 }
 artifact.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n")
 PYMETA
