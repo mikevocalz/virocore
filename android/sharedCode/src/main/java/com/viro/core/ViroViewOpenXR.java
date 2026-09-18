@@ -510,8 +510,12 @@ public class ViroViewOpenXR extends ViroView {
     /**
      * Negotiated OpenXR runtime facts (runtime name, API version, vendor,
      * extension flags) as a String[10], or null when no immersive instance has
-     * been created. Read reflectively by expo-pico-core's runtime probe to report
-     * true on-device facts. (expo-pico fork.)
+     * been created. (expo-pico fork.)
+     *
+     * <p>No caller today. This was documented as being read reflectively by
+     * expo-pico-core's runtime probe; no such probe exists — grepping either
+     * expo-pico or the JS fork for getRuntimeInfo returns nothing. Kept because
+     * these facts are otherwise unreachable from Java, but it is unexercised.
      */
     public String[] getRuntimeInfo() {
         return mNativeRenderer != null ? mNativeRenderer.getRuntimeInfo() : null;

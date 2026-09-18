@@ -429,8 +429,14 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                   (int)_runtimeInfo.displayRefreshRateAvailable,
                   (int)_runtimeInfo.handTrackingAvailable,
                   (int)_foveationAvailable);
+            // Inside the success branch: valid means the fields below it were
+            // actually filled. Set unconditionally, a failed query still
+            // published an empty runtimeName and 0.0.0, which reads downstream
+            // as a runtime that answered rather than one that did not.
+            _runtimeInfo.valid = true;
+        } else {
+            ALOGI("OpenXR: xrGetInstanceProperties failed; runtime info unavailable");
         }
-        _runtimeInfo.valid = true;
     }
 
     // ── Get system (HMD) ──────────────────────────────────────────────────────
@@ -1287,6 +1293,10 @@ void VROSceneRendererOpenXR::destroySwapchains() {
 
 void VROSceneRendererOpenXR::destroySession() {
     _planeDetectionStatus.store(kPlaneDetectionTornDown);
+    // Clear the runtime facts with it. They describe an XrInstance that no
+    // longer exists, and getRuntimeInfo() has no other way to tell a caller
+    // that what it is reading is from a torn-down session.
+    _runtimeInfo = VROOpenXRRuntimeInfo{};
     // AR session teardown — destroy the plane detector before the XrSession.
     if (_arSession) {
         _arSession->destroyPlaneDetector();

@@ -208,7 +208,12 @@ VRO_METHOD(jint, nativeGetPlaneDetectionStatus)(VRO_ARGS jlong rendererRef) {
 // or null when no immersive instance exists. Indices:
 //   [0]=runtimeName [1..3]=major/minor/patch [4]=vendorOrdinal
 //   [5]=androidCI [6]=passthrough [7]=refreshRate [8]=handTracking [9]=handAim
-// Booleans encoded "0"/"1". Read reflectively by expo-pico-core's runtime probe.
+// Booleans encoded "0"/"1".
+//
+// No caller today. A comment here used to claim expo-pico-core read this
+// reflectively; it does not, and neither does the JS fork — grepping either
+// repo for getRuntimeInfo returns nothing. Kept because the facts it reports
+// are otherwise unreachable from Java, but treat it as unexercised.
 VRO_METHOD(jobjectArray, nativeGetRuntimeInfo)(VRO_ARGS
                                                jlong rendererRef) {
     auto base = Renderer::native(rendererRef);
@@ -232,13 +237,21 @@ VRO_METHOD(jobjectArray, nativeGetRuntimeInfo)(VRO_ARGS
         boolStr(info.handTrackingAvailable),
         boolStr(info.handAimExtAvailable),
     };
-    JNIEnv *jniEnv = VROPlatformGetJNIEnv();
-    jclass strClass = jniEnv->FindClass("java/lang/String");
-    jobjectArray arr = jniEnv->NewObjectArray(10, strClass, nullptr);
+    // VRO_ARGS already supplies env for this call's thread; looking one up
+    // again through VROPlatformGetJNIEnv() was redundant.
+    jclass strClass = env->FindClass("java/lang/String");
+    if (strClass == nullptr) return nullptr;
+    jobjectArray arr = env->NewObjectArray(10, strClass, nullptr);
+    // The class reference is a local ref like any other. Released as soon as
+    // the array is built rather than left to accumulate against the frame's
+    // local-reference capacity.
+    env->DeleteLocalRef(strClass);
+    if (arr == nullptr) return nullptr;
     for (int i = 0; i < 10; ++i) {
-        jstring s = jniEnv->NewStringUTF(vals[i]);
-        jniEnv->SetObjectArrayElement(arr, i, s);
-        jniEnv->DeleteLocalRef(s);
+        jstring s = env->NewStringUTF(vals[i]);
+        if (s == nullptr) return nullptr;
+        env->SetObjectArrayElement(arr, i, s);
+        env->DeleteLocalRef(s);
     }
     return arr;
 }
