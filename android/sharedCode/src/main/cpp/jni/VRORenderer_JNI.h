@@ -39,7 +39,16 @@ namespace Renderer{
         return reinterpret_cast<intptr_t>(persistedRenderer);
     }
 
+    /*
+     Returns an empty shared_ptr when ptr is 0. Renderer.java zeroes its handle
+     before it destroys the renderer, and ViroView.dispose() leaves the Renderer
+     object reachable afterwards, so calls do arrive here with 0. Every caller
+     must test the result instead of dereferencing it.
+     */
     inline std::shared_ptr<VROSceneRenderer> native(jlong ptr) {
+        if (ptr == 0) {
+            return nullptr;
+        }
         PersistentRef<VROSceneRenderer> *persistedRenderer = reinterpret_cast<PersistentRef<VROSceneRenderer> *>(ptr);
         return persistedRenderer->get();
     }

@@ -694,7 +694,7 @@ bool VROSceneRendererOpenXR::createSession() {
         }
     }
 
-    _planeDetectionStatus.store(_arSession ? 1 : 0);
+    _planeDetectionStatus.store(_arSession ? kPlaneDetectionActive : kPlaneDetectionNone);
     return true;
 }
 
@@ -1494,7 +1494,7 @@ void VROSceneRendererOpenXR::destroySwapchains() {
 }
 
 void VROSceneRendererOpenXR::destroySession() {
-    _planeDetectionStatus.store(-1);
+    _planeDetectionStatus.store(kPlaneDetectionTornDown);
     // AR session teardown — destroy the plane detector before the XrSession.
     if (_arSession) {
         _arSession->destroyPlaneDetector();
