@@ -454,89 +454,32 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     pollFloatButton(_leftGripAction, ViroOculus::LeftGrip, kGripThreshold,
                     leftValid, _prevGripLeft);
 
-    // ── A button (right hand) ─────────────────────────────────────────────────
-    {
-        XrActionStateBoolean state  = { XR_TYPE_ACTION_STATE_BOOLEAN };
-        XrActionStateGetInfo info   = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _aButtonAction;
-        xrGetActionStateBoolean(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState == XR_TRUE);
-            if (pressed && !_prevAButton)
-                queueButtonEvent(ViroOculus::AButton, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevAButton)
-                queueButtonEvent(ViroOculus::AButton, VROEventDelegate::ClickState::ClickUp);
-            _prevAButton = pressed;
+    // Face buttons need the same cancellation as trigger/grip actions.
+    auto pollBooleanButton = [this, session](XrAction action, int source,
+                                            bool poseValid, bool &previous,
+                                            bool backButton = false) {
+        XrActionStateBoolean state = { XR_TYPE_ACTION_STATE_BOOLEAN };
+        XrActionStateGetInfo info = { XR_TYPE_ACTION_STATE_GET_INFO };
+        info.action = action;
+        const XrResult result = xrGetActionStateBoolean(session, &info, &state);
+        const bool active = XR_SUCCEEDED(result) && state.isActive && poseValid;
+        switch (updateInputButton(active, state.currentState == XR_TRUE, previous)) {
+            case VROInputButtonEdge::Down:
+                queueButtonEvent(source, VROEventDelegate::ClickDown);
+                if (backButton && _backButtonCallback) _backButtonCallback();
+                break;
+            case VROInputButtonEdge::Up:
+                queueButtonEvent(source, VROEventDelegate::ClickUp); break;
+            case VROInputButtonEdge::Cancel:
+                VROInputControllerBase::cancelSource(source); break;
+            case VROInputButtonEdge::None: break;
         }
-    }
-
-    // ── B button (right hand → BackButton) ───────────────────────────────────
-    {
-        XrActionStateBoolean state  = { XR_TYPE_ACTION_STATE_BOOLEAN };
-        XrActionStateGetInfo info   = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _bButtonAction;
-        xrGetActionStateBoolean(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState == XR_TRUE);
-            if (pressed && !_prevBButton) {
-                queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickDown);
-                if (_backButtonCallback) _backButtonCallback();
-            } else if (!pressed && _prevBButton) {
-                queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickUp);
-            }
-            _prevBButton = pressed;
-        }
-    }
-
-    // ── X button (left hand) ─────────────────────────────────────────────────
-    {
-        XrActionStateBoolean state  = { XR_TYPE_ACTION_STATE_BOOLEAN };
-        XrActionStateGetInfo info   = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _xButtonAction;
-        xrGetActionStateBoolean(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState == XR_TRUE);
-            if (pressed && !_prevXButton)
-                queueButtonEvent(ViroOculus::XButton, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevXButton)
-                queueButtonEvent(ViroOculus::XButton, VROEventDelegate::ClickState::ClickUp);
-            _prevXButton = pressed;
-        }
-    }
-
-    // ── Y button (left hand) ─────────────────────────────────────────────────
-    {
-        XrActionStateBoolean state  = { XR_TYPE_ACTION_STATE_BOOLEAN };
-        XrActionStateGetInfo info   = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _yButtonAction;
-        xrGetActionStateBoolean(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState == XR_TRUE);
-            if (pressed && !_prevYButton)
-                queueButtonEvent(ViroOculus::YButton, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevYButton)
-                queueButtonEvent(ViroOculus::YButton, VROEventDelegate::ClickState::ClickUp);
-            _prevYButton = pressed;
-        }
-    }
-
-    // ── Menu button (left hand → BackButton) ─────────────────────────────────
-    {
-        XrActionStateBoolean state  = { XR_TYPE_ACTION_STATE_BOOLEAN };
-        XrActionStateGetInfo info   = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _menuAction;
-        xrGetActionStateBoolean(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState == XR_TRUE);
-            if (pressed && !_prevMenuButton) {
-                queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickDown);
-                if (_backButtonCallback) _backButtonCallback();
-            } else if (!pressed && _prevMenuButton) {
-                queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickUp);
-            }
-            _prevMenuButton = pressed;
-        }
-    }
+    };
+    pollBooleanButton(_aButtonAction, ViroOculus::AButton, rightValid, _prevAButton);
+    pollBooleanButton(_bButtonAction, ViroOculus::BackButton, rightValid, _prevBButton, true);
+    pollBooleanButton(_xButtonAction, ViroOculus::XButton, leftValid, _prevXButton);
+    pollBooleanButton(_yButtonAction, ViroOculus::YButton, leftValid, _prevYButton);
+    pollBooleanButton(_menuAction, ViroOculus::BackButton, leftValid, _prevMenuButton, true);
 
     // ── Right thumbstick → scroll events ─────────────────────────────────────
     {
