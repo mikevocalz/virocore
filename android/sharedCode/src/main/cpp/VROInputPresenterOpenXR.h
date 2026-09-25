@@ -29,6 +29,7 @@
 #include "VROReticle.h"
 #include "VRONode.h"
 #include "VROPolyline.h"
+#include "VROSphere.h"
 #include "VROMaterial.h"
 #include "VROGLTFLoader.h"
 #include "VROPlatformUtil.h"
@@ -81,10 +82,11 @@ public:
      * @param visible    True to show, false to hide (no input active)
      */
     void updateAimRay(int source, const VROVector3f &origin,
-                      const VROVector3f &hitPoint, bool visible) {
+                      const VROVector3f &hitPoint, bool visible, bool surfaceHit = false) {
         Laser &laser = getOrCreateLaser(source);
         if (!visible) {
             laser.node->setHidden(true);
+            laser.dot->setHidden(true);
             return;
         }
         // Defensive: a zero-length segment (origin == hitPoint, e.g. degenerate
@@ -93,11 +95,17 @@ public:
         VROVector3f delta = hitPoint - origin;
         if (delta.magnitude() < 0.001f) {
             laser.node->setHidden(true);
+            laser.dot->setHidden(true);
             return;
         }
         laser.node->setHidden(false);
         std::vector<std::vector<VROVector3f>> paths = { { origin, hitPoint } };
         laser.geom->setPaths(paths);
+        // Each ray owns its endpoint. The shared legacy reticle can follow the
+        // other hand, so it cannot be the only indication of this ray's hit.
+        laser.dot->setHidden(!surfaceHit || !getReticle() || !getReticle()->isEnabled());
+        laser.dot->setPosition(hitPoint);
+
     }
 
     /**
@@ -176,6 +184,7 @@ private:
     struct Laser {
         std::shared_ptr<VRONode>     node;
         std::shared_ptr<VROPolyline> geom;
+        std::shared_ptr<VRONode>     dot;
     };
 
     Laser &getOrCreateLaser(int source) {
@@ -196,6 +205,7 @@ private:
 
         laser.node = std::make_shared<VRONode>();
         laser.node->setName("AimLaser");
+        laser.node->setRenderingOrder(1000);
         laser.node->setGeometry(laser.geom);
         laser.node->setHidden(true);  // hidden until first updateAimRay()
         // The beam's AABB spans controller to hit point, so its own ray runs
@@ -203,6 +213,24 @@ private:
         laser.node->setSelectable(false);
         laser.node->setIgnoreEventHandling(true);
         _rootNode->addChildNode(laser.node);
+
+        // A small unlit dot remains readable against the canvas. Draw it after
+        // scene geometry, without depth writes, and never include it in hits.
+        auto dotGeometry = VROSphere::createSphere(0.007f, 12, 8, true);
+        auto dotMaterial = dotGeometry->getMaterials().front();
+        dotMaterial->setLightingModel(VROLightingModel::Constant);
+        dotMaterial->getDiffuse().setColor({0.33f, 0.976f, 0.968f, 1.0f});
+        dotMaterial->setReadsFromDepthBuffer(false);
+        dotMaterial->setWritesToDepthBuffer(false);
+        dotMaterial->setReceivesShadows(false);
+        laser.dot = std::make_shared<VRONode>();
+        laser.dot->setName("AimHitDot");
+        laser.dot->setGeometry(dotGeometry);
+        laser.dot->setRenderingOrder(1001);
+        laser.dot->setHidden(true);
+        laser.dot->setSelectable(false);
+        laser.dot->setIgnoreEventHandling(true);
+        _rootNode->addChildNode(laser.dot);
 
         return _lasers.emplace(source, std::move(laser)).first->second;
     }
