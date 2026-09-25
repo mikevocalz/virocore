@@ -176,8 +176,18 @@ VROSceneWeb::VROSceneWeb(std::string canvasSelector, int width, int height) :
 }
 
 VROSceneWeb::~VROSceneWeb() {
+    // The constructor started the global emscripten main loop and created the
+    // WebGL context; both are process-global and outlive this object unless
+    // released here. Without the cancel, destroying a scene leaves the loop
+    // firing drawFrame() forever (the sInstance guard only stops the draw, not
+    // the rAF churn), and a re-init would stack a second loop on top.
     if (sInstance == this) {
         sInstance = nullptr;
+    }
+    emscripten_cancel_main_loop();
+    if (_context > 0) {
+        emscripten_webgl_destroy_context(_context);
+        _context = 0;
     }
 }
 
@@ -388,7 +398,15 @@ void VROSceneWeb::onTouch(int action, float x, float y) {
 // once the canvas exists, then the emscripten main loop drives drawFrame().
 static std::shared_ptr<VROSceneWeb> sScene;
 
+// Defined below the C API registries it clears; declared here so initViroScene
+// can re-init cleanly.
+static void destroyViroScene();
+
 static void initViroScene(std::string canvasSelector, int width, int height) {
+    // A second init must not stack another main loop on the first scene.
+    if (sScene) {
+        destroyViroScene();
+    }
     sScene = std::make_shared<VROSceneWeb>(canvasSelector, width, height);
 }
 
@@ -1976,8 +1994,38 @@ static void viroARSetCameraIntrinsics(float fx, float fy, float cx, float cy,
     if (session) session->setCameraIntrinsics(fx, fy, cx, cy, width, height);
 }
 
+// Tear the scene down completely: cancel the main loop, release every handle
+// the C API issued, and destroy the GL context. Without this a JS-side unmount
+// (or a second initViroScene) leaks the scene, the loop keeps running against
+// dead state, and all handle tables keep their stale entries.
+static void destroyViroScene() {
+    // Handles reference scene-owned objects; drop them while the scene is
+    // still alive so destructors run against a valid graph.
+    sNodes.clear();
+    sGeometries.clear();
+    sMaterials.clear();
+    sShaderOverrideBaselines.clear();
+    sBillboards.clear();
+    sNodeAnimations.clear();
+    sNodeDelegates.clear();
+    sPhysicsBodies.clear();
+    sPhysicsDelegates.clear();
+    sLights.clear();
+    sTextures.clear();
+    sNextHandle = 1;
+    sRootHandle = 0;
+    sPhysicsEnabled = false;
+    sEventCallback = emscripten::val::undefined();
+    sCollisionCallback = emscripten::val::undefined();
+    sModelLoadCallback = emscripten::val::undefined();
+    sAnimationCallback = emscripten::val::undefined();
+
+    sScene.reset();
+}
+
 EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("initViroScene", &initViroScene);
+    emscripten::function("destroyViroScene", &destroyViroScene);
     emscripten::function("setViroSceneSize", &setViroSceneSize);
     emscripten::function("viroSetHDREnabled", &viroSetHDREnabled);
     emscripten::function("viroSetBloomEnabled", &viroSetBloomEnabled);
