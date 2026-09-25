@@ -652,6 +652,7 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
             VROInputControllerBase::processGazeEvent(source);
             updateLaserViz(source, pos, fwd, /*visible=*/true);
         } else {
+            VROInputControllerBase::cancelSource(source);
             updateLaserViz(source, {}, {}, /*visible=*/false);
         }
     };
@@ -686,6 +687,9 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     }
 
     for (const auto &edge : _pendingButtons) {
+        const int ray = rayForSource(edge.first);
+        if ((ray == ViroOculus::Controller && !rightValid) ||
+            (ray == ViroOculus::LeftController && !leftValid)) continue;
         VROInputControllerBase::onButtonEvent(edge.first, edge.second);
     }
     _pendingButtons.clear();

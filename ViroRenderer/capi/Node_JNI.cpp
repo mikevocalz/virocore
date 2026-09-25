@@ -563,6 +563,19 @@ VRO_METHOD(void, nativeSetRenderingOrder)(VRO_ARGS
     });
 }
 
+VRO_METHOD(void, nativeSetDragTransform)(VRO_ARGS
+                                        VRO_REF(VRONode) native_node_ref,
+                                        VRO_STRING transform) {
+    VRO_METHOD_PREAMBLE;
+    std::weak_ptr<VRONode> node_w = VRO_REF_GET(VRONode, native_node_ref);
+    std::string value = VRO_STRING_STL(transform);
+    VRODragTransform mode = value == "parent" ? VRODragTransform::Parent
+            : value == "none" ? VRODragTransform::None : VRODragTransform::Self;
+    VROPlatformDispatchAsyncRenderer([node_w, mode] {
+        if (auto node = node_w.lock()) node->setDragTransform(mode);
+    });
+}
+
 VRO_METHOD(void, nativeSetDragType)(VRO_ARGS
                                     VRO_REF(VRONode) native_node_ref,
                                     VRO_STRING dragType) {

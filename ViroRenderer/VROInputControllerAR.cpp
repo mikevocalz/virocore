@@ -169,7 +169,7 @@ void VROInputControllerAR::processDragging(int source, bool alwaysRun) {
             // create new transaction to the new location
             VROTransaction::begin();
             VROTransaction::setAnimationDuration(.1);
-            draggedNode->setWorldTransform(position, _lastDraggedNode->_originalDraggedNodeRotation, true);
+            applyDragTransform(position, true);
 
             std::weak_ptr<VRONode> weakNode = draggedNode;
             VROTransaction::setFinishCallback([weakNode](bool terminate) {

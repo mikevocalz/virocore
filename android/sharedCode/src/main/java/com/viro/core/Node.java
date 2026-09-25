@@ -740,6 +740,14 @@ public class Node implements EventDelegate.EventDelegateCallback {
      *
      * @param dragType The {@link DragType} to use.
      */
+    /** Android: choose which node moves; drag events still describe this node's world destination. */
+    public void setDragTransform(String transform) {
+        if (!"self".equals(transform) && !"parent".equals(transform) && !"none".equals(transform)) {
+            throw new IllegalArgumentException("dragTransform must be self, parent, or none");
+        }
+        nativeSetDragTransform(mNativeRef, transform);
+    }
+
     public void setDragType(DragType dragType) {
         mDragType = dragType;
         nativeSetDragType(mNativeRef, dragType.getStringValue());
@@ -1772,6 +1780,7 @@ public class Node implements EventDelegate.EventDelegateCallback {
     private native void nativeSetOpacity(long nodeReference, float opacity);
     private native void nativeSetVisible(long nodeReference, boolean visible);
     private native void nativeSetRenderingOrder(long nodeReference, int renderingOrder);
+    private native void nativeSetDragTransform(long nodeReference, String transform);
     private native void nativeSetDragType(long nodeReference, String dragType);
     private native void nativeSetDragPlanePoint(long nodeReference, float[] planePoint);
     private native void nativeSetDragPlaneNormal(long nodeReference, float[] planeNormal);
