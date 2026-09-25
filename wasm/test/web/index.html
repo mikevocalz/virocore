@@ -42,7 +42,11 @@
           const mod = await ViroWeb({ canvas });
           status.textContent = "module ready — starting render loop";
           mod.initViroScene("#viroCanvas", w, h);
+          mod.viroBuildDemoCube();
           status.textContent = "rendering (spinning cube)";
+          // Exposed so smoke tests can drive destroyViroScene/re-init without
+          // a second module instance.
+          window.viroModule = mod;
 
           window.addEventListener("resize", () => {
             const s = sizeCanvas();

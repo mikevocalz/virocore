@@ -244,11 +244,23 @@ std::shared_ptr<VROARSessionWeb> VROSceneWeb::getARSession() {
 }
 
 void VROSceneWeb::buildCubeScene() {
-    // Reuse the empty scene's root/camera/lights, then add demo geometry.
+    // Reuse the empty scene's root/camera, then add demo geometry and lights.
+    // buildEmptyScene intentionally creates no lights (bridge parity), so a
+    // Blinn/Lambert demo must supply its own or it renders black.
     std::shared_ptr<VROPortal> rootNode = getRootNode();
     if (!rootNode) {
         return;
     }
+
+    std::shared_ptr<VROLight> ambient = std::make_shared<VROLight>(VROLightType::Ambient);
+    ambient->setColor({0.4f, 0.4f, 0.4f});
+    rootNode->addLight(ambient);
+
+    std::shared_ptr<VROLight> sun = std::make_shared<VROLight>(VROLightType::Directional);
+    sun->setColor({1.0f, 1.0f, 1.0f});
+    sun->setDirection({0.4f, -0.8f, -0.5f});
+    sun->setCastsShadow(true);
+    rootNode->addLight(sun);
 
     std::shared_ptr<VROBox> box = VROBox::createBox(2, 2, 2);
     box->setName("Cube");
