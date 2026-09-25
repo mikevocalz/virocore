@@ -547,7 +547,11 @@ void VROInputControllerBase::onRotate(int source, float rotationRadians, VROEven
 }
 
 void VROInputControllerBase::updateHitNode(const VROCamera &camera, VROVector3f origin, VROVector3f ray) {
-    if (_scene == nullptr || _lastDraggedNode != nullptr) {
+    // Input-only panel drags keep their collider stationary. Continue hit tests
+    // so the ray and release position follow the pointer instead of freezing
+    // at the initial press. Moving drags retain their captured hit.
+    if (_scene == nullptr || (_lastDraggedNode != nullptr &&
+                              _lastDraggedNode->_transformNode != nullptr)) {
         return;
     }
 
@@ -557,7 +561,11 @@ void VROInputControllerBase::updateHitNode(const VROCamera &camera, VROVector3f 
 
 void VROInputControllerBase::updateHitNode(int source, const VROCamera &camera,
                                            VROVector3f origin, VROVector3f ray) {
-    if (_scene == nullptr || _lastDraggedNode != nullptr) {
+    // Input-only panel drags keep their collider stationary. Continue hit tests
+    // so the ray and release position follow the pointer instead of freezing
+    // at the initial press. Moving drags retain their captured hit.
+    if (_scene == nullptr || (_lastDraggedNode != nullptr &&
+                              _lastDraggedNode->_transformNode != nullptr)) {
         return;
     }
     auto hit = std::make_shared<VROHitTestResult>(hitTest(camera, origin, ray, true));
