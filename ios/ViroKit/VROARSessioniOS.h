@@ -87,6 +87,7 @@ public:
     void resolveCloudAnchor(std::string anchorId,
                             std::function<void(std::shared_ptr<VROARAnchor> anchor)> onSuccess,
                             std::function<void(std::string error)> onFailure);
+    bool getCloudAnchorStatus(std::string &message, float &progress) override;
     
     std::unique_ptr<VROARFrame> &updateFrame();
     std::unique_ptr<VROARFrame> &getLastFrame();
@@ -203,6 +204,8 @@ public:
 
     // Cloud anchor management
     void rvStartScan() override;
+    std::string rvGetScanStatusJson() override;
+    std::string rvGetScanDiagnosticsJson() override;
     void rvFinishScan(int ttlDays,
         std::function<void(bool, std::string, std::string, std::string)> callback) override;
     void rvGetCloudAnchor(const std::string& anchorId,

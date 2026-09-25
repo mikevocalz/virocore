@@ -36,6 +36,7 @@
 #include "VROARObjectTargetiOS.h"
 #include "VROARPlaneAnchor.h"
 #include "VROARSessioniOS.h"
+#include <sstream>
 #include "VROBox.h"
 #include "VROConvert.h"
 #include "VRODriver.h"
@@ -828,6 +829,26 @@ void VROARSessioniOS::hostCloudAnchor(
   }];
 }
 
+bool VROARSessioniOS::getCloudAnchorStatus(std::string &message, float &progress) {
+#if RVCCA_AVAILABLE
+  if (_cloudAnchorProviderRV == nil) return false;
+  auto provider = [_cloudAnchorProviderRV cppProvider];
+  if (!provider) return false;
+
+  // One operation at a time in practice, and the first is the one a caller is
+  // waiting on: a second resolve of the same anchor replaces nothing, it queues.
+  std::vector<std::string> ids = provider->getActiveOperations();
+  if (ids.empty()) return false;
+
+  auto status = provider->getOperationStatus(ids.front());
+  message  = status.message;
+  progress = status.progress;
+  return true;
+#else
+  return false;
+#endif
+}
+
 void VROARSessioniOS::resolveCloudAnchor(
     std::string cloudAnchorId,
     std::function<void(std::shared_ptr<VROARAnchor> anchor)> onSuccess,
@@ -840,22 +861,18 @@ void VROARSessioniOS::resolveCloudAnchor(
       return;
     }
 
-    ARFrame *arFrame = nil;
-    if (_currentFrame) {
-      VROARFrameiOS *frameiOS = (VROARFrameiOS *)_currentFrame.get();
-      arFrame = frameiOS->getARFrame();
-    }
-    if (!arFrame) {
-      if (onFailure) onFailure("No AR frame available for localisation.");
-      return;
-    }
-
+    // No frame check here, and none wanted. Localisation runs off updateFrame's
+    // per-frame updateWithFrame:, so the frame argument below is ignored and a
+    // resolve issued before ARKit's first frame is simply early, not doomed.
+    // Gating on it failed every join that mounted with the anchor id already
+    // known, which is the usual way a second device joins. Android's path has
+    // never had the check.
     NSString *cloudIdNS = [NSString stringWithUTF8String:cloudAnchorId.c_str()];
     std::weak_ptr<VROARSessioniOS> weakSelf = shared_from_this();
     std::string cloudIdCopy = cloudAnchorId;
 
     [_cloudAnchorProviderRV resolveCloudAnchorWithId:cloudIdNS
-                                               frame:arFrame
+                                               frame:nil
                                            onSuccess:^(NSString * /*resolvedId*/, simd_float4x4 transform) {
       auto strongSelf = weakSelf.lock();
       if (!strongSelf) return;
@@ -2501,8 +2518,59 @@ void VROARSessioniOS::rvStartScan() {
   auto p = [_cloudAnchorProviderRV cppProvider];
   if (p) {
     p->startScan();
+    return;
   }
 #endif
+  // Said out loud rather than returned silently. startScan() has no callback, so a missing
+  // provider used to be indistinguishable from a scan that started — the app would only find out
+  // at finishScan(), a walk around the room later.
+  pwarn("rvStartScan: no ReactVision cloud anchor provider — set RVApiKey and RVProjectId in "
+        "Info.plist and provider=\"reactvision\" on the navigator. Nothing was scanned.");
+}
+
+std::string VROARSessioniOS::rvGetScanStatusJson() {
+#if RVCCA_AVAILABLE
+  auto p = [_cloudAnchorProviderRV cppProvider];
+  if (p) {
+    auto st = p->getScanStatus();
+    std::ostringstream os;
+    os << "{\"available\":true"
+       << ",\"scanning\":"            << (st.scanning ? "true" : "false")
+       << ",\"keyframes\":"           << st.keyframes
+       << ",\"viewpointPairs\":"      << st.viewpointPairs
+       << ",\"cameraSpreadMeters\":"  << st.cameraSpreadMeters
+       << ",\"minKeyframes\":"        << st.minKeyframes
+       << ",\"minViewpointPairs\":"   << st.minViewpointPairs
+       << ",\"minSpreadMeters\":"     << st.minSpreadMeters
+       << ",\"meetsKeyframes\":"      << (st.meetsKeyframes ? "true" : "false")
+       << ",\"meetsViewpointPairs\":" << (st.meetsViewpointPairs ? "true" : "false")
+       << ",\"meetsSpread\":"         << (st.meetsSpread ? "true" : "false")
+       << "}";
+    return os.str();
+  }
+#endif
+  return "{\"available\":false}";
+}
+
+std::string VROARSessioniOS::rvGetScanDiagnosticsJson() {
+#if RVCCA_AVAILABLE
+  auto p = [_cloudAnchorProviderRV cppProvider];
+  if (p) {
+    auto d = p->getLastScanDiagnostics();
+    std::ostringstream os;
+    os << "{\"valid\":"               << (d.valid ? "true" : "false")
+       << ",\"keyframes\":"           << d.keyframes
+       << ",\"triangulatedPoints\":"  << d.triangulatedPoints
+       << ",\"viewpointPairs\":"      << d.viewpointPairs
+       << ",\"spreadMeters\":"        << d.spreadMeters
+       << ",\"minPoints\":"           << d.minPoints
+       << ",\"minViewpointPairs\":"   << d.minViewpointPairs
+       << ",\"minSpreadMeters\":"     << d.minSpreadMeters
+       << "}";
+    return os.str();
+  }
+#endif
+  return "{\"valid\":false}";
 }
 
 void VROARSessioniOS::rvFinishScan(

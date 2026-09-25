@@ -25,6 +25,7 @@
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "VROARSessionARCore.h"
+#include <sstream>
 #include "VROARCameraARCore.h"
 #include "VROARAnchor.h"
 #include "VROGeospatialAnchor.h"
@@ -896,10 +897,31 @@ void VROARSessionARCore::hostCloudAnchor(
   }
 
   if (_cloudAnchorMode == arcore::CloudAnchorMode::Disabled) {
-    pwarn("Cloud anchors are disabled, ignoring anchor host request");
+    // Answered, not dropped: a silent return leaves the caller's promise open.
+    if (onFailure) onFailure("Cloud anchors are disabled: set cloudAnchorProvider, and the API key for reactvision");
     return;
   }
   _cloudAnchorProvider->hostCloudAnchor(anchor, ttlDays, onSuccess, onFailure);
+}
+
+bool VROARSessionARCore::getCloudAnchorStatus(std::string &message, float &progress) {
+#if RVCCA_AVAILABLE
+  if (!_cloudAnchorProviderRV) return false;
+  auto provider = _cloudAnchorProviderRV->getProvider();
+  if (!provider) return false;
+
+  // One operation at a time in practice, and the first is the one a caller is
+  // waiting on: a second resolve of the same anchor replaces nothing, it queues.
+  std::vector<std::string> ids = provider->getActiveOperations();
+  if (ids.empty()) return false;
+
+  auto status = provider->getOperationStatus(ids.front());
+  message  = status.message;
+  progress = status.progress;
+  return true;
+#else
+  return false;
+#endif
 }
 
 void VROARSessionARCore::resolveCloudAnchor(
@@ -914,7 +936,8 @@ void VROARSessionARCore::resolveCloudAnchor(
   }
 
   if (_cloudAnchorMode == arcore::CloudAnchorMode::Disabled) {
-    pwarn("Cloud anchors are disabled, ignoring anchor resolve request");
+    // Answered, not dropped: a silent return leaves the caller's promise open.
+    if (onFailure) onFailure("Cloud anchors are disabled: set cloudAnchorProvider, and the API key for reactvision");
     return;
   }
   _cloudAnchorProvider->resolveCloudAnchor(cloudAnchorId, onSuccess, onFailure);
@@ -2481,9 +2504,65 @@ void VROARSessionARCore::rvStartScan() {
         auto p = _cloudAnchorProviderRV->getProvider();
         if (p) {
             p->startScan();
+            return;
         }
     }
 #endif
+    // Said out loud rather than returned silently. startScan() has no callback, so a missing
+    // provider used to be indistinguishable from a scan that started — the app would only find
+    // out at finishScan(), a walk around the room later.
+    pwarn("rvStartScan: no ReactVision cloud anchor provider — set com.reactvision.RVApiKey and "
+          "com.reactvision.RVProjectId in AndroidManifest and provider=\"reactvision\" on the "
+          "navigator. Nothing was scanned.");
+}
+
+std::string VROARSessionARCore::rvGetScanStatusJson() {
+#if RVCCA_AVAILABLE
+    if (_cloudAnchorProviderRV) {
+        auto p = _cloudAnchorProviderRV->getProvider();
+        if (p) {
+            auto st = p->getScanStatus();
+            std::ostringstream os;
+            os << "{\"available\":true"
+               << ",\"scanning\":"            << (st.scanning ? "true" : "false")
+               << ",\"keyframes\":"           << st.keyframes
+               << ",\"viewpointPairs\":"      << st.viewpointPairs
+               << ",\"cameraSpreadMeters\":"  << st.cameraSpreadMeters
+               << ",\"minKeyframes\":"        << st.minKeyframes
+               << ",\"minViewpointPairs\":"   << st.minViewpointPairs
+               << ",\"minSpreadMeters\":"     << st.minSpreadMeters
+               << ",\"meetsKeyframes\":"      << (st.meetsKeyframes ? "true" : "false")
+               << ",\"meetsViewpointPairs\":" << (st.meetsViewpointPairs ? "true" : "false")
+               << ",\"meetsSpread\":"         << (st.meetsSpread ? "true" : "false")
+               << "}";
+            return os.str();
+        }
+    }
+#endif
+    return "{\"available\":false}";
+}
+
+std::string VROARSessionARCore::rvGetScanDiagnosticsJson() {
+#if RVCCA_AVAILABLE
+    if (_cloudAnchorProviderRV) {
+        auto p = _cloudAnchorProviderRV->getProvider();
+        if (p) {
+            auto d = p->getLastScanDiagnostics();
+            std::ostringstream os;
+            os << "{\"valid\":"               << (d.valid ? "true" : "false")
+               << ",\"keyframes\":"           << d.keyframes
+               << ",\"triangulatedPoints\":"  << d.triangulatedPoints
+               << ",\"viewpointPairs\":"      << d.viewpointPairs
+               << ",\"spreadMeters\":"        << d.spreadMeters
+               << ",\"minPoints\":"           << d.minPoints
+               << ",\"minViewpointPairs\":"   << d.minViewpointPairs
+               << ",\"minSpreadMeters\":"     << d.minSpreadMeters
+               << "}";
+            return os.str();
+        }
+    }
+#endif
+    return "{\"valid\":false}";
 }
 
 void VROARSessionARCore::rvFinishScan(

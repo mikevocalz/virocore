@@ -2,8 +2,30 @@
 
 ## Unreleased
 
+## v3.0.1 — 21 September 2026
+
 ### Fixed
 
+- **Shared coordinate frames on Meta Quest never reached the runtime (`VROSceneRendererOpenXR`, `VROARSessionOpenXRSharedFrame`).** Four faults in one call path, each hidden behind the one before it, and none of which produced an error.
+
+  Four OpenXR extensions were not requested at instance creation: `XR_FB_spatial_entity_storage`, `XR_FB_spatial_entity_sharing`, `XR_META_spatial_entity_sharing` and `XR_META_spatial_entity_group_sharing`. `xrGetInstanceProcAddr` refuses a function whose extension was not enabled, so `xrShareSpacesMETA` never loaded and the capability flag stayed false. The last two are distinct extensions and the distinction is easy to miss — the function is declared by *sharing*, while *group_sharing* only adds the group-uuid recipient and filter, so enabling the group one alone loads nothing and reports the wrong extension as absent. `static_assert`s now fail the build if any of the four leaves the list.
+
+  The `xrPollEvent` loop forwarded three of the five event types `onSpatialEvent` handles, dropping `XR_TYPE_EVENT_DATA_SPATIAL_ANCHOR_CREATE_COMPLETE_FB` and `XR_TYPE_EVENT_DATA_SHARE_SPACES_COMPLETE_META` into `default`. Every spatial-entity call answers through an event, so an event that is not forwarded is a call that never completes: on device the anchor was created successfully and nothing was ever told about it.
+
+  The group filter was passed as `XrSpaceQueryInfoFB::filter` rather than chained on `::next`. `filter` takes the FB filter types and rejects an unrecognised one with `XR_ERROR_VALIDATION_FAILURE`, which reads as a broken query rather than a misplaced filter.
+
+  Verified on a Quest 3: `xrCreateSpatialAnchorFB` → STORABLE and SHARABLE → `xrShareSpacesMETA` round-trips, and a group query recovers the frame. Requires `horizonos.permission.IMPORT_EXPORT_IOT_MAP_DATA` in the app manifest, which `@reactvision/react-viro` 3.0.1's config plugin adds — without it the Meta runtime hides the extension from enumeration rather than failing the call.
+
+## v3.0.0 — 19 September 2026
+
+### Added
+
+- **Scan and world-mesh state are readable from the bridge (`VROARSession`, `VROARSceneiOS`, `VROARSessionARCore`, `ARSceneController_JNI`, `ARScene.java`).** `rvGetScanStatusJson()` and `rvGetScanDiagnosticsJson()` expose how a scan in progress is doing and why the last one ended as it did; the JSON shape is defined once on `VROARSession` rather than restated in each bridge, so the two platforms cannot drift. `nativeRvGetWorldMeshStats` does the same for the world mesh over JNI, sharing the scan getters' callback. All are read-only snapshots taken on the render thread, cheap enough to poll.
+
+### Fixed
+
+- **visionOS: the renderer archive referenced ReactVisionCCA without carrying it (`ios/build_visionos.sh`).** `VROColocationSession.o` is in `libViroKitVisionOS.a` and `-ObjC` pulls it into every link, so an app failed on symbols it never asked for and the failure could not be avoided from the consumer side. The xros device and simulator slices are now merged in alongside freetype and bullet. `VROColocationBridge.h` is staged with them: the class was in the binary, the header was not, so the one module that is plain Objective-C precisely so it can cross to visionOS could not be imported there.
+- **Android: cloud anchor, scan and ReactVision config calls made before the AR session existed were dropped without a callback (`ARSceneController_JNI`, `VROARScene`).** The session is created on a scene's first rendered frame, so a resolve, host, scan or credentials call issued when the scene mounts raced it and vanished. The caller's promise never settled and, for resolve, the anchor id stayed marked as in progress. `VROARScene::runWhenARSessionReady()` now queues such work and `setARSession()` flushes it in order, so a config sent before a resolve still lands first. A request on a destroyed scene, or on a session that is not ARCore, answers with a failure instead of returning silently, as does a host or resolve while cloud anchors are disabled (`VROARSessionARCore`).
 - **Quest: dragging with both hands tracked followed the wrong hand and jumped on grab (`VROInputControllerBase`).** Hover and click were source-aware but drag still ran off the shared single-pointer slot, so with two aim rays dispatched per frame a drag was seeded from whichever ray was mirrored last (the left) and then moved by both rays in turn, rendering the idle hand's result; any hand's ClickUp ended it. A `VRODraggedObject` now records the ray that started it and that ray's pose, only that ray moves or ends the drag, the original hit is snapshotted at ClickDown, and a second button during a drag neither restarts nor steals it. Grip, A/X/Y and thumbstick sources resolve their hit, hover and drag state through their hand's aim ray via the new `rayForSource()` hook (`VROInputControllerOpenXR`), so a right-grip grab no longer acts on what the left hand points at. Single-pointer backends (AR, Cardboard, Daydream) keep the identity mapping and are unchanged.
 - **Quest: a click on a highlighted button was dropped several times a second (`VROInputPresenterOpenXR`, `VROInputControllerBase`, `VROInputControllerOpenXR`).** The aim-laser nodes were ordinary selectable scene geometry whose bounding box spans controller to hit point, so the hand's own ray hit its laser before the button on a large share of frames; hover hysteresis hid the churn but every click on such a frame resolved to nothing. Lasers and the presenter root are now unselectable. Clicks also get their own grace: the click follows the highlighted node while a hover exit is pending (the old re-route required the miss to land on another hoverable node, which a panel body or the background never is), or the node the ray left within the last 150 ms when the hit is not clickable; the comparison uses bubbled handler nodes, so `Clicked` fires for a press and release on different children of one handler. ClickUp is delivered to the node that took the ClickDown from the same button (press capture). On OpenXR, button and gesture edges are queued and flushed after the frame's hit update instead of resolving against the previous frame's hit.
 
@@ -124,61 +146,7 @@
 
 ---
 
-## v2.58.1-pico — mikevocalz/virocore fork (pico-support)
-
-Fork of ReactVision/virocore adding PICO OS 5.9+ / OS 6 / Swan support to the
-OpenXR backend, rebased onto upstream `develop` (post v2.58.1, PRs #367/#369/#370).
-All changes are vendor-neutral OpenXR — Quest behaviour is unchanged. See
-docs/PICO-SUPPORT.md and docs/pico/.
-
-### Added
-- **Floor-level tracking origin** — `trackingOrigin: "eye" | "floor"` on the XR
-  navigator (default `"eye"`, unchanged from upstream). `"floor"` resolves through
-  a ladder: native `XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR` when the runtime enumerates
-  it (PICO 4 Ultra / OpenXR 1.1 core), else a `LOCAL` space offset by the STAGE floor
-  height, else it stays eye-level and reports the downgrade — never a hardcoded
-  human height. `recenterTracking` and the runtime-recenter event
-  (`REFERENCE_SPACE_CHANGE_PENDING`, e.g. PICO long-press Home) rebuild the space
-  like-for-like. See docs/pico/adr-0001-reference-space.md.
-- **Colour mode follows the swapchain format** — sRGB → Linear, RGBA8 → NonLinear,
-  fixing double-dark output on firmware that enumerates no sRGB swapchain format.
-- **PICO controller input** — `VROInputControllerOpenXR` suggests all ByteDance
-  interaction profiles (Neo3 / 4 / 4 Pro / 4 Ultra `pico4s` / G3) plus
-  `khr/simple_controller` fallback, alongside Oculus Touch. Fixes dead
-  controllers on PICO.
-- **Runtime introspection** — `xrGetInstanceProperties` classifies the bound
-  runtime (name / version / vendor); exposed via `ViroViewOpenXR.getRuntimeInfo()`.
-- **Fixed foveation** (`XR_FB_foveation`) — `ViroViewOpenXR.setFoveationLevel()`,
-  defaulting MEDIUM/dynamic. Major fill-rate win on PICO's high-PPD panels.
-- PICO controller + foveation + spacewarp extensions enabled if enumerated.
-
-### Changed
-- Required extensions split into hard-required (`XR_KHR_opengl_es_enable`) and
-  soft-required (`XR_KHR_android_create_instance`, enabled + chained iff
-  enumerated) so strict PICO firmware degrades cleanly instead of SIGSEGV.
-- `xrCreateInstance` / `xrGetSystem` failures now log the real `XrResult`.
-- **16KB page alignment (Android 15 / SDK 35, fixes ReactVision/viro#485)** —
-  inherited from upstream develop: NDK r27.1 (16KB-aligned `libc++_shared.so`),
-  `-Wl,-z,max-page-size=16384`, and the vendored OpenXR loader 1.1.62 whose
-  arm64-v8a `libopenxr_loader.so` is 16KB-aligned. `scripts/verify-16kb-alignment.py`
-  gates the build/CI so a misaligned AAR can never be published.
-- **OpenXR loader + headers bumped 1.1.49 → 1.1.62** (matches the dependabot bump
-  in ReactVision/virocore#356). Both the linked loader and the vendored headers
-  under `cpp/include/openxr` move together, so there is no header/loader skew, and
-  the stale 1.1.38 loader AAR is removed from the tree. 1.1.62 carries the current
-  ByteDance/PICO interaction-profile registry (Neo3 / 4 / 4 Ultra `pico4s` /
-  `pico_ultra_controller_bd` / G3).
-
-### Not yet wired (flagged, follow-up)
-- Eye-tracked foveation (`XR_META_foveation_eye_tracked`) — detected only;
-  permission-gated.
-- Spacewarp (`XR_FB_space_warp`) — enabled + flagged; per-frame motion-vector
-  submission is a follow-up.
-
----
-
 ## v2.56.0 — 04 June 2026
-
 
 ### Added
 

@@ -1,60 +1,19 @@
 # Release Notes
 
-## v2.58.1
+## v3.0.1
 
-### Highlights
+Four fixes to shared coordinate frames on Meta Quest, all of them in the same call path, each one hidden behind the last. The renderer ships inside `@reactvision/react-viro` as prebuilt binaries; upgrade that package to 3.0.1 to get these.
 
-**AR session recording fixes**
+### Fixed
 
-- **The clip no longer plays sideways (iOS and Android).** Recordings carried no rotation at all, so they played in the camera sensor's landscape orientation however the device was held. Both recorders now tag the file for a quarter turn clockwise on playback — Android via `MediaMuxer.setOrientationHint()`, iOS via `AVAssetWriterInput.transform`.
-- **The IMU is in the right units on iOS.** CoreMotion reports acceleration in G and Android reports m/s², but `session.jsonl` has one schema for both, so every `imu.accel` and `pose.gravity` iOS wrote was off by 9.81×. iOS now scales to m/s². Against tinyvio on a real recording this moved tracking from 0% of frames to 96%.
-- **One pose per frame on iOS.** ARKit can hand the recorder the same frame twice; the duplicate used to add a pose line while the muxer dropped its video frame, sliding every later pose onto the wrong frame. Duplicates are now dropped whole, and a pose is only written once its frame has actually reached the encoder — so the pairing holds even if the encoder refuses one. A session that loses video entirely still keeps its full IMU/pose sidecar.
-- **Colour is correct again (Android).** Recorded `video.mp4` came out with sharp, correctly-framed luma but large green/magenta blocks over it: the encoder was configured with `COLOR_FormatYUV420Flexible` — an abstract format, not a byte layout — and fed a tightly-packed planar I420 buffer, which most devices read as NV12 semi-planar. Frames now go through `MediaCodec.getInputImage()` and honour the encoder's real per-plane strides.
+- **Four OpenXR extensions are now requested at instance creation.** `XR_FB_spatial_entity_storage`, `XR_FB_spatial_entity_sharing`, `XR_META_spatial_entity_sharing` and `XR_META_spatial_entity_group_sharing`. `xrGetInstanceProcAddr` refuses a function whose extension was not enabled, so `xrShareSpacesMETA` never loaded, the capability flag stayed false, and every shared-frame call reported the feature unavailable on hardware that supports it.
 
-### Notes
+  The last two are different extensions and the distinction is easy to miss: `xrShareSpacesMETA` is declared by `XR_META_spatial_entity_sharing`, while `XR_META_spatial_entity_group_sharing` only adds the group-uuid recipient and filter. Enabling the group one alone loads no function and reports *"XR_META_spatial_entity_group_sharing not present"* — naming the extension that is present rather than the one that is not. `static_assert`s now fail the build if any of the four leaves the list.
 
-- The rotation is container metadata only, on both platforms. Encoded frames stay sensor-native so they keep matching the intrinsics in `session.jsonl`. **Anything that decodes `video.mp4` for tracking must pass `-noautorotate`** — ffmpeg would otherwise rotate the pixels while `ffprobe` still reports the unrotated size the intrinsics assume, which goes wrong silently. Older recordings carry no matrix, so the flag is harmless on them.
-- **iOS `imu.accel`/`pose.gravity` are now m/s², where they used to be G.** Android was always m/s². The format only shipped in 2.58.0, so there is effectively no earlier iOS data to reconcile.
-- Pairs with `@reactvision/react-viro` 2.58.1.
+- **The event loop forwards `XR_TYPE_EVENT_DATA_SPATIAL_ANCHOR_CREATE_COMPLETE_FB` and `XR_TYPE_EVENT_DATA_SHARE_SPACES_COMPLETE_META`.** `onSpatialEvent` had handlers for both; `xrPollEvent`'s switch forwarded three of the five types it handles and dropped these two into `default`. Every spatial-entity call is asynchronous and answers through an event, so an event that is not forwarded is a call that never completes — no error, no timeout, just a callback that is never invoked. On device the anchor was created successfully and nothing was ever told about it.
 
-See [`CHANGELOG.md`](./CHANGELOG.md) for full detail.
+- **The group filter chains on `XrSpaceQueryInfoFB::next`, not `::filter`.** `filter` takes the FB filter types — uuid, component — and the runtime rejects an unrecognised one with `XR_ERROR_VALIDATION_FAILURE`. The group filter is an extension struct and chains like every other META addition to an FB call.
 
----
+Verified on a Quest 3: `xrCreateSpatialAnchorFB` → STORABLE and SHARABLE → `xrShareSpacesMETA` round-trips, and a group query recovers the frame.
 
-## v2.58.0
-
-### Highlights
-
-**AR Session Recording**
-
-- `VROARSession` gains an optional local recording surface (`startRecording`/`stopRecording`/`getRecordingStatus`) — `video.mp4` + `session.jsonl` (raw IMU + ground-truth pose), for offline analysis/replay via `tinyvio`. iOS (`AVAssetWriter`) and Android (`MediaCodec`/`MediaMuxer`) implementations, both with sorted, race-free sidecar/video finalization.
-
-**Fixes**
-
-- glTF: sparse accessors and non-indexed (draw-arrays) primitives no longer fail to load (VIRO-3664).
-
-### Notes
-
-- Pairs with `@reactvision/react-viro` 2.58.0.
-
-See [`CHANGELOG.md`](./CHANGELOG.md) for full detail.
-
----
-
-## v2.57.5
-
-### Highlights
-
-- **Eye-gaze input source on Meta Quest (`XR_EXT_eye_gaze_interaction`).** When the runtime reports eye-tracking support (Quest Pro), the OpenXR renderer enables the extension and dispatches the gaze pose as an additional input source (`ViroOculus::EyeGaze`) through the existing hit-test/hover pipeline — surfaced in React as the new `onGaze` prop. `EYE_TRACKING` permission declared in the manifests. No-op on headsets without eye-tracking hardware.
-- **Per-frame video watermark support (Android).** New `ViroMediaRecorder.setWatermark(bitmap, widthFraction, bottomMarginFraction)` composites a watermark as a GL quad into each recorded frame before the encoder swap (aspect-preserved, bottom-center), letting the bridge burn the free-tier watermark into video at parity with iOS's CoreImage compositing.
-- **Crash loading animated glTF models with a zero-duration animation channel.** A single-keyframe / zero-duration skeletal channel (legal glTF) triggered a divide-by-zero → `NaN` keyframe times → `std::sort` heap corruption → `SIGSEGV` in `resampleSkeletalChannelsToCommonGrid`. The time normalizer now guards the zero duration and the resample skips non-finite values.
-- **Media recording writes to app-specific storage (Android).** `ViroMediaRecorder` no longer writes to the public directory that fails with `EACCES` under scoped storage on API 29+, so recordings/screenshots are always produced; gallery publishing is handled scoped-safely by the bridge.
-- **AR anchor use-after-free hardening.** `nativeCreateAnchoredNode` null-checks the scene-controller ref before dereferencing, so a stale/zeroed ref (anchor retry racing scene teardown) returns null instead of crashing.
-
-### Notes
-
-- Rebuild the prebuilt AARs before publishing.
-- Eye gaze requires the `com.oculus.permission.EYE_TRACKING` runtime grant on Quest Pro; unsupported/ungranted degrades to a no-op (controllers/hands unaffected).
-- Pairs with `@reactvision/react-viro` 2.57.5.
-
-See [`CHANGELOG.md`](./CHANGELOG.md) for full detail.
+Requires `horizonos.permission.IMPORT_EXPORT_IOT_MAP_DATA` in the app manifest, which `@reactvision/react-viro` 3.0.1's config plugin adds. Without it the Meta runtime hides the group-sharing extension from enumeration rather than failing the call, so the headset appears not to support shared anchors.
