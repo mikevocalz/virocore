@@ -86,6 +86,9 @@ enum class VROSilhouetteMode {
     Textured,         // Render silhouettes with constant lighting and textures
 };
 
+// The event node can move itself, its parent group, or only report pointer motion.
+enum class VRODragTransform { Self, Parent, None };
+
 enum class VRODragType {
     // Drags objects with a fixed distance to camera/controller/etc, from the point at which
     // the user has grabbed the geometry containing this draggable node.
@@ -752,6 +755,9 @@ public:
         }
     }
 
+    void setDragTransform(VRODragTransform transform) { _dragTransform = transform; }
+    VRODragTransform getDragTransform() const { return _dragTransform; }
+
     void setDragType(VRODragType dragType) {
         _dragType = dragType;
     }
@@ -1036,6 +1042,7 @@ private:
      The drag type to use for this VRONode.
      */
     VRODragType _dragType;
+    VRODragTransform _dragTransform = VRODragTransform::Self;
 
     /*
      The point in 3D space on the plane to "drag"

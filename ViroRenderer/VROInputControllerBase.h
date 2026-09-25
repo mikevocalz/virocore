@@ -143,6 +143,9 @@ public:
      */
     void onControllerStatus(int source, VROEventDelegate::ControllerStatus status);
     void onButtonEvent(int source, VROEventDelegate::ClickState clickAction);
+    // Tracking loss releases capture without synthesizing a Clicked activation.
+    void cancelSource(int source);
+    std::map<int, VROVector3f> _canvasHoverPositions;
     void onTouchpadEvent(int source, VROEventDelegate::TouchState touchAction, float lastKnownX, float lastKnownY);
     
     /*
@@ -219,6 +222,9 @@ protected:
      */
     struct VRODraggedObject{
         std::shared_ptr<VRONode> _draggedNode;
+        std::shared_ptr<VRONode> _transformNode;
+        VROVector3f _transformOffset;
+        VROQuaternion _transformRotation;
         VROVector3f _originalHitLocation;
         VROVector3f _originalDraggedNodePosition;
         VROQuaternion _originalDraggedNodeRotation;
@@ -252,6 +258,7 @@ protected:
      deals with other events, etc. This allows for the dragging logic to be overridden.
      */
     virtual void processDragging(int source);
+    void applyDragTransform(VROVector3f position, bool animated = false);
 
     /*
      This function returns the next drag position for drag type FixedDistance
