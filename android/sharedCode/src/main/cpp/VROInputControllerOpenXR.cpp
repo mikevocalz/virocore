@@ -969,5 +969,6 @@ void VROInputControllerOpenXR::updateLaserViz(int source,
     } else {
         hitPoint = origin + forward.scale(kNoHitRange);
     }
-    presenter->updateAimRay(source, origin, hitPoint, true /* visible */);
+    presenter->updateAimRay(source, origin, hitPoint, true /* visible */,
+                            hit && !hit->isBackgroundHit());
 }

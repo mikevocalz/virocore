@@ -54,6 +54,7 @@ public:
     void setRadius(float radius);
 
     void setEnabled(bool enabled);
+    bool isEnabled() const { return _enabled; }
 
     /*
      If pointer is fixed, the reticle will be locked at the center of each eye. This is used for
