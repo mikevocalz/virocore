@@ -5,6 +5,7 @@
 // MIT License — see LICENSE file.
 
 #include "VROInputControllerOpenXR.h"
+#include "VROInputButtonState.h"
 #include <android/log.h>
 #include <cmath>
 #include "VROLog.h"
@@ -425,69 +426,33 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     rightValid = stickyPose(_rightCtrlAim, rightValid, rightPos, rightRot, rightForward);
     leftValid  = stickyPose(_leftCtrlAim,  leftValid,  leftPos,  leftRot,  leftForward);
 
-    // ── Right trigger ─────────────────────────────────────────────────────────
-    {
-        XrActionStateFloat state   = { XR_TYPE_ACTION_STATE_FLOAT };
-        XrActionStateGetInfo info  = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _rightTriggerAction;
-        xrGetActionStateFloat(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState >= kTriggerThreshold);
-            if (pressed && !_prevTriggerRight)
-                queueButtonEvent(ViroOculus::Controller, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevTriggerRight)
-                queueButtonEvent(ViroOculus::Controller, VROEventDelegate::ClickState::ClickUp);
-            _prevTriggerRight = pressed;
+    // Controller actions own a side only while its controller aim is valid.
+    // Inactivity must cancel an existing press; ignoring it loses release edges.
+    auto pollFloatButton = [this, session](XrAction action, int source, float threshold,
+                                          bool poseValid, bool &previous) {
+        XrActionStateFloat state = { XR_TYPE_ACTION_STATE_FLOAT };
+        XrActionStateGetInfo info = { XR_TYPE_ACTION_STATE_GET_INFO };
+        info.action = action;
+        const XrResult result = xrGetActionStateFloat(session, &info, &state);
+        const bool active = XR_SUCCEEDED(result) && state.isActive && poseValid;
+        switch (updateInputButton(active, state.currentState >= threshold, previous)) {
+            case VROInputButtonEdge::Down:
+                queueButtonEvent(source, VROEventDelegate::ClickDown); break;
+            case VROInputButtonEdge::Up:
+                queueButtonEvent(source, VROEventDelegate::ClickUp); break;
+            case VROInputButtonEdge::Cancel:
+                VROInputControllerBase::cancelSource(source); break;
+            case VROInputButtonEdge::None: break;
         }
-    }
-
-    // ── Left trigger ──────────────────────────────────────────────────────────
-    {
-        XrActionStateFloat state   = { XR_TYPE_ACTION_STATE_FLOAT };
-        XrActionStateGetInfo info  = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _leftTriggerAction;
-        xrGetActionStateFloat(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState >= kTriggerThreshold);
-            if (pressed && !_prevTriggerLeft)
-                queueButtonEvent(ViroOculus::LeftController, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevTriggerLeft)
-                queueButtonEvent(ViroOculus::LeftController, VROEventDelegate::ClickState::ClickUp);
-            _prevTriggerLeft = pressed;
-        }
-    }
-
-    // ── Right grip ────────────────────────────────────────────────────────────
-    {
-        XrActionStateFloat state   = { XR_TYPE_ACTION_STATE_FLOAT };
-        XrActionStateGetInfo info  = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _rightGripAction;
-        xrGetActionStateFloat(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState >= kGripThreshold);
-            if (pressed && !_prevGripRight)
-                queueButtonEvent(ViroOculus::RightGrip, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevGripRight)
-                queueButtonEvent(ViroOculus::RightGrip, VROEventDelegate::ClickState::ClickUp);
-            _prevGripRight = pressed;
-        }
-    }
-
-    // ── Left grip ─────────────────────────────────────────────────────────────
-    {
-        XrActionStateFloat state   = { XR_TYPE_ACTION_STATE_FLOAT };
-        XrActionStateGetInfo info  = { XR_TYPE_ACTION_STATE_GET_INFO };
-        info.action = _leftGripAction;
-        xrGetActionStateFloat(session, &info, &state);
-        if (state.isActive) {
-            bool pressed = (state.currentState >= kGripThreshold);
-            if (pressed && !_prevGripLeft)
-                queueButtonEvent(ViroOculus::LeftGrip, VROEventDelegate::ClickState::ClickDown);
-            else if (!pressed && _prevGripLeft)
-                queueButtonEvent(ViroOculus::LeftGrip, VROEventDelegate::ClickState::ClickUp);
-            _prevGripLeft = pressed;
-        }
-    }
+    };
+    pollFloatButton(_rightTriggerAction, ViroOculus::Controller, kTriggerThreshold,
+                    rightValid, _prevTriggerRight);
+    pollFloatButton(_leftTriggerAction, ViroOculus::LeftController, kTriggerThreshold,
+                    leftValid, _prevTriggerLeft);
+    pollFloatButton(_rightGripAction, ViroOculus::RightGrip, kGripThreshold,
+                    rightValid, _prevGripRight);
+    pollFloatButton(_leftGripAction, ViroOculus::LeftGrip, kGripThreshold,
+                    leftValid, _prevGripLeft);
 
     // ── A button (right hand) ─────────────────────────────────────────────────
     {
@@ -782,11 +747,27 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                                               VROVector3f &leftAimForwardOut) {
     rightAimValidOut = false;
     leftAimValidOut  = false;
-    if (!_pfnLocateHandJoints || !_handTrackingEnabled) return;
-
     for (int hand = 0; hand < 2; ++hand) {
+        const int source = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
+        const int gripSource = (hand == 0) ? ViroOculus::LeftGrip : ViroOculus::RightGrip;
+        bool &prevPinch = (hand == 0) ? _prevPinchLeft : _prevPinchRight;
+        bool &prevGrab = (hand == 0) ? _prevGrabLeft : _prevGrabRight;
+        auto cancelHand = [&]() {
+            const auto pinch = updateInputButton(false, false, prevPinch);
+            const auto grab = updateInputButton(false, false, prevGrab);
+            if (pinch == VROInputButtonEdge::Cancel || grab == VROInputButtonEdge::Cancel) {
+                VROInputControllerBase::cancelSource(source);
+            }
+        };
         XrHandTrackerEXT tracker = (hand == 0) ? _leftHandTracker : _rightHandTracker;
-        if (tracker == XR_NULL_HANDLE) continue;
+        // Suppress ALL hand input, not just its aim, while this controller owns
+        // the side. Holding a controller can otherwise look like a hand pinch
+        // and emit a second ClickDown on the same source after trigger release.
+        if ((hand == 0 ? skipLeft : skipRight) || !_pfnLocateHandJoints ||
+            !_handTrackingEnabled || tracker == XR_NULL_HANDLE) {
+            cancelHand();
+            continue;
+        }
 
         // ── Locate all 26 joints ──────────────────────────────────────────────
         XrHandJointLocationEXT jointLocs[XR_HAND_JOINT_COUNT_EXT];
@@ -807,13 +788,10 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         locateInfo.time      = time;
 
         XrResult r = _pfnLocateHandJoints(tracker, &locateInfo, &locations);
-        if (!XR_SUCCEEDED(r) || !locations.isActive) continue;
-
-        // ── Source IDs for this hand ──────────────────────────────────────────
-        int  source     = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
-        int  gripSource = (hand == 0) ? ViroOculus::LeftGrip       : ViroOculus::RightGrip;
-        bool &prevPinch = (hand == 0) ? _prevPinchLeft  : _prevPinchRight;
-        bool &prevGrab  = (hand == 0) ? _prevGrabLeft   : _prevGrabRight;
+        if (!XR_SUCCEEDED(r) || !locations.isActive) {
+            cancelHand();
+            continue;
+        }
 
         // ── Aim pose extraction (FB aim ext preferred, joint-derived fallback)
         // Hit-test, processGazeEvent, laser update and onMove are NOT done
@@ -868,6 +846,11 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                 rightAimRotOut     = handAimRot;
                 rightAimForwardOut = handAimForward;
             }
+        }
+
+        if (!handAimValid) {
+            cancelHand();
+            continue;
         }
 
         // ── Pinch detection ───────────────────────────────────────────────────
