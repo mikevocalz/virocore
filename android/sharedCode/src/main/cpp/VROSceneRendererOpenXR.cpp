@@ -134,6 +134,18 @@ static const char *const kPicoControllerExtensions[] = {
 static constexpr uint32_t kPicoControllerExtensionCount =
     sizeof(kPicoControllerExtensions) / sizeof(kPicoControllerExtensions[0]);
 
+// PICO (ByteDance) controller-interaction extensions. These gate the
+// /interaction_profiles/bytedance/* binding paths used in VROInputControllerOpenXR;
+// absent on Meta runtimes (skipped), present on PICO (enabled so the input
+// layer's PICO profile suggestions resolve). String literals avoid a header
+// dependency that may predate these vendor extensions.
+static const char *const kPicoControllerExtensions[] = {
+    "XR_BD_controller_interaction",        // Neo3 / 4 / 4 Pro / G3 profiles
+    "XR_BD_ultra_controller_interaction",  // PICO 4 Ultra (pico4s) profile
+};
+static constexpr uint32_t kPicoControllerExtensionCount =
+    sizeof(kPicoControllerExtensions) / sizeof(kPicoControllerExtensions[0]);
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Utility macros
 // ──────────────────────────────────────────────────────────────────────────────

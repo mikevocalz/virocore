@@ -146,7 +146,44 @@
 
 ---
 
+## v2.56.0-pico.1 — mikevocalz/virocore fork (pico-support)
+
+Fork of ReactVision/virocore v2.56.0 adding PICO OS 5.9+ / OS 6 / Swan support
+to the OpenXR backend. All changes are vendor-neutral OpenXR — Quest behaviour
+is unchanged. See docs/PICO-SUPPORT.md.
+
+### Added
+- **PICO controller input** — `VROInputControllerOpenXR` suggests all ByteDance
+  interaction profiles (Neo3 / 4 / 4 Pro / 4 Ultra `pico4s` / G3) plus
+  `khr/simple_controller` fallback, alongside Oculus Touch. Fixes dead
+  controllers on PICO.
+- **Runtime introspection** — `xrGetInstanceProperties` classifies the bound
+  runtime (name / version / vendor); exposed via `ViroViewOpenXR.getRuntimeInfo()`.
+- **Fixed foveation** (`XR_FB_foveation`) — `ViroViewOpenXR.setFoveationLevel()`,
+  defaulting MEDIUM/dynamic. Major fill-rate win on PICO's high-PPD panels.
+- PICO controller + foveation + spacewarp extensions enabled if enumerated.
+
+### Changed
+- Required extensions split into hard-required (`XR_KHR_opengl_es_enable`) and
+  soft-required (`XR_KHR_android_create_instance`, enabled + chained iff
+  enumerated) so strict PICO firmware degrades cleanly instead of SIGSEGV.
+- `xrCreateInstance` / `xrGetSystem` failures now log the real `XrResult`.
+- **16KB page alignment (Android 15 / SDK 35, fixes ReactVision/viro#485)** —
+  OpenXR loader bumped 1.1.38 → 1.1.60 (first 16KB-aligned Khronos Android
+  loader); rebuilt AAR is 16KB-aligned via NDK r27.2 + `-Wl,-z,max-page-size=16384`.
+  `scripts/verify-16kb-alignment.py` gates the build/CI so a misaligned AAR can
+  never be published.
+
+### Not yet wired (flagged, follow-up)
+- Eye-tracked foveation (`XR_META_foveation_eye_tracked`) — detected only;
+  permission-gated.
+- Spacewarp (`XR_FB_space_warp`) — enabled + flagged; per-frame motion-vector
+  submission is a follow-up.
+
+---
+
 ## v2.56.0 — 04 June 2026
+
 
 ### Added
 

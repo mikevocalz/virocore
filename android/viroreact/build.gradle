@@ -107,6 +107,15 @@ dependencies {
     // OpenXR loader — from local Maven repo (openxr_sdk/maven), sourced from Khronos GitHub releases.
     // Provides libopenxr_loader.so (arm64-v8a) + native headers via Prefab.
     // Note: artifact ID is openxr_loader_for_android (not openxr_loader_android).
+    //
+    // >=1.1.57: 16KB page alignment. Khronos switched the Android loader binaries to
+    // 16KB pages in 1.1.57 (required for Android 15 / SDK 35; fixes Play Console
+    // .aab rejection of libopenxr_loader.so — cf. ReactVision/viro#485). 1.1.38
+    // shipped 4KB-aligned binaries, and upstream's 1.1.49 is still pre-1.1.57, so
+    // the higher 1.1.62 is kept — it is the one that satisfies the alignment gate.
+    // The bundled openxr_sdk/maven only carries 1.1.49; newer loaders resolve from
+    // mavenCentral(), or populate openxr_sdk/maven/.../<ver>/ from the Khronos
+    // release before building (see docs/PICO-SUPPORT.md).
     implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.62'
 }
 
