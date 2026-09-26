@@ -246,21 +246,31 @@ std::shared_ptr<VROARSessionWeb> VROSceneWeb::getARSession() {
 void VROSceneWeb::buildCubeScene() {
     // Reuse the empty scene's root/camera, then add demo geometry and lights.
     // buildEmptyScene intentionally creates no lights (bridge parity), so a
-    // Blinn/Lambert demo must supply its own or it renders black.
+    // Blinn/Lambert demo must supply its own or it renders black. Three-point
+    // setup mirrors feat-web-platform's 6c9d3eb9: bright enough that faces
+    // crossing the material's bloom threshold also exercise the bloom pass.
     std::shared_ptr<VROPortal> rootNode = getRootNode();
     if (!rootNode) {
         return;
     }
 
     std::shared_ptr<VROLight> ambient = std::make_shared<VROLight>(VROLightType::Ambient);
-    ambient->setColor({0.4f, 0.4f, 0.4f});
+    ambient->setColor({1.0f, 1.0f, 1.0f});
+    ambient->setIntensity(350);
     rootNode->addLight(ambient);
 
-    std::shared_ptr<VROLight> sun = std::make_shared<VROLight>(VROLightType::Directional);
-    sun->setColor({1.0f, 1.0f, 1.0f});
-    sun->setDirection({0.4f, -0.8f, -0.5f});
-    sun->setCastsShadow(true);
-    rootNode->addLight(sun);
+    std::shared_ptr<VROLight> key = std::make_shared<VROLight>(VROLightType::Directional);
+    key->setColor({1.0f, 1.0f, 1.0f});
+    key->setIntensity(1000);
+    key->setDirection({-0.4f, -1.0f, -0.6f}); // above-front-left key
+    key->setCastsShadow(true);
+    rootNode->addLight(key);
+
+    std::shared_ptr<VROLight> fill = std::make_shared<VROLight>(VROLightType::Omni);
+    fill->setColor({0.6f, 0.75f, 1.0f});
+    fill->setIntensity(600);
+    fill->setPosition({3.0f, 1.0f, -2.0f}); // cool rim from the right
+    rootNode->addLight(fill);
 
     std::shared_ptr<VROBox> box = VROBox::createBox(2, 2, 2);
     box->setName("Cube");
