@@ -5,7 +5,29 @@ It tracks upstream `ReactVision/virocore` and is meant to be **upstreamable** �
 every change is vendor-neutral OpenXR with no PICO `#ifdef`s, so the long-term
 goal is to merge it back and retire the fork.
 
-## Layout
+## Status — 2026-09-26 (supersedes "Layout" and "Build boundary" below)
+
+- The work branch is now `upgrade/virocore-3.0.1`: upstream tag `v3.0.1`
+  merged (`e7bef021`), then `codex/rive-viro-panel` and `fork/main` were
+  merged in. It landed on `mikevocalz/virocore` `main` at **`d4e09840`**
+  (`git describe` = `v3.0.1-123-gd4e09840`), pushed with tags; upstream
+  GitHub releases mirrored 23/25 (two malformed `rc-*` refs rejected),
+  `Latest` = v3.0.1.
+- The AAR **has** since been built repeatedly from integrated source —
+  `:viroreact:assembleRelease` under JDK 17 — and the 16 KB gate passes all
+  14 arm64 libraries including vendored `libopenxr_loader.so`. The "build was
+  NOT executed" note under *Build boundary* describes the original commits'
+  authoring environment, not the current state.
+- Consumption did not go the renamed-package route: the rebuilt
+  `viro_renderer-release.aar` ships **inside** `@reactvision/react-viro`
+  version `3.0.1-moyo.0`, vendored as a tarball in Moyo
+  (`vendors/reactvision-react-viro-3.0.1-moyo.0.tgz`). Renderer and bridge
+  AARs are built from the same merge and must stay version-paired — bump them
+  together.
+- Still open: all PICO on-device items (Neo3 / PICO 4 / PICO 4 Ultra checks
+  in the *Build boundary* list and `docs/pico/handoff.md`).
+
+## Layout (original fork layout, pre-3.0.1)
 
 - Base: upstream tag `v2.56.0` (commit `5c3d101`).
 - Work branch: `pico-support`.
@@ -111,7 +133,8 @@ is the bar for most apps.
 
 ## Build boundary (honest note)
 
-The AAR build (`./gradlew :sharedCode:assembleRelease`) requires the Android
+The AAR build (`./gradlew :viroreact:assembleRelease` — `:sharedCode` is
+IDE-only and produces no AAR) requires the Android
 NDK toolchain and was NOT executed in the environment that authored these
 commits — the source changes are complete and self-consistent, but the compiled
 `.so` / `.aar` and on-device validation are your step. The CI workflow exists to

@@ -63,3 +63,20 @@ unaffected.
 - **Note:** The recenter action moves the UI (and in native terms rebuilds the
   reference space); it never moves or rotates the user's viewpoint while
   visible.
+
+## Status — 2026-09-26
+
+The branch carrying this work (`upgrade/virocore-3.0.1`, which absorbed
+`fork/main`'s OpenXR runtime info, PICO profiles and the 16 KB
+page-alignment gate) landed on `mikevocalz/virocore` `main` at `d4e09840`
+and was pushed; tags pushed, upstream releases mirrored 23/25 (the two
+malformed upstream `rc-*` refs return HTTP 422), `Latest` = v3.0.1.
+
+All three Codex review findings on upstream PR #332 verified fixed in the
+pushed tree: the `initPassthrough()` signature is intact in
+`VROSceneRendererOpenXR.cpp`; `build-pico-aar.sh` builds `:viroreact`; and
+the 16 KB gate uses `min_pt_load_align` — all 14 arm64 libraries pass ≥
+0x4000 including vendored `libopenxr_loader.so`.
+
+The on-device verification items this spec calls for (PICO Neo3, PICO 4,
+PICO 4 Ultra) remain open — nothing in the merge/push work exercised them.
