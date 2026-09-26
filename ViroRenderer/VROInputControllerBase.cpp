@@ -80,6 +80,44 @@ void VROInputControllerBase::setProjection(VROMatrix4f projection) {
     _projection = projection;
 }
 
+void VROInputControllerBase::cancelSource(int source) {
+    const int ray = rayForSource(source);
+    std::vector<std::pair<int, std::shared_ptr<VRONode>>> captured;
+    for (auto &entry : _lastClickedNodesBySource) {
+        if (rayForSource(entry.first) == ray && entry.second) {
+            captured.emplace_back(entry.first, entry.second);
+            entry.second = nullptr;
+        }
+    }
+    if (_lastDraggedNode && (_lastDraggedNode->_source == ray ||
+                             _lastDraggedNode->_source == kUnownedSource)) {
+        _lastDraggedNode->_draggedNode->setIsBeingDragged(false);
+        if (_lastDraggedNode->_transformNode) _lastDraggedNode->_transformNode->setIsBeingDragged(false);
+        _lastDraggedNode = nullptr;
+    }
+    auto hover = _lastHoveredNodesBySource.find(ray);
+    if (hover != _lastHoveredNodesBySource.end() && hover->second) {
+        auto node = hover->second;
+        hover->second = nullptr;
+        if (node->getEventDelegate()) node->getEventDelegate()->onHover(ray, node, false, {});
+    }
+    _hoverPendingBySource.erase(ray);
+    _hoverExitBySource.erase(ray);
+    _hitResultsBySource.erase(ray);
+    _canvasHoverPositions.erase(ray);
+    // Empty coordinates mean off-target release to consumers. Never call the
+    // ordinary click-completion path, which can reroute through hover grace.
+    for (const auto &entry : captured) {
+        for (const auto &delegate : _delegates) {
+            delegate->onClick(entry.first, entry.second, VROEventDelegate::ClickUp, {});
+        }
+        if (entry.second->getEventDelegate()) {
+            entry.second->getEventDelegate()->onClick(entry.first, entry.second,
+                                                       VROEventDelegate::ClickUp, {});
+        }
+    }
+}
+
 void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickState clickState) {
     // Resolve the click against the hit of the ray that carries this source
     // (a grip shares its hand's aim ray) so two simultaneous pointers don't
@@ -170,6 +208,9 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
             (_lastDraggedNode->_source == kUnownedSource || _lastDraggedNode->_source == ray)) {
             _lastDraggedNode->_dragState = VROEventDelegate::DragState::End;
             _lastDraggedNode->_draggedNode->setIsBeingDragged(false);
+            if (_lastDraggedNode->_transformNode) {
+                _lastDraggedNode->_transformNode->setIsBeingDragged(false);
+            }
             _lastDraggedNode = nullptr;
         }
     } else if (clickState == VROEventDelegate::ClickDown){
@@ -202,6 +243,17 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
         draggedObject->_originalDraggedNodePosition = draggableNode->getWorldPosition();
         draggedObject->_originalDraggedNodeRotation = draggableNode->getWorldRotation();
         draggedObject->_draggedNode = draggableNode;
+        switch (draggableNode->getDragTransform()) {
+            case VRODragTransform::Self: draggedObject->_transformNode = draggableNode; break;
+            case VRODragTransform::Parent: draggedObject->_transformNode = draggableNode->getParentNode(); break;
+            case VRODragTransform::None: break;
+        }
+        if (draggedObject->_transformNode) {
+            draggedObject->_transformOffset = draggedObject->_transformNode->getWorldPosition()
+                    - draggableNode->getWorldPosition();
+            draggedObject->_transformRotation = draggedObject->_transformNode->getWorldRotation();
+            draggedObject->_transformNode->setIsBeingDragged(true);
+        }
         // Snapshot this ray's hit now: by the time the owning onMove reaches
         // processDragging, the shared _hitResult may be the other hand's. A
         // re-routed click's hit is off the node (possibly the far background),
@@ -275,6 +327,14 @@ void VROInputControllerBase::onMove(int source, VROVector3f position, VROQuatern
     }
 }
 
+void VROInputControllerBase::applyDragTransform(VROVector3f position, bool animated) {
+    if (_lastDraggedNode && _lastDraggedNode->_transformNode) {
+        _lastDraggedNode->_transformNode->setWorldTransform(
+                position + _lastDraggedNode->_transformOffset,
+                _lastDraggedNode->_transformRotation, animated);
+    }
+}
+
 void VROInputControllerBase::processDragging(int source) {
     std::shared_ptr<VRONode> draggedNode = _lastDraggedNode->_draggedNode;
 
@@ -327,7 +387,7 @@ void VROInputControllerBase::processDragging(int source) {
             break;
     }
 
-    draggedNode->setWorldTransform(draggedToPosition, _lastDraggedNode->_originalDraggedNodeRotation);
+    applyDragTransform(draggedToPosition);
 
     /*
      To avoid spamming the JNI / JS bridge, throttle the notification
@@ -487,7 +547,11 @@ void VROInputControllerBase::onRotate(int source, float rotationRadians, VROEven
 }
 
 void VROInputControllerBase::updateHitNode(const VROCamera &camera, VROVector3f origin, VROVector3f ray) {
-    if (_scene == nullptr || _lastDraggedNode != nullptr) {
+    // Input-only panel drags keep their collider stationary. Continue hit tests
+    // so the ray and release position follow the pointer instead of freezing
+    // at the initial press. Moving drags retain their captured hit.
+    if (_scene == nullptr || (_lastDraggedNode != nullptr &&
+                              _lastDraggedNode->_transformNode != nullptr)) {
         return;
     }
 
@@ -497,7 +561,11 @@ void VROInputControllerBase::updateHitNode(const VROCamera &camera, VROVector3f 
 
 void VROInputControllerBase::updateHitNode(int source, const VROCamera &camera,
                                            VROVector3f origin, VROVector3f ray) {
-    if (_scene == nullptr || _lastDraggedNode != nullptr) {
+    // Input-only panel drags keep their collider stationary. Continue hit tests
+    // so the ray and release position follow the pointer instead of freezing
+    // at the initial press. Moving drags retain their captured hit.
+    if (_scene == nullptr || (_lastDraggedNode != nullptr &&
+                              _lastDraggedNode->_transformNode != nullptr)) {
         return;
     }
     auto hit = std::make_shared<VROHitTestResult>(hitTest(camera, origin, ray, true));
@@ -595,8 +663,22 @@ void VROInputControllerBase::processGazeEvent(int source) {
     // never actually saw a transition.
     if (lastHovered == newNode) {
         pending = HoverPending{};
+        // Input-only canvas planes need coordinates within the artboard, even
+        // when the ray remains on the same Viro collider. Suppress stationary
+        // rays so a static Rive panel does not advance at headset refresh rate.
+        if (newNode && newNode->getDragTransform() == VRODragTransform::None &&
+            newNode->getEventDelegate() && !hit->isBackgroundHit()) {
+            const VROVector3f position = hit->getLocation();
+            auto previous = _canvasHoverPositions.find(source);
+            if (previous == _canvasHoverPositions.end() || position.distance(previous->second) > 0.0001f) {
+                _canvasHoverPositions[source] = position;
+                newNode->getEventDelegate()->onHover(source, newNode, true,
+                                                     {position.x, position.y, position.z});
+            }
+        }
         return;
     }
+    _canvasHoverPositions.erase(source);
 
     VROVector3f hitLoc = hit->getLocation();
     std::vector<float> pos = {hitLoc.x, hitLoc.y, hitLoc.z};
