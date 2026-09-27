@@ -24,6 +24,7 @@
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "VROInputControllerBase.h"
+#include "VRODragSamplePolicy.h"
 #include "VROTime.h"
 #include "VROPortal.h"
 
@@ -394,7 +395,9 @@ void VROInputControllerBase::processDragging(int source) {
      of onDrag delegates to a certain degree of accuracy.
      */
     float distance = draggedToPosition.distance(_lastDraggedNodePosition);
-    if (distance < ON_DRAG_DISTANCE_THRESHOLD) {
+    const bool precisionSurface = draggedNode->getHighAccuracyEvents() &&
+                                  draggedNode->getDragTransform() == VRODragTransform::None;
+    if (!VROShouldEmitDragSample(distance, precisionSurface, ON_DRAG_DISTANCE_THRESHOLD)) {
         return;
     }
 
