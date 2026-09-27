@@ -1,0 +1,15 @@
+name: Controller ink sampling
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sample-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify sub-millimetre sampling and ordinary drag throttling
+        run: |
+          c++ -std=c++14 -Wall -Wextra -Werror tests/drag_sample_policy_test.cpp -o /tmp/drag-sample-test
+          /tmp/drag-sample-test
