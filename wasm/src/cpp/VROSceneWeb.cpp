@@ -201,6 +201,12 @@ void VROSceneWeb::initAR() {
     _arSession->run();
 }
 
+void VROSceneWeb::setFloorVisible(bool visible) {
+    if (_floorNode) {
+        _floorNode->setPosition({0, visible ? -2.0f : -1000.0f, -5});
+    }
+}
+
 std::shared_ptr<VROARSessionWeb> VROSceneWeb::getARSession() {
     return _arSession;
 }
@@ -252,11 +258,11 @@ void VROSceneWeb::buildCubeScene() {
     floorMaterial->setLightingModel(VROLightingModel::Lambert);
     floorMaterial->getDiffuse().setColor({0.5, 0.5, 0.5, 1.0});
 
-    std::shared_ptr<VRONode> floorNode = std::make_shared<VRONode>();
-    floorNode->setGeometry(floor);
-    floorNode->setPosition({0, -2, -5});
-    floorNode->setRotationEuler({-(float) M_PI_2, 0, 0});
-    rootNode->addChildNode(floorNode);
+    _floorNode = std::make_shared<VRONode>();
+    _floorNode->setGeometry(floor);
+    _floorNode->setPosition({0, -2, -5});
+    _floorNode->setRotationEuler({-(float) M_PI_2, 0, 0});
+    rootNode->addChildNode(_floorNode);
 
     // Make the cube tappable: toggle its color on click (demo feedback).
     _cubeDelegate = std::make_shared<CubeClickDelegate>(material);
@@ -1233,6 +1239,12 @@ static void viroInitAR() {
     if (sScene) sScene->initAR();
 }
 
+// Hide/show the demo floor. In AR (camera passthrough) the big grey floor
+// otherwise fills the view and hides the feed — move it far away to hide it.
+static void viroSetFloorVisible(bool visible) {
+    if (sScene) sScene->setFloorVisible(visible);
+}
+
 // Inject a camera pose from JS (slam-wasm), already converted to virocore's
 // Y-up/GL convention. Rotation as a quaternion (x,y,z,w); position in meters.
 // trackingState: 1 = Unavailable, 2 = Limited, 3 = Normal.
@@ -1362,6 +1374,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroCommitAnimation", &viroCommitAnimation);
 
     emscripten::function("viroInitAR", &viroInitAR);
+    emscripten::function("viroSetFloorVisible", &viroSetFloorVisible);
     emscripten::function("viroARSetPose", &viroARSetPose);
     emscripten::function("viroARSetCameraBackground", &viroARSetCameraBackground);
     emscripten::function("viroARSetCameraImageSize", &viroARSetCameraImageSize);
