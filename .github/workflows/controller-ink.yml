@@ -25,7 +25,7 @@ jobs:
       - name: Verify runner Android SDK
         run: |
           test -d "$ANDROID_HOME"
-          sdkmanager --version
+          test -d "$ANDROID_HOME/platforms"
       - name: Build and verify the actual controller renderer
         run: bash scripts/build-pico-aar.sh --out "$RUNNER_TEMP/controller-aar"
       - uses: actions/upload-artifact@v4
