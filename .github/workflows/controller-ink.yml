@@ -13,3 +13,20 @@ jobs:
         run: |
           c++ -std=c++14 -Wall -Wextra -Werror tests/drag_sample_policy_test.cpp -o /tmp/drag-sample-test
           /tmp/drag-sample-test
+  renderer-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Build and verify the actual controller renderer
+        run: bash scripts/build-pico-aar.sh --out "$RUNNER_TEMP/controller-aar"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: controller-renderer-release
+          path: ${{ runner.temp }}/controller-aar/viro_renderer-release.aar
+          if-no-files-found: error
