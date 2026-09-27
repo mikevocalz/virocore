@@ -122,9 +122,20 @@ void VROGeometry::updateSortKeys(VRONode *node, uint32_t hierarchyId, uint32_t h
         std::shared_ptr<VROMaterial> &material = _materials[materialIndex];
         material->updateSortKey(key, lights, context, driver);
 
+        /*
+          An alpha channel in the diffuse texture is not on its own a reason to
+          sort this element into the distance-ordered transparent queue. A
+          cutout material (glTF MASK) resolves its edges with a discard and is
+          then written opaque, so ordering it by camera distance only makes
+          overlapping cards — hair being the worst case — swap draw order as
+          the head moves, which reads as flicker. Only a material that actually
+          blends needs the sorted queue; one with no blending is resolved by
+          the depth buffer like any opaque surface.
+        */
         key.transparent = (node->getOpacity() < (1 - kEpsilon) ||
                            material->getTransparency() < (1 - kEpsilon) ||
-                           material->hasDiffuseAlpha());
+                           (material->getBlendMode() != VROBlendMode::None &&
+                            material->hasDiffuseAlpha()));
         key.incoming = true;
         
         _sortKeys.push_back(key);
