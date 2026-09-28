@@ -14,35 +14,44 @@
 #include <cstdint>
 #include <memory>
 #include "VROTexture.h"
+#include "NitroCanvasSharedTextureABI.h"
 
 class VRODriver;
 class VROTextureSubstrate;
 
 /*
- Opaque handle to a platform-provided GPU buffer. The fields are
- platform-disjoint: only the field for the current platform is meaningful.
+ Opaque handle to a platform-provided GPU buffer, and the wire struct the
+ producer writes through the dlsym'd nitro_canvas_lookup_v2. This is an alias
+ rather than our own declaration on purpose: NitroCanvasSharedTextureABI.h is
+ vendored byte-identically from nitro-canvas-in-Vision/cpp/, so the producer
+ cannot hand us a struct laid out differently from the one we allocate. The
+ two sides used to hand-declare their own versions, which differed by a
+ trailing int fenceFd — 28 bytes against 24 on armeabi-v7a.
+
+ The fields are platform-disjoint: only the field for the current platform is
+ meaningful.
+
+   iosurface           iOS / visionOS: IOSurfaceRef as an integer. The
+                       renderer wraps it in a CVPixelBuffer (via
+                       kCVPixelBufferIOSurfacePropertiesKey) and imports it
+                       through CVOpenGLESTextureCache (iOS) or
+                       CVMetalTextureCache (visionOS).
+   ahardwareBuffer     Android Route B: AHardwareBuffer* as an integer.
+                       Imported via eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID)
+                       + glEGLImageTargetTexture2DOES into a
+                       GL_TEXTURE_EXTERNAL_OES texture.
+   surfaceTextureGLId  Android Route A: a SurfaceTexture whose owning Surface
+                       the producer has already rendered into. The consumer
+                       calls updateTexImage() on the existing
+                       GL_TEXTURE_EXTERNAL_OES; no new substrate is produced.
+   flags               NITRO_CANVAS_FLAG_SRGB replaces the old bool sRGB field.
+   fenceFd             SSC v1.1 producer fence; -1 when there is none. The
+                       importer owns the FD once the lookup returns it.
+
+ Callers must zero the struct and set structSize + abiVersion before calling
+ the lookup, or it refuses to write anything.
  */
-struct VROSharedTextureHandle {
-    int width = 0;
-    int height = 0;
-    bool sRGB = true;
-
-    // iOS / visionOS: IOSurfaceRef cast to uintptr_t. The renderer wraps this
-    // in a CVPixelBuffer (via kCVPixelBufferIOSurfacePropertiesKey) and then
-    // imports it through CVOpenGLESTextureCache (iOS) or CVMetalTextureCache
-    // (visionOS).
-    uintptr_t iosurface = 0;
-
-    // Android Route B: AHardwareBuffer* cast to uintptr_t. Imported via
-    // eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID) + glEGLImageTargetTexture2DOES
-    // into a GL_TEXTURE_EXTERNAL_OES texture.
-    uintptr_t ahardwareBuffer = 0;
-
-    // Android Route A: a SurfaceTexture whose owning Surface the producer has
-    // already rendered into. The consumer just calls updateTexImage() on the
-    // existing GL_TEXTURE_EXTERNAL_OES; no new substrate is produced.
-    uint32_t surfaceTextureGLId = 0;
-};
+using VROSharedTextureHandle = NitroCanvasSharedTextureHandle;
 
 /*
  A VROTexture whose underlying GPU storage is supplied by an external producer.
