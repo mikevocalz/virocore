@@ -118,6 +118,7 @@ public class ViroViewOpenXR extends ViroView {
     private StartupListener mStartupListener;
     private Application mApplication; // for unregistering ActivityLifecycleCallbacks
     private boolean mResumed = false;  // tracks renderer.onResume / onPause balance
+    private ViroMediaRecorder mMediaRecorder; // lazily created; see getRecorder()
 
     // Passthrough / hand-tracking props can be set (via VRT*SceneNavigator) before
     // the native Renderer exists, since renderer creation is deferred to the host
@@ -477,6 +478,40 @@ public class ViroViewOpenXR extends ViroView {
     }
 
     /**
+     * Performs an AR hit test from the camera's position in the direction of the given
+     * ray, against the real-world planes the headset tracks (plane detection or the Space
+     * Setup room model). Results arrive nearest first. There are none in a scene with no
+     * AR session, and none before the renderer has started.
+     *
+     * @param ray      Direction of the test, from the camera's current position.
+     * @param callback Receives the {@link ARHitTestResult} results.
+     */
+    public void performARHitTestWithRay(Vector ray, ARHitTestListener callback) {
+        if (mDestroyed || mNativeRenderer == null) {
+            callback.onHitTestFinished(new ARHitTestResult[0]);
+            return;
+        }
+        mNativeRenderer.performARHitTestWithRayOpenXR(ray.toArray(), callback);
+    }
+
+    /**
+     * Performs an AR hit test along the ray from <i>origin</i> to <i>destination</i> in
+     * world coordinates, typically a controller's aim. See
+     * {@link #performARHitTestWithRay(Vector, ARHitTestListener)}.
+     *
+     * @param origin      The ray origin in world coordinates.
+     * @param destination The ray destination in world coordinates.
+     * @param callback    Receives the {@link ARHitTestResult} results.
+     */
+    public void performARHitTestWithRay(Vector origin, Vector destination, ARHitTestListener callback) {
+        if (mDestroyed || mNativeRenderer == null) {
+            callback.onHitTestFinished(new ARHitTestResult[0]);
+            return;
+        }
+        mNativeRenderer.performARHitTestWithRayOpenXR(origin.toArray(), destination.toArray(), callback);
+    }
+
+    /**
      * Select the vertical tracking origin: {@code false} = eye-level (default),
      * {@code true} = floor-level. Cached and re-applied if the renderer isn't
      * ready yet, so an initial trackingOrigin prop set during mount survives.
@@ -522,7 +557,22 @@ public class ViroViewOpenXR extends ViroView {
 
     @Override
     public ViroMediaRecorder getRecorder() {
-        return null; // Not supported on Quest.
+        if (mMediaRecorder == null) {
+            if (mNativeRenderer == null) {
+                return null;
+            }
+            // No Android surface here, so there is no view size to record at: the
+            // frame measures one eye's swapchain image. Zero means the session has
+            // not created them yet, and a recorder sized 0x0 would fail on its first
+            // capture rather than on construction, which is harder to diagnose.
+            int width  = mNativeRenderer.getEyeWidth();
+            int height = mNativeRenderer.getEyeHeight();
+            if (width <= 0 || height <= 0) {
+                return null;
+            }
+            mMediaRecorder = new ViroMediaRecorder(getContext(), mNativeRenderer, width, height);
+        }
+        return mMediaRecorder;
     }
 
     @Override
@@ -683,6 +733,10 @@ public class ViroViewOpenXR extends ViroView {
     /** @hide */
     @Override
     public void dispose() {
+        if (mMediaRecorder != null) {
+            mMediaRecorder.dispose();
+            mMediaRecorder = null;
+        }
         if (mApplication != null) {
             mApplication.unregisterActivityLifecycleCallbacks(this);
             mApplication = null;
@@ -718,8 +772,9 @@ public class ViroViewOpenXR extends ViroView {
 
     /**
      * Called by native code (render thread) when the B or Menu controller button
-     * is pressed. Posts Activity.onBackPressed() to the UI thread so React Native's
-     * BackHandler receives the event in VRActivity.
+     * is pressed, or the left-palm menu pinch is made with hand tracking. Posts
+     * Activity.onBackPressed() to the UI thread so React Native's BackHandler
+     * receives the event in VRActivity.
      *
      * @hide
      */
