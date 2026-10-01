@@ -238,6 +238,45 @@ VRO_METHOD(jobjectArray, nativeGetRuntimeInfo)(VRO_ARGS
     return arr;
 }
 
+// Additional OpenXR capability facts. Kept separate from nativeGetRuntimeInfo
+// so expo-pico's established String[10] probe ABI remains unchanged.
+// Indices:
+// [0]=eyeGazeExtension [1]=eyeGazeSupported [2]=handTracking [3]=handAim
+// [4]=passthrough [5]=planeDetection [6]=sceneUnderstanding [7]=foveation
+// [8]=eyeTrackedFoveation [9]=localFloor
+VRO_METHOD(jobjectArray, nativeGetRuntimeCapabilities)(VRO_ARGS
+                                                       jlong rendererRef) {
+    auto base = Renderer::native(rendererRef);
+    auto xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(base);
+    if (!xrRenderer) return nullptr;
+    const auto &info = xrRenderer->getRuntimeInfo();
+    if (!info.valid) return nullptr;
+
+    auto boolStr = [](bool b) { return b ? "1" : "0"; };
+    const char *vals[10] = {
+        boolStr(info.eyeGazeExtensionAvailable),
+        boolStr(info.eyeGazeSupported),
+        boolStr(info.handTrackingAvailable),
+        boolStr(info.handAimExtAvailable),
+        boolStr(info.passthroughAvailable),
+        boolStr(info.planeDetectionAvailable),
+        boolStr(info.sceneUnderstandingAvailable),
+        boolStr(info.foveationAvailable),
+        boolStr(info.eyeTrackedFoveationAvailable),
+        boolStr(info.localFloorAvailable),
+    };
+
+    JNIEnv *jniEnv = VROPlatformGetJNIEnv();
+    jclass strClass = jniEnv->FindClass("java/lang/String");
+    jobjectArray arr = jniEnv->NewObjectArray(10, strClass, nullptr);
+    for (int i = 0; i < 10; ++i) {
+        jstring s = jniEnv->NewStringUTF(vals[i]);
+        jniEnv->SetObjectArrayElement(arr, i, s);
+        jniEnv->DeleteLocalRef(s);
+    }
+    return arr;
+}
+
 // Return a PersistentRef<VROChoreographer> as jlong. The caller (Java)
 // holds this handle until release. Used by extension passes
 // (@viro-external/splat-pass) to attach a custom VRORenderPass via

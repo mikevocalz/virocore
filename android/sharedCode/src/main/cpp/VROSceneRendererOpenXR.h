@@ -124,6 +124,13 @@ private:
         bool            displayRefreshRateAvailable  = false;  // XR_FB_display_refresh_rate
         bool            handTrackingAvailable        = false;  // XR_EXT_hand_tracking
         bool            handAimExtAvailable          = false;  // XR_FB_hand_tracking_aim
+        bool            eyeGazeExtensionAvailable    = false;  // XR_EXT_eye_gaze_interaction
+        bool            eyeGazeSupported             = false;  // XrSystemEyeGazeInteractionPropertiesEXT
+        bool            planeDetectionAvailable      = false;  // XR_EXT_plane_detection
+        bool            sceneUnderstandingAvailable  = false;  // XR_FB_scene
+        bool            foveationAvailable           = false;  // XR_FB_foveation
+        bool            eyeTrackedFoveationAvailable = false;  // XR_META_foveation_eye_tracked
+        bool            localFloorAvailable          = false;  // XR_EXT_local_floor / OpenXR 1.1
     };
     VROOpenXRRuntimeInfo _runtimeInfo;
 
