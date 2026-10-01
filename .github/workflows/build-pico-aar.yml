@@ -1,14 +1,16 @@
 name: Build PICO renderer AAR
 
-# Builds the patched virocore renderer AAR on every push to main or pico-support
-# and on tags, and uploads it as an artifact. The JS package fork (mikevocalz/viro)
-# pulls this artifact when cutting a release, so the AAR is always built from a
-# known commit rather than a developer's machine.
-
 on:
   push:
     branches: [main, pico-support]
     tags: ['v*-pico*']
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'scripts/build-pico-aar.sh'
+      - 'scripts/verify-16kb-alignment.py'
+      - 'scripts/test_verify_16kb_alignment.py'
+      - '.github/workflows/build-pico-aar.yml'
   workflow_dispatch:
 
 jobs:
@@ -26,23 +28,31 @@ jobs:
       - name: Set up Android SDK + NDK
         uses: android-actions/setup-android@v4
 
-      - name: Install NDK (match virocore ndkVersion)
+      - name: Resolve and install pinned NDK
+        shell: bash
         run: |
-          # Pin to the ndkVersion declared in android/build.gradle.
-          NDK_VER=$(grep -oE "ndkVersion[\" ]+[0-9.]+" android/build.gradle | grep -oE "[0-9.]+" | head -1 || echo "26.1.10909125")
+          set -euo pipefail
+          NDK_VER="$(sed -nE 's/^[[:space:]]*ndkVersion[[:space:]]*=?[[:space:]]*"([0-9.]+)".*/\1/p' android/viroreact/build.gradle | head -1)"
+          test -n "$NDK_VER"
           echo "Installing NDK $NDK_VER"
-          yes | sdkmanager "ndk;$NDK_VER" || true
+          sdkmanager "ndk;$NDK_VER"
+          test -d "$ANDROID_HOME/ndk/$NDK_VER"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
+
+      - name: Test alignment verifier
+        run: python3 scripts/test_verify_16kb_alignment.py
 
       - name: Build AAR
         run: ./scripts/build-pico-aar.sh --out "$RUNNER_TEMP/aar"
 
-      - name: Verify 16KB page alignment (viro#485 gate)
+      - name: Verify 16KB page alignment
         run: python3 scripts/verify-16kb-alignment.py "$RUNNER_TEMP/aar/viro_renderer-release.aar"
 
       - name: Upload AAR artifact
         uses: actions/upload-artifact@v4
         with:
           name: viro_renderer-release-aar
-          path: ${{ runner.temp }}/aar/viro_renderer-release.aar
+          path: |
+            ${{ runner.temp }}/aar/viro_renderer-release.aar
+            ${{ runner.temp }}/aar/viro_renderer-release.json
           if-no-files-found: error
