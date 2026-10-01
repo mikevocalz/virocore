@@ -44,7 +44,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * ViroViewOpenXR is a {@link ViroView} for rendering content in stereo VR on Meta Quest
- * headsets using the Khronos OpenXR API. Supports Quest 2, Quest 3, Quest 3S, and Quest Pro.
+ * headsets using the Khronos OpenXR API. Used by Meta Horizon devices (Quest and VR Glasses) and PICO.
  *
  * Unlike other ViroViews there is no Android Surface or SurfaceView — OpenXR owns the
  * display compositor and manages its own EGL context and swapchain.
@@ -510,6 +510,14 @@ public class ViroViewOpenXR extends ViroView {
      */
     public String[] getRuntimeInfo() {
         return mNativeRenderer != null ? mNativeRenderer.getRuntimeInfo() : null;
+    }
+
+    /**
+     * Negotiated OpenXR capabilities. Kept separate from getRuntimeInfo() so
+     * the existing expo-pico runtime probe remains ABI-compatible.
+     */
+    public String[] getRuntimeCapabilities() {
+        return mNativeRenderer != null ? mNativeRenderer.getRuntimeCapabilities() : null;
     }
 
     @Override
