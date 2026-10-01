@@ -301,7 +301,7 @@ protected:
      It moves only the drag owned by the given source (see getDraggedObject).
      */
     virtual void processDragging(int source);
-    void applyDragTransform(VROVector3f position, bool animated = false);
+    void applyDragTransform(const std::shared_ptr<VRODraggedObject> &drag, VROVector3f position, bool animated = false);
 
     /*
      This function returns the next drag position for drag type FixedDistance
