@@ -161,6 +161,14 @@ public class Renderer {
         return nativeGetRuntimeInfo(mNativeRef);
     }
 
+    /**
+     * Negotiated OpenXR capability facts as a separate String[10].
+     * Kept separate from getRuntimeInfo() because expo-pico consumes that
+     * established String[10] shape reflectively.
+     */
+    public String[] getRuntimeCapabilities() {
+        return nativeGetRuntimeCapabilities(mNativeRef);
+    }
     /* ----------     Common lifecycle methods    ---------- */
 
     public void destroy() {
@@ -386,6 +394,7 @@ public class Renderer {
     private native void nativeSetTrackingOrigin(long nativeRenderer, boolean floor);
     private native void nativeSetFoveationLevel(long nativeRenderer, int level, boolean dynamic);
     private native String[] nativeGetRuntimeInfo(long nativeRenderer);
+    private native String[] nativeGetRuntimeCapabilities(long nativeRenderer);
     private native void nativeSetClearColor(long sceneRef, int color);
     private native void nativeSetShadowsEnabled(long nativeRef, boolean enabled);
     private native void nativeSetHDREnabled(long nativeRef, boolean enabled);
