@@ -1,13 +1,13 @@
 name: Build PICO renderer AAR
 
-# Builds the patched virocore renderer AAR on every push to pico-support and on
-# tags, and uploads it as an artifact. The JS package fork (mikevocalz/viro)
+# Builds the patched virocore renderer AAR on every push to main or pico-support
+# and on tags, and uploads it as an artifact. The JS package fork (mikevocalz/viro)
 # pulls this artifact when cutting a release, so the AAR is always built from a
 # known commit rather than a developer's machine.
 
 on:
   push:
-    branches: [pico-support]
+    branches: [main, pico-support]
     tags: ['v*-pico*']
   workflow_dispatch:
 
