@@ -137,6 +137,34 @@ public class Renderer {
     }
 
     /**
+     * Width of one eye's swapchain image (Quest only; 0 on other renderers, and 0
+     * until the XR session has created its swapchains). A frame captured off the
+     * OpenXR renderer measures this, since there is no Android surface to size
+     * against.
+     */
+    public int getEyeWidth() {
+        return nativeGetEyeWidth(mNativeRef);
+    }
+
+    /** Height of one eye's swapchain image. See {@link #getEyeWidth()}. */
+    public int getEyeHeight() {
+        return nativeGetEyeHeight(mNativeRef);
+    }
+
+    /**
+     * AR hit test on Quest from the camera along {@code ray}, against the planes
+     * the OpenXR AR session tracks. Reports no results on other renderers.
+     */
+    public void performARHitTestWithRayOpenXR(float[] ray, ARHitTestListener callback) {
+        nativePerformARHitTestWithRayOpenXR(mNativeRef, ray, callback);
+    }
+
+    /** AR hit test on Quest from {@code origin} to {@code destination}. */
+    public void performARHitTestWithRayOpenXR(float[] origin, float[] destination, ARHitTestListener callback) {
+        nativePerformARHitTestWithOriginDestOpenXR(mNativeRef, origin, destination, callback);
+    }
+
+    /**
      * Select the vertical tracking origin: false = eye-level (LOCAL, default),
      * true = floor-level (LOCAL_FLOOR or a STAGE-derived offset). No-op on
      * non-OpenXR backends.
@@ -391,6 +419,10 @@ public class Renderer {
     private native void nativeSetPassthroughStyle(long nativeRenderer, float opacity,
                                                   float edgeR, float edgeG, float edgeB, float edgeA);
     private native void nativeSetHandTrackingEnabled(long nativeRenderer, boolean enabled);
+    private native int nativeGetEyeWidth(long nativeRenderer);
+    private native int nativeGetEyeHeight(long nativeRenderer);
+    private native void nativePerformARHitTestWithRayOpenXR(long nativeRenderer, float[] ray, ARHitTestListener callback);
+    private native void nativePerformARHitTestWithOriginDestOpenXR(long nativeRenderer, float[] origin, float[] destination, ARHitTestListener callback);
     private native void nativeSetTrackingOrigin(long nativeRenderer, boolean floor);
     private native void nativeSetFoveationLevel(long nativeRenderer, int level, boolean dynamic);
     private native String[] nativeGetRuntimeInfo(long nativeRenderer);

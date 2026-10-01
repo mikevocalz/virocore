@@ -575,6 +575,8 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     updateControllerMeshViz(ViroOculus::LeftController, session, baseSpace, time,
                             _leftGripPoseAction, _leftGripSpace);
 
+    // ── Gaze — eye tracking where available, head pose everywhere else ─────
+    bool eyeGazeLocated = false;
     // ── Eye gaze (Quest Pro) — additive onHover source ──────────────────────
     // Locate the eye-gaze pose and feed it through the same hit-test/onHover path
     // as the controllers, under its own source id. No laser line is drawn (a gaze
@@ -591,7 +593,22 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
             VROInputControllerBase::updateHitNode(ViroOculus::EyeGaze, camera, gazePos, gazeForward);
             VROInputControllerBase::onMove(ViroOculus::EyeGaze, gazePos, gazeRot, gazeForward);
             VROInputControllerBase::processGazeEvent(ViroOculus::EyeGaze);
+            eyeGazeLocated = true;
         }
+    }
+    if (!eyeGazeLocated) {
+        // Head pose, when there is no eye tracker or it lost the eyes this frame.
+        // The camera holds this frame's HMD pose, already in the reference space
+        // the controller rays above were located in.
+        //
+        // Hover and the reticle only. The hit is kept under EyeGaze alone rather
+        // than mirrored into the shared slot, and onMove is not called: this runs
+        // on every frame of every scene, and either would hand fuse, pinch, rotate
+        // and drag to wherever the head points instead of the controller in use.
+        VROInputControllerBase::updateHitNode(ViroOculus::EyeGaze, camera,
+                                              camera.getPosition(), camera.getForward(),
+                                              /*mirrorToLegacy=*/false);
+        VROInputControllerBase::processGazeEvent(ViroOculus::EyeGaze);
     }
 
     for (const auto &edge : _pendingButtons) {
@@ -599,6 +616,22 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         if ((ray == ViroOculus::Controller && !rightValid) ||
             (ray == ViroOculus::LeftController && !leftValid)) continue;
         VROInputControllerBase::onButtonEvent(edge.first, edge.second);
+
+        // A short pulse on press, so a click reads as having landed. The left and
+        // right vibration output actions have been bound since this controller was
+        // written but had no caller anywhere, which is why every click, drag and
+        // collision in a Quest scene was silent.
+        //
+        // Only on the ClickDown edge: buzzing on release would read as a second
+        // press. BackButton is excluded for two reasons — it has no attributable
+        // hand (B on the right and Menu on the left share the source id, so
+        // rayForSource returns neither controller), and its callback finishes the
+        // VR activity, so the pulse would be cut off or land after the scene is gone.
+        if (edge.second == VROEventDelegate::ClickState::ClickDown &&
+            edge.first != ViroOculus::BackButton) {
+            const bool leftHand = rayForSource(edge.first) == ViroOculus::LeftController;
+            triggerHaptic(session, leftHand ? 0 : 1);
+        }
     }
     _pendingButtons.clear();
 }
@@ -690,6 +723,19 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                                               VROVector3f &leftAimForwardOut) {
     rightAimValidOut = false;
     leftAimValidOut  = false;
+
+    auto updateMenuGesture = [this](bool pressed) {
+        if (pressed && !_prevMenuGestureLeft) {
+            queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickDown);
+            if (_backButtonCallback) {
+                _backButtonCallback();
+            }
+        } else if (!pressed && _prevMenuGestureLeft) {
+            queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickUp);
+        }
+        _prevMenuGestureLeft = pressed;
+    };
+
     for (int hand = 0; hand < 2; ++hand) {
         const int source = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
         const int gripSource = (hand == 0) ? ViroOculus::LeftGrip : ViroOculus::RightGrip;
@@ -709,6 +755,9 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         if ((hand == 0 ? skipLeft : skipRight) || !_pfnLocateHandJoints ||
             !_handTrackingEnabled || tracker == XR_NULL_HANDLE) {
             cancelHand();
+            if (hand == 0) {
+                updateMenuGesture(false);
+            }
             continue;
         }
 
@@ -733,7 +782,15 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         XrResult r = _pfnLocateHandJoints(tracker, &locateInfo, &locations);
         if (!XR_SUCCEEDED(r) || !locations.isActive) {
             cancelHand();
+            if (hand == 0) {
+                updateMenuGesture(false);
+            }
             continue;
+        }
+
+        if (hand == 0) {
+            updateMenuGesture(_aimExtEnabled &&
+                              (aimState.status & XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB));
         }
 
         // ── Aim pose extraction (FB aim ext preferred, joint-derived fallback)
@@ -811,6 +868,15 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                 float dz = thumbTip.pose.position.z - indexTip.pose.position.z;
                 pinched = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.02f);
             }
+        }
+        // A pinch made with the palm turned toward the user is a system gesture
+        // (the left one is the menu pinch routed to BackButton above), not a
+        // select. Without this the menu pinch would also click whatever the
+        // left hand's aim was resting on.
+        if (_aimExtEnabled &&
+            (aimState.status & (XR_HAND_TRACKING_AIM_SYSTEM_GESTURE_BIT_FB |
+                                XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB))) {
+            pinched = false;
         }
         if (pinched && !prevPinch)
             queueButtonEvent(source, VROEventDelegate::ClickState::ClickDown);
@@ -963,7 +1029,15 @@ void VROInputControllerOpenXR::updateLaserViz(int source,
     constexpr float kNoHitRange = 4.0f;  // meters
     VROVector3f hitPoint;
     auto hit = getHitResultForSource(source);
-    if (hit) {
+    // While this source drags, its hit is frozen on purpose (it anchors the drag), so ending
+    // the laser there pinned it to where the drag began while the hand moved on. Follow the
+    // dragged node instead.
+    auto drag = getDraggedObject(source);
+    if (drag && drag->_draggedNode) {
+        hitPoint = drag->_draggedNode->getWorldPosition();
+    } else if (drag) {
+        hitPoint = origin + forward.scale(drag->_draggedDistanceFromController);
+    } else if (hit) {
         hitPoint = hit->getLocation();
     } else {
         hitPoint = origin + forward.scale(kNoHitRange);
