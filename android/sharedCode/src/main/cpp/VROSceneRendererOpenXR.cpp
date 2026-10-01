@@ -449,9 +449,15 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     ALOGV("xrCreateInstance OK");
 
     // ── Identify the runtime we bound to ──────────────────────────────────────
-    _runtimeInfo.androidCreateInstanceEnabled = androidCreateInstanceEnabled;
-    _runtimeInfo.handTrackingAvailable        = _handTrackingAvailable;
-    _runtimeInfo.handAimExtAvailable          = _handAimExtAvailable;
+    _runtimeInfo.androidCreateInstanceEnabled  = androidCreateInstanceEnabled;
+    _runtimeInfo.handTrackingAvailable         = _handTrackingAvailable;
+    _runtimeInfo.handAimExtAvailable           = _handAimExtAvailable;
+    _runtimeInfo.eyeGazeExtensionAvailable     = _eyeGazeAvailable;
+    _runtimeInfo.planeDetectionAvailable       = _planeDetectionAvailable;
+    _runtimeInfo.sceneUnderstandingAvailable   = _fbSceneAvailable;
+    _runtimeInfo.foveationAvailable            = _foveationAvailable;
+    _runtimeInfo.eyeTrackedFoveationAvailable  = _eyeTrackedFoveationAvailable;
+    _runtimeInfo.localFloorAvailable           = _localFloorAvailable;
     {
         XrInstanceProperties instanceProps = { XR_TYPE_INSTANCE_PROPERTIES };
         if (XR_SUCCEEDED(xrGetInstanceProperties(_instance, &instanceProps))) {
@@ -512,6 +518,7 @@ bool VROSceneRendererOpenXR::initOpenXR() {
         ALOGV("Eye-gaze interaction: extension=%d supported=%d",
               (int)_eyeGazeAvailable, (int)_eyeGazeSupported);
     }
+    _runtimeInfo.eyeGazeSupported = _eyeGazeSupported;
 
     return true;
 }
