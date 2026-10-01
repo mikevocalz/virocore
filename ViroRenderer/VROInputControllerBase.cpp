@@ -36,7 +36,6 @@ VROInputControllerBase::VROInputControllerBase(std::shared_ptr<VRODriver> driver
     _lastDraggedNodePosition = VROVector3f(0,0,0);
     _lastClickedNode = nullptr;
     _lastHoveredNode = nullptr;
-    _lastDraggedNode = nullptr;
     _currentPinchedNode = nullptr;
     _currentRotateNode = nullptr;
     _scene = nullptr;
@@ -90,11 +89,9 @@ void VROInputControllerBase::cancelSource(int source) {
             entry.second = nullptr;
         }
     }
-    if (_lastDraggedNode && (_lastDraggedNode->_source == ray ||
-                             _lastDraggedNode->_source == kUnownedSource)) {
-        _lastDraggedNode->_draggedNode->setIsBeingDragged(false);
-        if (_lastDraggedNode->_transformNode) _lastDraggedNode->_transformNode->setIsBeingDragged(false);
-        _lastDraggedNode = nullptr;
+    std::shared_ptr<VRODraggedObject> cancelledDrag = getDraggedObject(ray);
+    if (cancelledDrag != nullptr) {
+        endDrag(cancelledDrag->_source);
     }
     auto hover = _lastHoveredNodesBySource.find(ray);
     if (hover != _lastHoveredNodesBySource.end() && hover->second) {
@@ -203,23 +200,25 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
             }
         }
         lastClicked = nullptr;
-        // Only the owning ray ends a drag (grip-start / trigger-release on the
-        // same hand still counts); the idle hand's release must not drop it.
-        if (_lastDraggedNode != nullptr &&
-            (_lastDraggedNode->_source == kUnownedSource || _lastDraggedNode->_source == ray)) {
-            _lastDraggedNode->_dragState = VROEventDelegate::DragState::End;
-            _lastDraggedNode->_draggedNode->setIsBeingDragged(false);
-            if (_lastDraggedNode->_transformNode) {
-                _lastDraggedNode->_transformNode->setIsBeingDragged(false);
-            }
-            _lastDraggedNode = nullptr;
+        // Only the owning ray ends its drag; the other hand stays captured.
+        std::shared_ptr<VRODraggedObject> drag = getDraggedObject(ray);
+        if (drag != nullptr) {
+            endDrag(drag->_source);
         }
     } else if (clickState == VROEventDelegate::ClickDown){
         lastClicked = focusedNode;
 
-        // A second button during a drag neither restarts it (the frozen hit
-        // would re-seed it with a stale offset) nor lets another ray steal it.
-        if (_lastDraggedNode != nullptr) {
+        // A second button on a ray that is already dragging neither restarts
+        // its drag (the frozen hit would re-seed it with a stale offset) nor
+        // starts a second one. A single-pointer drag blocks every source, as
+        // the single drag slot did.
+        if (getDraggedObject(ray) != nullptr) {
+            return;
+        }
+        // A button with no ray of its own (e.g. a shared BackButton) resolves
+        // against the legacy hit and would start an unowned drag, which every
+        // ray moves. Never let one start alongside another drag.
+        if (!sourceAware && isDragging()) {
             return;
         }
 
@@ -232,11 +231,22 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
             return;
         }
 
+        // One node follows one ray: a second hand grabbing a node the first is
+        // already dragging neither steals it nor starts a competing drag. The
+        // same goes for an ancestor or descendant of a dragged node, since both
+        // drags would write the same subtree's world transform every frame.
+        for (const auto &entry : _draggedObjects) {
+            std::shared_ptr<VRONode> other = entry.second->_draggedNode;
+            if (isSameOrAncestor(other, draggableNode) || isSameOrAncestor(draggableNode, other)) {
+                return;
+            }
+        }
+
         /*
          Grab and save a reference to the draggedNode that we will be tracking.
          Grab and save the distance of the hit result from the controller.
          Grab and save the hit location from the hit test and original draggedNode position.
-         For each of the above, store them within _lastDraggedNode to be used later
+         For each of the above, store them within the drag's entry to be used later
          within onMove to calculate the new dragged location of the draggedNode
          in reference to the controller's movement.
          */
@@ -262,10 +272,20 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
         draggedObject->_originalHitLocation = rerouted ? draggableNode->getWorldPosition()
                                                        : hit->getLocation();
         draggedObject->_source = sourceAware ? ray : kUnownedSource;
-        draggedObject->_position = _lastKnownPosition;
-        draggedObject->_forward = _lastKnownForward;
-        _lastDraggedNode = draggedObject;
-        _lastDraggedNode->_dragState = VROEventDelegate::DragState::Start;
+        // Seed from the owning ray's own pose; _lastKnown* holds whichever
+        // source moved last this frame. onMove refreshes both before the first
+        // processDragging, so this only matters until then.
+        auto pose = _lastKnownPoseBySource.find(ray);
+        if (sourceAware && pose != _lastKnownPoseBySource.end()) {
+            draggedObject->_position = pose->second.position;
+            draggedObject->_forward = pose->second.forward;
+        } else {
+            draggedObject->_position = _lastKnownPosition;
+            draggedObject->_forward = _lastKnownForward;
+        }
+        draggedObject->_lastNotifiedPosition = _lastDraggedNodePosition;
+        draggedObject->_dragState = VROEventDelegate::DragState::Start;
+        _draggedObjects[draggedObject->_source] = draggedObject;
         draggableNode->setIsBeingDragged(true);
     }
 }
@@ -299,15 +319,20 @@ void VROInputControllerBase::onMove(int source, VROVector3f position, VROQuatern
     _lastKnownRotation = rotation;
     _lastKnownPosition = position;
     _lastKnownForward = forward;
-    if (_hitResult == nullptr) {
+    _lastKnownPoseBySource[source] = { position, forward };
+    // This source's own hit, not the shared one: with one hand dragging, the shared hit
+    // follows the other hand, and fuse and onMove would go to what that hand points at.
+    // Single-pointer backends have no per-source hits and get the shared one as before.
+    std::shared_ptr<VROHitTestResult> hit = getHitResultForSource(source);
+    if (hit == nullptr) {
         return;
     }
 
     // Trigger orientation delegate callbacks within the scene.
-    processOnFuseEvent(source, _hitResult->getNode());
+    processOnFuseEvent(source, hit->getNode());
 
     std::shared_ptr<VRONode> movableNode = getNodeToHandleEvent(VROEventDelegate::EventAction::OnMove,
-                                                                _hitResult->getNode());
+                                                                hit->getNode());
     for (std::shared_ptr<VROEventDelegate> delegate : _delegates) {
         delegate->onMove(source, movableNode, _lastKnownRotation.toEuler(), _lastKnownPosition, _lastKnownForward);
     }
@@ -316,36 +341,98 @@ void VROInputControllerBase::onMove(int source, VROVector3f position, VROQuatern
                                                 _lastKnownPosition, _lastKnownForward);
     }
     
-    // Update draggable objects if needed unless we have a pinch motion. Only
-    // the owning ray moves the node; with two hands tracked the other ray's
-    // onMove would otherwise overwrite the transform every frame.
-    if (_lastDraggedNode != nullptr && ((_currentPinchedNode == nullptr) && (_currentRotateNode == nullptr))) {
-        if (_lastDraggedNode->_source == kUnownedSource || _lastDraggedNode->_source == source) {
-            _lastDraggedNode->_position = position;
-            _lastDraggedNode->_forward = forward;
+    // Update draggable objects if needed unless we have a pinch motion. Each
+    // ray moves only the drag it owns, so with two hands tracked each hand's
+    // onMove drives its own node and never the other hand's.
+    if ((_currentPinchedNode == nullptr) && (_currentRotateNode == nullptr)) {
+        std::shared_ptr<VRODraggedObject> drag = getDraggedObject(source);
+        if (drag != nullptr) {
+            drag->_position = position;
+            drag->_forward = forward;
             processDragging(source);
         }
     }
 }
 
-void VROInputControllerBase::applyDragTransform(VROVector3f position, bool animated) {
-    if (_lastDraggedNode && _lastDraggedNode->_transformNode) {
-        _lastDraggedNode->_transformNode->setWorldTransform(
-                position + _lastDraggedNode->_transformOffset,
-                _lastDraggedNode->_transformRotation, animated);
+bool VROInputControllerBase::isSameOrAncestor(const std::shared_ptr<VRONode> &ancestor,
+                                              std::shared_ptr<VRONode> node) {
+    while (node != nullptr) {
+        if (node == ancestor) {
+            return true;
+        }
+        node = node->getParentNode();
+    }
+    return false;
+}
+
+std::shared_ptr<VROInputControllerBase::VRODraggedObject>
+VROInputControllerBase::getDraggedObject(int ray) const {
+    auto it = _draggedObjects.find(ray);
+    if (it != _draggedObjects.end()) {
+        return it->second;
+    }
+    const int unowned = kUnownedSource;
+    it = _draggedObjects.find(unowned);
+    if (it != _draggedObjects.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+void VROInputControllerBase::endDrag(int key) {
+    auto it = _draggedObjects.find(key);
+    if (it == _draggedObjects.end()) {
+        return;
+    }
+    std::shared_ptr<VRODraggedObject> drag = it->second;
+    _draggedObjects.erase(it);
+    drag->_dragState = VROEventDelegate::DragState::End;
+    if (drag->_draggedNode != nullptr) {
+        drag->_draggedNode->setIsBeingDragged(false);
+    }
+    if (drag->_transformNode != nullptr) {
+        drag->_transformNode->setIsBeingDragged(false);
+    }
+}
+
+void VROInputControllerBase::endAllDrags() {
+    while (!_draggedObjects.empty()) {
+        endDrag(_draggedObjects.begin()->first);
+    }
+}
+
+void VROInputControllerBase::applyDragTransform(const std::shared_ptr<VRODraggedObject> &drag,
+                                                VROVector3f position,
+                                                bool animated) {
+    if (drag && drag->_transformNode) {
+        drag->_transformNode->setWorldTransform(
+                position + drag->_transformOffset,
+                drag->_transformRotation, animated);
     }
 }
 
 void VROInputControllerBase::processDragging(int source) {
-    std::shared_ptr<VRONode> draggedNode = _lastDraggedNode->_draggedNode;
+    std::shared_ptr<VRODraggedObject> drag = getDraggedObject(source);
+    if (drag == nullptr) {
+        return;
+    }
+    std::shared_ptr<VRONode> draggedNode = drag->_draggedNode;
+
+    // The node can leave the tree mid-drag: a scene change or a remount detaches it while the
+    // hand is still holding it. Its world transform has no parent to be relative to then
+    // (setWorldTransform dereferenced a null parent on Quest), so the drag ends here.
+    if (draggedNode == nullptr || draggedNode->getParentNode() == nullptr) {
+        endDrag(drag->_source);
+        return;
+    }
 
     // Calculate starting pre-drag properties if needed (hit locations, offsets, etc).
-    if (_lastDraggedNode->_dragState == VROEventDelegate::DragState::Start) {
+    if (drag->_dragState == VROEventDelegate::DragState::Start) {
         if (draggedNode->getDragType() == VRODragType::FixedDistanceOrigin) {
-            _lastDraggedNode->_draggedDistanceFromController = draggedNode->getWorldPosition().distanceAccurate(_lastDraggedNode->_position);
-            _lastDraggedNode->_originalHitLocation = draggedNode->getWorldPosition();
+            drag->_draggedDistanceFromController = draggedNode->getWorldPosition().distanceAccurate(drag->_position);
+            drag->_originalHitLocation = draggedNode->getWorldPosition();
         } else if (draggedNode->getDragType() == VRODragType::FixedToPlane) {
-            _lastDraggedNode->_originalHitLocation = getPlaneIntersect(draggedNode);
+            drag->_originalHitLocation = getPlaneIntersect(draggedNode, drag);
 
             // Snap object onto the plane if need be. This is a tolerance rather
             // than floorf(x * 100) / 100, which sent every value in [-0.01, 0)
@@ -356,20 +443,20 @@ void VROInputControllerBase::processDragging(int source) {
             VROVector3f c = draggedNode->getWorldPosition();
             float distanceFromPlane = (n.x * (c.x - p.x)) + (n.y * (c.y - p.y)) + (n.z * (c.z - p.z));
             if (fabs(distanceFromPlane) > ON_PLANE_DISTANCE_THRESHOLD){
-                _lastDraggedNode->_originalDraggedNodePosition = _lastDraggedNode->_originalHitLocation;
+                drag->_originalDraggedNodePosition = drag->_originalHitLocation;
             }
         } else {
             // _originalHitLocation was snapshotted from the owning ray at ClickDown.
-            _lastDraggedNode->_draggedDistanceFromController = _lastDraggedNode->_originalHitLocation.distanceAccurate(_lastDraggedNode->_position);
+            drag->_draggedDistanceFromController = drag->_originalHitLocation.distanceAccurate(drag->_position);
         }
 
         // Grab the forwardOffset (delta from the controller's forward in reference to the user).
-        _lastDraggedNode->_forwardOffset = getDragForwardOffset();
-        _lastDraggedNode->_dragState = VROEventDelegate::DragState::Dragging;
+        drag->_forwardOffset = getDragForwardOffset();
+        drag->_dragState = VROEventDelegate::DragState::Dragging;
     }
 
     // Only calculate drag-to node positions for nodes in dragging states.
-    if (_lastDraggedNode->_dragState != VROEventDelegate::DragState::Dragging) {
+    if (drag->_dragState != VROEventDelegate::DragState::Dragging) {
         return;
     }
 
@@ -379,22 +466,22 @@ void VROInputControllerBase::processDragging(int source) {
     VROVector3f draggedToPosition;
     switch(draggedNode->getDragType()) {
         case VRODragType::FixedToPlane:
-            draggedToPosition = getDragPositionFixedToPlane();
+            draggedToPosition = getDragPositionFixedToPlane(drag);
             break;
         case VRODragType::FixedToWorld: // this is only supported in AR, so default to FixedDistance here
         case VRODragType::FixedDistance:
         case VRODragType::FixedDistanceOrigin:
-            draggedToPosition = getDragPositionFixedDistance();
+            draggedToPosition = getDragPositionFixedDistance(drag);
             break;
     }
 
-    applyDragTransform(draggedToPosition);
+    applyDragTransform(drag, draggedToPosition);
 
     /*
      To avoid spamming the JNI / JS bridge, throttle the notification
      of onDrag delegates to a certain degree of accuracy.
      */
-    float distance = draggedToPosition.distance(_lastDraggedNodePosition);
+    float distance = draggedToPosition.distance(drag->_lastNotifiedPosition);
     const bool precisionSurface = draggedNode->getHighAccuracyEvents() &&
                                   draggedNode->getDragTransform() == VRODragTransform::None;
     if (!VROShouldEmitDragSample(distance, precisionSurface, ON_DRAG_DISTANCE_THRESHOLD)) {
@@ -402,6 +489,7 @@ void VROInputControllerBase::processDragging(int source) {
     }
 
     // Update last known dragged position and notify delegates
+    drag->_lastNotifiedPosition = draggedToPosition;
     _lastDraggedNodePosition = draggedToPosition;
     if (draggedNode != nullptr && draggedNode->getEventDelegate()) {
         draggedNode->getEventDelegate()->onDrag(source, draggedNode, draggedToPosition);
@@ -411,21 +499,22 @@ void VROInputControllerBase::processDragging(int source) {
     }
 }
 
-VROVector3f VROInputControllerBase::getDragPositionFixedDistance() {
+VROVector3f VROInputControllerBase::getDragPositionFixedDistance(const std::shared_ptr<VRODraggedObject> &drag) {
     // This is the forward plus the offset from the camera to the controller
-    VROVector3f adjustedForward = _lastDraggedNode->_forward + _lastDraggedNode->_forwardOffset;
+    VROVector3f adjustedForward = drag->_forward + drag->_forwardOffset;
 
     // controller position + adjustedForward scaled by the distanceFromController (to maintain fixed distance)
-    VROVector3f dragPositionWorld = _lastDraggedNode->_position + (adjustedForward * _lastDraggedNode->_draggedDistanceFromController);
+    VROVector3f dragPositionWorld = drag->_position + (adjustedForward * drag->_draggedDistanceFromController);
 
     // The offset is the new drag location minus the original HitTest location
-    VROVector3f draggedOffset = dragPositionWorld - _lastDraggedNode->_originalHitLocation;
+    VROVector3f draggedOffset = dragPositionWorld - drag->_originalHitLocation;
 
     // Finally, the position returned is the "starting" position of the dragged object + the offset.
-    return _lastDraggedNode->_originalDraggedNodePosition + draggedOffset;
+    return drag->_originalDraggedNodePosition + draggedOffset;
 }
 
-VROVector3f VROInputControllerBase::getPlaneIntersect(std::shared_ptr<VRONode> node) {
+VROVector3f VROInputControllerBase::getPlaneIntersect(std::shared_ptr<VRONode> node,
+                                                      const std::shared_ptr<VRODraggedObject> &drag) {
     // get the information from the node (set by the dev)
     VROVector3f planePoint = node->getDragPlanePoint();
     VROVector3f planeNormal = node->getDragPlaneNormal();
@@ -442,25 +531,25 @@ VROVector3f VROInputControllerBase::getPlaneIntersect(std::shared_ptr<VRONode> n
 
     // Find the intersection between the plane and the controller forward
     VROVector3f intersectionPoint;
-    bool success = _lastDraggedNode->_forward.rayIntersectPlane(planePoint, planeNormal,
-                                                       _lastDraggedNode->_position, &intersectionPoint);
+    bool success = drag->_forward.rayIntersectPlane(planePoint, planeNormal,
+                                                       drag->_position, &intersectionPoint);
 
     // if there wasn't an intersection point OR the intersectionPoint was too far from the controller's
     // position, then we want to compute the plane position at maxDistance from the controller's
     // position along the controller's forward. (this is the circle you get b/t intersection of a
     // sphere and a plane).
-    if (!success || intersectionPoint.distance(_lastDraggedNode->_position) > maxDistance) {
+    if (!success || intersectionPoint.distance(drag->_position) > maxDistance) {
 
         // first, project the controller's position onto the plane
         VROVector3f controllerProj;
-        success = _lastDraggedNode->_position.projectOnPlane(planePoint, planeNormal, &controllerProj);
+        success = drag->_position.projectOnPlane(planePoint, planeNormal, &controllerProj);
         if (!success) {
             return node->getWorldPosition();
         }
 
         // second, project the controller's position + forward onto the plane
         VROVector3f forwardProj;
-        success = _lastDraggedNode->_position.add(_lastDraggedNode->_forward).projectOnPlane(planePoint, planeNormal, &forwardProj);
+        success = drag->_position.add(drag->_forward).projectOnPlane(planePoint, planeNormal, &forwardProj);
         if (!success) {
             return node->getWorldPosition();
         }
@@ -471,7 +560,7 @@ VROVector3f VROInputControllerBase::getPlaneIntersect(std::shared_ptr<VRONode> n
         // number, and a NaN reaches the caller as a world transform and takes the
         // node off screen. distanceAccurate because distance() returns NaN for
         // two identical points, which is a controller sitting on the plane.
-        float distanceToPlane = _lastDraggedNode->_position.distanceAccurate(controllerProj);
+        float distanceToPlane = drag->_position.distanceAccurate(controllerProj);
         if (distanceToPlane > maxDistance) {
             return node->getWorldPosition();
         }
@@ -493,14 +582,14 @@ VROVector3f VROInputControllerBase::getPlaneIntersect(std::shared_ptr<VRONode> n
     return intersectionPoint;
 }
 
-VROVector3f VROInputControllerBase::getDragPositionFixedToPlane() {
+VROVector3f VROInputControllerBase::getDragPositionFixedToPlane(const std::shared_ptr<VRODraggedObject> &drag) {
     // The offset is the intersectionPoint minus the original HitTest location
-    std::shared_ptr<VRONode> node = _lastDraggedNode->_draggedNode;
-    VROVector3f draggedOffset = getPlaneIntersect(node) - _lastDraggedNode->_originalHitLocation;
+    std::shared_ptr<VRONode> node = drag->_draggedNode;
+    VROVector3f draggedOffset = getPlaneIntersect(node, drag) - drag->_originalHitLocation;
 
     // Finally, the position returned is the "starting" position of the dragged object + the offset.
     // This positions the dragged node relative to its parent.
-    return _lastDraggedNode->_originalDraggedNodePosition + draggedOffset;
+    return drag->_originalDraggedNodePosition + draggedOffset;
 }
 
 void VROInputControllerBase::onPinch(int source, float scaleFactor, VROEventDelegate::PinchState pinchState) {
@@ -550,34 +639,32 @@ void VROInputControllerBase::onRotate(int source, float rotationRadians, VROEven
 }
 
 void VROInputControllerBase::updateHitNode(const VROCamera &camera, VROVector3f origin, VROVector3f ray) {
-    // Input-only panel drags keep their collider stationary. Continue hit tests
-    // so the ray and release position follow the pointer instead of freezing
-    // at the initial press. Moving drags retain their captured hit.
-    if (_scene == nullptr || (_lastDraggedNode != nullptr &&
-                              _lastDraggedNode->_transformNode != nullptr)) {
+    // Input-only panel drags keep their collider stationary and continue hit
+    // testing; moving drags keep their captured hit.
+    std::shared_ptr<VRODraggedObject> drag = getDraggedObject(kUnownedSource);
+    if (_scene == nullptr || (drag != nullptr && drag->_transformNode != nullptr)) {
         return;
     }
 
-    // Perform hit test re-calculate forward vectors as needed.
     _hitResult = std::make_shared<VROHitTestResult>(hitTest(camera, origin, ray, true));
 }
 
 void VROInputControllerBase::updateHitNode(int source, const VROCamera &camera,
-                                           VROVector3f origin, VROVector3f ray) {
-    // Input-only panel drags keep their collider stationary. Continue hit tests
-    // so the ray and release position follow the pointer instead of freezing
-    // at the initial press. Moving drags retain their captured hit.
-    if (_scene == nullptr || (_lastDraggedNode != nullptr &&
-                              _lastDraggedNode->_transformNode != nullptr)) {
+                                           VROVector3f origin, VROVector3f ray,
+                                           bool mirrorToLegacy) {
+    // Freeze only this ray's moving drag. A second hand still hit-tests, while
+    // an input-only Rive/Canvas drag (no transform node) keeps reporting pointer
+    // coordinates as the ray moves.
+    std::shared_ptr<VRODraggedObject> drag = getDraggedObject(source);
+    if (_scene == nullptr || (drag != nullptr && drag->_transformNode != nullptr)) {
         return;
     }
     auto hit = std::make_shared<VROHitTestResult>(hitTest(camera, origin, ray, true));
     _hitResultsBySource[source] = hit;
-    // Mirror to the legacy single-source slot so subsystems that don't carry
-    // a source ID (fuse, pinch, rotate) keep functioning.
-    _hitResult = hit;
+    if (mirrorToLegacy) {
+        _hitResult = hit;
+    }
 }
-
 std::shared_ptr<VROHitTestResult>
 VROInputControllerBase::getHitResultForSource(int source) const {
     auto it = _hitResultsBySource.find(rayForSource(source));
