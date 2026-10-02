@@ -41,6 +41,7 @@
 #include "VROTestUtil.h"
 #include "VROCompress.h"
 #include "VROModelIOUtil.h"
+#include "extension/VROEngineMetrics.h"
 #include "VROBone.h"
 #include "VROKeyframeAnimation.h"
 #include "VROTimingFunction.h"
@@ -410,6 +411,7 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
         return false;
     }
     outputData.assign(accessor.count * elementSize, 0);
+    VRO_ENGINE_METRIC_ALLOCATION(outputData.size());
 
     // Copy the base data, if any. Per spec accessor.bufferView is legitimately -1 when the
     // accessor is sparse-only (e.g. a morph target delta with no unaffected-vertex base) —
@@ -431,6 +433,7 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
         for (size_t i = 0; i < accessor.count; i++) {
             memcpy(outputData.data() + i * elementSize, baseData + i * baseStride, elementSize);
         }
+        VRO_ENGINE_METRIC_COPY(accessor.count * elementSize);
     }
 
     // Overlay the sparse deltas, if any (no-op if accessor.sparse.isSparse is false).
@@ -446,6 +449,7 @@ void VROGLTFLoader::loadGLTFFromResource(std::string gltfManifestFilePath, const
                                             (std::string cachedFilePath, bool isTemp) {
                 // Then use TinyGltf to parse the GTLF structure, and corresponding auxiliary resource files.
                 VROPlatformDispatchAsyncBackground([gltfManifestFilePath, overwriteResourceMap, isGLTFBinary, cachedFilePath, rootNode, driver, onFinish] {
+                    VRO_ENGINE_METRIC_SCOPE_TIMER(gltfLoadTimer);
                     tinygltf::Model gModel;
                     tinygltf::TinyGLTF gLoader;
                     std::string err;
