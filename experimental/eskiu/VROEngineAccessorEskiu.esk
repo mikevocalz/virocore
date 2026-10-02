@@ -5,12 +5,15 @@ struct VROEngineAccessorMaterializeDesc {
     uint32 element_size;
     uint64 element_count;
     *uint8 base_data;
+    uint64 base_length;
     uint64 base_stride;
     uint32 sparse_index_type;
     uint32 reserved0;
     uint64 sparse_count;
     *uint8 sparse_indices;
+    uint64 sparse_indices_length;
     *uint8 sparse_values;
+    uint64 sparse_values_length;
     VROEngineMutableByteView output;
 }
 
@@ -31,10 +34,13 @@ uint64 viro_eskiu_sparse_index_at(*VROEngineAccessorMaterializeDesc desc, uint64
 }
 
 int viro_eskiu_accessor_materialize_validate(*VROEngineAccessorMaterializeDesc desc) {
-    if (desc == null || desc.struct_size < (uint32)sizeof(VROEngineAccessorMaterializeDesc) || desc.element_size == 0 ||
-        desc.element_count == 0 || desc.output.data == null) {
+    if (desc == null ||
+        desc.struct_size < (uint32)sizeof(VROEngineAccessorMaterializeDesc) ||
+        desc.element_size == 0 || desc.element_count == 0 ||
+        desc.output.data == null) {
         return 2;
     }
+
     uint64 max = 0xffffffffffffffff;
     if (desc.element_count > max / (uint64)desc.element_size) {
         return 2;
@@ -43,21 +49,52 @@ int viro_eskiu_accessor_materialize_validate(*VROEngineAccessorMaterializeDesc d
     if (desc.output.length < required) {
         return 2;
     }
-    if (desc.base_data != null && desc.base_stride < (uint64)desc.element_size) {
-        return 2;
+
+    if (desc.base_data == null) {
+        if (desc.base_length != 0 || desc.base_stride != 0) return 2;
+    } else {
+        if (desc.base_stride < (uint64)desc.element_size) return 2;
+        uint64 base_required = (uint64)desc.element_size;
+        if (desc.element_count > 1) {
+            uint64 steps = desc.element_count - 1;
+            if (steps > (max - (uint64)desc.element_size) / desc.base_stride) {
+                return 2;
+            }
+            base_required = steps * desc.base_stride + (uint64)desc.element_size;
+        }
+        if (desc.base_length < base_required) return 2;
     }
+
     if (desc.sparse_count == 0) {
-        if (desc.sparse_index_type == 0) return 0;
-        return 2;
+        if (desc.sparse_index_type != 0 ||
+            desc.sparse_indices != null || desc.sparse_indices_length != 0 ||
+            desc.sparse_values != null || desc.sparse_values_length != 0) {
+            return 2;
+        }
+        return 0;
     }
+
     if (desc.sparse_count > desc.element_count ||
         desc.sparse_indices == null || desc.sparse_values == null ||
         desc.sparse_index_type < 1 || desc.sparse_index_type > 3) {
         return 2;
     }
+
+    uint64 index_size = 1;
+    if (desc.sparse_index_type == 2) index_size = 2;
+    if (desc.sparse_index_type == 3) index_size = 4;
+    if (desc.sparse_count > max / index_size ||
+        desc.sparse_count > max / (uint64)desc.element_size) {
+        return 2;
+    }
+    uint64 index_bytes = desc.sparse_count * index_size;
+    uint64 value_bytes = desc.sparse_count * (uint64)desc.element_size;
+    if (desc.sparse_indices_length < index_bytes ||
+        desc.sparse_values_length < value_bytes) {
+        return 2;
+    }
     return 0;
 }
-
 int viro_eskiu_accessor_materialize(*VROEngineAccessorMaterializeDesc desc) {
     if (viro_eskiu_accessor_materialize_validate(desc) != 0) {
         return 2;
