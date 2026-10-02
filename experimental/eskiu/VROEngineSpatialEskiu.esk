@@ -36,7 +36,9 @@ bool viro_eskiu_float_finite(float value) {
         return false;
     }
     double magnitude = fabs((double)value);
-    return magnitude <= 3.402823466e38;
+    // Exact FLT_MAX promoted to double. The shortened decimal is smaller
+    // than FLT_MAX and incorrectly rejects a finite ABI value.
+    return magnitude <= 3.4028234663852886e38;
 }
 
 bool viro_eskiu_transform_valid(*VROEngineRigidTransform transform) {
