@@ -11,7 +11,7 @@ ESKIU_COMMIT="${ESKIU_COMMIT:-95d7ece7ea8d72bc106a141bc031a1648ed8f2ac}"
 
 git clone --quiet "$ESKIU_REPO" "$WORK/eskiu"
 git -C "$WORK/eskiu" checkout --quiet "$ESKIU_COMMIT"
-git -C "$WORK/eskiu" apply "$ROOT/tools/eskiu/patches/0001-enable-webassembly-backend.patch"
+python3 "$ROOT/tools/eskiu/patch-eskiu-wasm.py" "$WORK/eskiu"
 
 cmake -S "$WORK/eskiu" -B "$WORK/build"   -G Ninja   -DLLVM_DIR="$LLVM_DIR"   -DCMAKE_BUILD_TYPE=Release
 cmake --build "$WORK/build" --target eskiuc -j2
