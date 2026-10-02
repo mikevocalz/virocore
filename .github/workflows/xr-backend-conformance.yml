@@ -1,0 +1,29 @@
+name: XR backend conformance
+
+on:
+  pull_request:
+    paths:
+      - "tests/xr_backend/**"
+      - "docs/XR-BACKEND-CONFORMANCE.md"
+      - ".github/workflows/xr-backend-conformance.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "tests/xr_backend/**"
+      - "docs/XR-BACKEND-CONFORMANCE.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate XR backend fixture
+        run: python3 tests/xr_backend/validate_conformance.py
