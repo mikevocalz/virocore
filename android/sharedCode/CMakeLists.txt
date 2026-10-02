@@ -13,6 +13,7 @@ set(VIRO_CAPI_SRC         ${CMAKE_SOURCE_DIR}/../../ViroRenderer/capi)
 set(VIRO_ANDROID_SRC      ${CMAKE_SOURCE_DIR}/../sharedCode/src/main/cpp)
 
 include_directories(${VIRO_RENDERER_SRC}
+                    ${VIRO_RENDERER_SRC}/extension
                     ${VIRO_CAPI_SRC}
                     ${VIRO_ANDROID_SRC}
                     ${VIRO_ANDROID_SRC}/jni
