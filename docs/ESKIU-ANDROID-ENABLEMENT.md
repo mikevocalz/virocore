@@ -54,3 +54,29 @@ bash scripts/eskiu/probe-android-target.sh
 
 The current probe covers gates A and B plus exported-symbol inspection. It intentionally
 does not pretend JNI/Gradle/hardware validation is complete.
+
+
+## JNI + Gradle packaging probe
+
+The next gate is implemented in `tools/eskiu/android-probe`.
+
+It deliberately uses a tiny standalone Android library instead of wiring Eskiu into the
+production renderer. The build proves the exact integration chain we need later:
+
+```text
+.esk
+  -> pinned eskiuc --target aarch64-linux-android
+  -> relocatable AArch64 ELF object
+  -> NDK C++ JNI wrapper
+  -> libviro_eskiu_probe.so
+  -> Android Gradle library
+  -> AAR / jni/arm64-v8a
+```
+
+CI also checks:
+- the Eskiu symbol remains exported;
+- the JNI entry point remains exported;
+- the packaged arm64 library satisfies the repository's 16 KB PT_LOAD alignment gate.
+
+This closes build/packaging gates C-D-E for an isolated probe. Hardware execution remains
+a separate gate before a Quest/PICO production backend can be enabled.
