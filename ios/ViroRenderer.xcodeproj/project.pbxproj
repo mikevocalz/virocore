@@ -1218,6 +1218,8 @@
 		FC7970B2AF384FE81CC81B0B /* VROBillboardConstraint.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D3468753E9E99CFB30C00123 /* VROBillboardConstraint.cpp */; };
 		FD84EB7FE75E5791198AC0F4 /* VROGLTFLoader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 30CF987AB6074E09859BAF1D /* VROGLTFLoader.cpp */; settings = {COMPILER_FLAGS = "-x objective-c++"; }; };
 		FF3DF9AD6DF885D2E90A3AF9 /* VROQuaternion.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 90AA208DFF1B0B94EB64AD85 /* VROQuaternion.cpp */; };
+		E5A001000000000000000002 /* VROEngineAccessorABI.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E5A001000000000000000001 /* VROEngineAccessorABI.cpp */; };
+		E5A001000000000000000003 /* VROEngineAccessorABI.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E5A001000000000000000001 /* VROEngineAccessorABI.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -2509,6 +2511,7 @@
 		FF28ABD65188D669DA19149D /* VROTimingFunction.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VROTimingFunction.cpp; path = ../ViroRenderer/VROTimingFunction.cpp; sourceTree = "<absolute>"; };
 		FF5DE6EB60BE579D4E959488 /* VROStringUtil.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VROStringUtil.cpp; path = ../ViroRenderer/VROStringUtil.cpp; sourceTree = "<absolute>"; };
 		FFF1F9B3809E5151148E14FF /* VROTransaction.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VROTransaction.cpp; path = ../ViroRenderer/VROTransaction.cpp; sourceTree = "<absolute>"; };
+		E5A001000000000000000001 /* VROEngineAccessorABI.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = VROEngineAccessorABI.cpp; path = ../ViroRenderer/extension/VROEngineAccessorABI.cpp; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2965,6 +2968,7 @@
 		8F517BB81BCDA2BD0017C70B /* ViroRenderer */ = {
 			isa = PBXGroup;
 			children = (
+				E5A001000000000000000001 /* VROEngineAccessorABI.cpp */,
 				8F201C4221010BC200637A75 /* poly2tri */,
 				8AE44C942021087700CE8394 /* glm */,
 				8FD2A5011F8126CD00E831A6 /* Test */,
@@ -5070,6 +5074,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5A001000000000000000002 /* VROEngineAccessorABI.cpp in Sources */,
 				E1C010000000000000000004 /* VROColocationBridge.mm in Sources */,
 				E1C010000000000000000005 /* VROColocationSession.cpp in Sources */,
 				E1BD61882FBBEA93008FDF74 /* VROInputState.h in Sources */,
@@ -5356,6 +5361,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5A001000000000000000003 /* VROEngineAccessorABI.cpp in Sources */,
 				E1C010000000000000000007 /* VROColocationBridge.mm in Sources */,
 				E1C010000000000000000008 /* VROColocationSession.cpp in Sources */,
 				7C2B122D8273AF546B86E5E6 /* VROAction.cpp in Sources */,
