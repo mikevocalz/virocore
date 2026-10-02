@@ -22,6 +22,7 @@
 #include "VROGeometrySource.h"
 #include "VROGeometryElement.h"
 #include "VROLog.h"
+#include "extension/VROEngineGeometryBackend.h"
 #include <vector>
 
 VRODynamicGeometry::VRODynamicGeometry(std::shared_ptr<VRODriver> driver,
@@ -262,9 +263,24 @@ void VRODynamicGeometry::updateBufferPadded(const std::shared_ptr<VROVertexBuffe
         updateBuffer(buffer, activeData, activeBytes);
         return;
     }
-    std::vector<uint8_t> padded(totalBytes, 0);
-    memcpy(padded.data(), activeData, activeBytes);
-    auto newData = std::make_shared<VROData>(padded.data(), (int)totalBytes);
+
+    if (_paddingScratch.size() < totalBytes) {
+        _paddingScratch.resize(totalBytes);
+    }
+
+    const VROEngineStatusCode status =
+        viro_engine_geometry_pad_copy_selected(
+            reinterpret_cast<const uint8_t *>(activeData),
+            static_cast<uint64_t>(activeBytes),
+            _paddingScratch.data(),
+            static_cast<uint64_t>(totalBytes));
+    if (status != VRO_ENGINE_STATUS_OK) {
+        pwarn("VRODynamicGeometry: buffer preparation failed with status %d",
+              static_cast<int>(status));
+        return;
+    }
+
+    auto newData = std::make_shared<VROData>(_paddingScratch.data(), (int)totalBytes);
     buffer->updateData(newData);
 }
 
