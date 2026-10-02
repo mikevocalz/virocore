@@ -179,11 +179,6 @@ private:
     static VROFilterMode getMipFilterMode(int mode);
     static VROWrapMode getWrappingMode(int mode);
 
-    // Sparse accessor support
-    static bool applySparseAccessorData(const tinygltf::Model &gModel,
-                                        const tinygltf::Accessor &accessor,
-                                        std::vector<unsigned char> &outputData);
-
     // Materializes an accessor into a dense, tightly-packed buffer of exactly accessor.count
     // elements. Needed whenever the accessor isn't one contiguous memory window: sparse
     // accessors only encode the elements that differ from a base, and per spec that base is
