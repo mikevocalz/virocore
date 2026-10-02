@@ -132,6 +132,7 @@ SET( VIRO_CORE_SRC
      ${VIRO_RENDERER_SRC}/VROGeometryElement.cpp
      ${VIRO_RENDERER_SRC}/VROGeometrySource.cpp
      ${VIRO_RENDERER_SRC}/extension/VROEngineContract.cpp
+             ${VIRO_RENDERER_SRC}/extension/VROEngineBackendSelector.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineMetrics.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSubsystemMetrics.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSpatialABI.cpp
