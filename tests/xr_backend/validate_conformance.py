@@ -23,10 +23,10 @@ def euler_xyz_to_quat(rotation):
     sy, cy = math.sin(y), math.cos(y)
     sz, cz = math.sin(z), math.cos(z)
     return [
-        sx * cy * cz + cx * sy * sz,
-        cx * sy * cz - sx * cy * sz,
-        cx * cy * sz + sx * sy * cz,
-        cx * cy * cz - sx * sy * sz,
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
     ]
 
 def main():
@@ -54,11 +54,14 @@ def main():
         forward["lensCentimeters"],
     )
 
-    yaw = transforms["yaw-positive-90"]
-    expected_quat = euler_xyz_to_quat(yaw["eulerDegreesXYZ"])
-    assert_vec(expected_quat, yaw["quaternionXYZW"])
-    norm = math.sqrt(sum(v * v for v in yaw["quaternionXYZW"]))
-    assert close(norm, 1.0)
+    for name in ("yaw-positive-90", "mixed-xyz-20-30-40"):
+        rotation = transforms[name]
+        assert len(rotation["eulerDegreesXYZ"]) == 3
+        assert len(rotation["quaternionXYZW"]) == 4
+        expected_quat = euler_xyz_to_quat(rotation["eulerDegreesXYZ"])
+        assert_vec(expected_quat, rotation["quaternionXYZW"])
+        norm = math.sqrt(sum(v * v for v in rotation["quaternionXYZW"]))
+        assert close(norm, 1.0)
 
     interaction = data["interaction"]
     required_phases = {
