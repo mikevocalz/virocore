@@ -439,11 +439,18 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
             return false;
         }
         const tinygltf::Buffer &baseBuffer = gModel.buffers[baseBufferView.buffer];
+        if (baseBufferView.byteOffset > baseBuffer.data.size() ||
+            accessor.byteOffset > baseBuffer.data.size() - baseBufferView.byteOffset) {
+            perr("GLTF accessor base offset exceeds its buffer");
+            return false;
+        }
+        const size_t baseOffset = baseBufferView.byteOffset + accessor.byteOffset;
         materialize.base_stride = baseBufferView.byteStride != 0
             ? static_cast<uint64_t>(baseBufferView.byteStride)
             : static_cast<uint64_t>(elementSize);
-        materialize.base_data =
-            baseBuffer.data.data() + baseBufferView.byteOffset + accessor.byteOffset;
+        materialize.base_data = baseBuffer.data.data() + baseOffset;
+        materialize.base_length =
+            static_cast<uint64_t>(baseBuffer.data.size() - baseOffset);
     }
 
     if (viro_engine_accessor_materialize(&materialize) != VRO_ENGINE_STATUS_OK) {
