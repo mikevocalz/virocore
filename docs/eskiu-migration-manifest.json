@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "status": "phase-2-validated-boundaries",
+  "status": "phase-3-repository-complete-promotion-gated",
   "backendPolicy": {
     "referenceBackend": "cpp",
     "binaryBoundary": "language-neutral",
@@ -128,8 +128,8 @@
         "copies",
         "load-time"
       ],
-      "eskiuEligibility": "instrument-first",
-      "status": "transient-memory-instrumentation-ready"
+      "eskiuEligibility": "promotion-candidate-after-device-evidence",
+      "status": "transient-memory-instrumentation-accessor-abi-cpp-adapter-eskiu-shadow-parity-green"
     },
     {
       "module": "VROImagePostProcess*",
@@ -245,7 +245,10 @@
     "geometryCppVsEskiuDifferential": "proven",
     "inputEskiuShadowParity": "proven",
     "cppReferenceBenchmarkHarness": "proven",
-    "namedSubsystemMetrics": "proven"
+    "namedSubsystemMetrics": "proven",
+    "accessorCppReference": "proven",
+    "accessorEskiuShadowParity": "proven",
+    "gltfCppContractAdapter": "landed"
   },
   "gateStatus": {
     "eskiu-v0.9.2-abi-smoke": "green",
@@ -259,11 +262,15 @@
   },
   "productionSwapPolicy": {
     "allowedNow": false,
-    "reason": "Build/ABI/conformance gates are ready, but each production renderer substitution still requires module-specific native-MCP mapping, device benchmarks, and soak evidence.",
+    "reason": "Repository-side ABI, shadow, adapters, metrics, selection and target build probes are complete. Domain promotion still requires native-MCP mapping, same-device A/B evidence, parity, soak and rollback.",
     "firstCandidates": [
       "bounded input/pose storage after atomic SPSC parity",
       "dynamic geometry buffer preparation after device A/B",
       "world-mesh chunk processing after device A/B"
     ]
+  },
+  "repositoryProgram": {
+    "status": "complete",
+    "completedAtPhase": "phase-3"
   }
 }
