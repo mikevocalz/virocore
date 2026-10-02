@@ -4,6 +4,7 @@
 
 #include "VROEngineGeometryABI.h"
 
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -94,6 +95,29 @@ extern "C" VROEngineStatusCode viro_engine_geometry_range_validate(
     if (update->offset_bytes > total ||
         update->bytes.length > total - update->offset_bytes) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
+    }
+    return VRO_ENGINE_STATUS_OK;
+}
+
+extern "C" VROEngineStatusCode viro_engine_geometry_pad_copy(
+    const uint8_t *active_data,
+    uint64_t active_bytes,
+    uint8_t *output_data,
+    uint64_t output_bytes) {
+    if (output_data == nullptr ||
+        output_bytes < active_bytes ||
+        (active_bytes != 0 && active_data == nullptr)) {
+        return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (active_bytes != 0) {
+        std::memcpy(output_data, active_data, static_cast<size_t>(active_bytes));
+    }
+    if (output_bytes > active_bytes) {
+        std::memset(
+            output_data + active_bytes,
+            0,
+            static_cast<size_t>(output_bytes - active_bytes));
     }
     return VRO_ENGINE_STATUS_OK;
 }
