@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "status": "phase-0",
+  "backendPolicy": {
+    "referenceBackend": "cpp",
+    "eskiuAllowedBeforeNativeMcpVerification": false,
+    "binaryBoundary": "language-neutral",
+    "crossRuntimeOwnership": "explicit-only"
+  },
+  "modules": [
+    {
+      "module": "VROSceneRendererOpenXR",
+      "domain": [
+        "runtime",
+        "frames",
+        "spatial"
+      ],
+      "risk": "high",
+      "measure": [
+        "frame-time",
+        "allocations"
+      ],
+      "eskiuEligibility": "after-verification"
+    },
+    {
+      "module": "VROInputControllerBase",
+      "domain": [
+        "input",
+        "frames"
+      ],
+      "risk": "high",
+      "measure": [
+        "input-latency",
+        "allocations"
+      ],
+      "eskiuEligibility": "strong-candidate-after-verification"
+    },
+    {
+      "module": "VROInputControllerOpenXR",
+      "domain": [
+        "input",
+        "frames"
+      ],
+      "risk": "high",
+      "measure": [
+        "input-latency",
+        "sample-throughput"
+      ],
+      "eskiuEligibility": "strong-candidate-after-verification"
+    },
+    {
+      "module": "VRODynamicGeometry",
+      "domain": [
+        "geometry",
+        "buffers"
+      ],
+      "risk": "medium-high",
+      "measure": [
+        "transient-bytes",
+        "gpu-upload-bytes",
+        "frame-time"
+      ],
+      "eskiuEligibility": "strong-candidate-after-verification"
+    },
+    {
+      "module": "world-mesh-processing",
+      "domain": [
+        "geometry",
+        "spatial",
+        "buffers"
+      ],
+      "risk": "high",
+      "measure": [
+        "peak-memory",
+        "update-time",
+        "allocations"
+      ],
+      "eskiuEligibility": "strong-candidate-after-verification"
+    },
+    {
+      "module": "camera-frame-path",
+      "domain": [
+        "media",
+        "surfaces",
+        "buffers"
+      ],
+      "risk": "high",
+      "measure": [
+        "copy-count",
+        "peak-memory",
+        "latency"
+      ],
+      "eskiuEligibility": "strong-candidate-after-verification"
+    },
+    {
+      "module": "external-panel-surfaces",
+      "domain": [
+        "surfaces",
+        "resources"
+      ],
+      "risk": "medium-high",
+      "measure": [
+        "copy-count",
+        "gpu-upload-bytes",
+        "frame-time"
+      ],
+      "eskiuEligibility": "candidate-after-verification"
+    },
+    {
+      "module": "VROGLTFLoader",
+      "domain": [
+        "resources",
+        "buffers",
+        "geometry"
+      ],
+      "risk": "high",
+      "measure": [
+        "peak-load-memory",
+        "copies",
+        "load-time"
+      ],
+      "eskiuEligibility": "instrument-first"
+    },
+    {
+      "module": "VROImagePostProcess*",
+      "domain": [
+        "surfaces",
+        "buffers"
+      ],
+      "risk": "medium",
+      "measure": [
+        "scratch-memory",
+        "frame-time"
+      ],
+      "eskiuEligibility": "profile-first"
+    },
+    {
+      "module": "VROPhysicsWorld",
+      "domain": [
+        "buffers",
+        "resources"
+      ],
+      "risk": "high",
+      "measure": [
+        "allocations",
+        "frame-time"
+      ],
+      "eskiuEligibility": "profile-first"
+    },
+    {
+      "module": "VROParticleEmitter",
+      "domain": [
+        "buffers",
+        "resources"
+      ],
+      "risk": "medium",
+      "measure": [
+        "allocations",
+        "frame-time"
+      ],
+      "eskiuEligibility": "profile-first"
+    },
+    {
+      "module": "wasm-tracking-renderer",
+      "domain": [
+        "runtime",
+        "frames",
+        "spatial",
+        "buffers"
+      ],
+      "risk": "high",
+      "measure": [
+        "wasm-heap",
+        "frame-time",
+        "copies"
+      ],
+      "eskiuEligibility": "strong-candidate-after-verification"
+    }
+  ],
+  "requiredGates": [
+    "official-viro-mcp-audit",
+    "reactviro-find-native-bridge-map",
+    "reactvision-platform-native-mcp-audit",
+    "ownership-threading-contract",
+    "cpp-reference-conformance",
+    "before-after-benchmark"
+  ]
+}
