@@ -1,0 +1,31 @@
+name: Engine backend benchmark
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tests/benchmark/**"
+      - "scripts/run-engine-contract-benchmark.sh"
+      - "scripts/compare-engine-benchmarks.py"
+      - ".github/workflows/engine-benchmark.yml"
+      - "docs/ESKIU-BENCHMARK-HARNESS.md"
+      - "ViroRenderer/extension/VROEngine*.{h,cpp}"
+
+permissions:
+  contents: read
+
+jobs:
+  cpp-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run C++ reference benchmark
+        run: bash scripts/run-engine-contract-benchmark.sh "$RUNNER_TEMP/cpp.json"
+      - name: Self-compare snapshot schema and gates
+        run: |
+          python3 scripts/compare-engine-benchmarks.py             "$RUNNER_TEMP/cpp.json"             "$RUNNER_TEMP/cpp.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viro-engine-cpp-benchmark
+          path: ${{ runner.temp }}/cpp.json
