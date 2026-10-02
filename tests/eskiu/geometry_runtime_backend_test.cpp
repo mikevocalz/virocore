@@ -65,6 +65,14 @@ bool runBackend(
             VRO_ENGINE_STATUS_OK,
         "valid descriptor");
 
+    auto emptyIndexed = fixture.desc;
+    emptyIndexed.index_count = 0;
+    emptyIndexed.indices = {nullptr, 0};
+    ok &= expect(
+        viro_engine_geometry_validate_selected(&emptyIndexed) ==
+            VRO_ENGINE_STATUS_OK,
+        "empty indexed geometry parity");
+
     auto bad = fixture.desc;
     bad.topology = 99;
     ok &= expect(
