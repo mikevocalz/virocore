@@ -87,7 +87,8 @@ int viro_eskiu_geometry_validate(*VROEngineGeometryDesc desc) {
     } else {
         uint64 index_bytes =
             (uint64)index_stride * (uint64)desc.index_count;
-        if (desc.indices.data == null || desc.indices.length < index_bytes) {
+        if ((index_bytes != 0 && desc.indices.data == null) ||
+            desc.indices.length < index_bytes) {
             return 2;
         }
     }
