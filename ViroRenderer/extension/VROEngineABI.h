@@ -100,9 +100,30 @@ typedef struct VROEngineMutableByteView {
 } VROEngineMutableByteView;
 
 /*
- * The first production function table will be added only after the C++ reference
- * implementation and conformance tests exist. Keeping the initial header data-only
- * prevents an accidental ABI freeze while still establishing layout/ownership rules.
+ * Query the language-neutral ABI implemented by this binary.
+ *
+ * Caller contract:
+ * - out_info must be non-null.
+ * - out_info->struct_size is the caller's allocated size.
+ * - sizes >= sizeof(VROEngineAbiInfo) are accepted.
+ * - the implementation writes only sizeof(VROEngineAbiInfo) bytes, so a newer
+ *   caller's tail remains untouched.
+ * - on success, struct_size is replaced with the size understood by this binary.
+ *
+ * Threading: worker-safe; no renderer state is touched.
+ * Ownership: no allocation; all values are copied into caller-owned storage.
+ */
+VROEngineStatusCode viro_engine_query_abi(VROEngineAbiInfo *out_info);
+
+/*
+ * Returns (major << 16) | minor for cheap preflight checks.
+ * Threading: worker-safe.
+ */
+uint32_t viro_engine_abi_version(void);
+
+/*
+ * Production feature function tables remain intentionally out of this header
+ * until their C++ reference implementations and conformance tests exist.
  */
 
 #ifdef __cplusplus
