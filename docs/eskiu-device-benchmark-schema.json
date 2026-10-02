@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "program": "viro-eskiu-device-ab",
+  "required": [
+    "platform",
+    "device",
+    "osVersion",
+    "runtime",
+    "gitSha",
+    "backend",
+    "workload",
+    "iterations"
+  ],
+  "metrics": [
+    "peakRssBytes",
+    "rendererHeapBytes",
+    "allocationCount",
+    "transientBytes",
+    "frameP50Ns",
+    "frameP95Ns",
+    "cpuTargetNs",
+    "gpuUploadBytes",
+    "copyCount",
+    "copiedBytes",
+    "inputLatencyP95Ns",
+    "wasmHeapBytes"
+  ],
+  "workloads": [
+    "input-ring",
+    "dynamic-geometry",
+    "world-mesh",
+    "media-frame",
+    "external-surface",
+    "gltf-load",
+    "particles",
+    "physics",
+    "post-process"
+  ]
+}
