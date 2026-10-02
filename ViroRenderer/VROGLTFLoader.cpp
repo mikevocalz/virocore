@@ -42,7 +42,7 @@
 #include "VROCompress.h"
 #include "VROModelIOUtil.h"
 #include "extension/VROEngineMetrics.h"
-#include "extension/VROEngineAccessorABI.h"
+#include "extension/VROEngineAccessorBackend.h"
 #include "VROBone.h"
 #include "VROKeyframeAnimation.h"
 #include "VROTimingFunction.h"
@@ -60,6 +60,7 @@
 #include "VRONodeCamera.h"
 #include "VROLight.h"
 #include <algorithm>
+#include <limits>
 
 static std::string kVROGLTFInputSamplerKey = "timeInput";
 std::map<std::string, std::shared_ptr<VROVertexBuffer>> VROGLTFLoader::_dataCache;
@@ -293,125 +294,19 @@ VROWrapMode VROGLTFLoader::getWrappingMode(int mode) {
     }
 }
 
-bool VROGLTFLoader::applySparseAccessorData(const tinygltf::Model &gModel,
-                                            const tinygltf::Accessor &accessor,
-                                            std::vector<unsigned char> &outputData) {
-    if (!accessor.sparse.isSparse) {
-        return true;  // No sparse data to apply
-    }
-
-    const tinygltf::Sparse &sparse = accessor.sparse;
-
-    // Calculate the size of each element in the accessor
-    int componentSize = 0;
-    switch (accessor.componentType) {
-        case TINYGLTF_COMPONENT_TYPE_BYTE:
-        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-            componentSize = 1;
-            break;
-        case TINYGLTF_COMPONENT_TYPE_SHORT:
-        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-            componentSize = 2;
-            break;
-        case TINYGLTF_COMPONENT_TYPE_INT:
-        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-        case TINYGLTF_COMPONENT_TYPE_FLOAT:
-            componentSize = 4;
-            break;
-        case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-            componentSize = 8;
-            break;
-        default:
-            perr("Unknown component type in sparse accessor");
-            return false;
-    }
-
-    int numComponents = 0;
-    switch (accessor.type) {
-        case TINYGLTF_TYPE_SCALAR: numComponents = 1; break;
-        case TINYGLTF_TYPE_VEC2: numComponents = 2; break;
-        case TINYGLTF_TYPE_VEC3: numComponents = 3; break;
-        case TINYGLTF_TYPE_VEC4: numComponents = 4; break;
-        case TINYGLTF_TYPE_MAT2: numComponents = 4; break;
-        case TINYGLTF_TYPE_MAT3: numComponents = 9; break;
-        case TINYGLTF_TYPE_MAT4: numComponents = 16; break;
-        default:
-            perr("Unknown accessor type in sparse accessor");
-            return false;
-    }
-
-    size_t elementSize = componentSize * numComponents;
-
-    // Sparse indices/values bufferViews are required fields whenever sparse.isSparse is true,
-    // but bounds-check them anyway rather than trusting the file — an out-of-range index here
-    // is the same out-of-bounds vector::operator[] hazard this function exists to avoid.
-    if (sparse.indices.bufferView < 0 || sparse.indices.bufferView >= (int) gModel.bufferViews.size() ||
-        sparse.values.bufferView < 0 || sparse.values.bufferView >= (int) gModel.bufferViews.size()) {
-        perr("Sparse accessor references an out-of-range bufferView");
-        return false;
-    }
-
-    // Read sparse indices
-    const tinygltf::BufferView &indicesBufferView = gModel.bufferViews[sparse.indices.bufferView];
-    const tinygltf::Buffer &indicesBuffer = gModel.buffers[indicesBufferView.buffer];
-    const unsigned char *indicesData = indicesBuffer.data.data() + indicesBufferView.byteOffset + sparse.indices.byteOffset;
-
-    // Read sparse values
-    const tinygltf::BufferView &valuesBufferView = gModel.bufferViews[sparse.values.bufferView];
-    const tinygltf::Buffer &valuesBuffer = gModel.buffers[valuesBufferView.buffer];
-    const unsigned char *valuesData = valuesBuffer.data.data() + valuesBufferView.byteOffset + sparse.values.byteOffset;
-
-    // Apply sparse values at specified indices
-    for (size_t i = 0; i < sparse.count; i++) {
-        // Read the index based on component type
-        size_t index = 0;
-        switch (sparse.indices.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                index = indicesData[i];
-                break;
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                index = reinterpret_cast<const uint16_t *>(indicesData)[i];
-                break;
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                index = reinterpret_cast<const uint32_t *>(indicesData)[i];
-                break;
-            default:
-                perr("Invalid sparse indices component type");
-                return false;
-        }
-
-        // Verify index is within bounds
-        if (index >= accessor.count) {
-            perr("Sparse accessor index out of bounds: %zu >= %zu", index, accessor.count);
-            return false;
-        }
-
-        // Copy the sparse value to the output data at the specified index
-        size_t destOffset = index * elementSize;
-        size_t srcOffset = i * elementSize;
-
-        if (destOffset + elementSize > outputData.size()) {
-            perr("Sparse accessor destination out of bounds");
-            return false;
-        }
-
-        memcpy(outputData.data() + destOffset, valuesData + srcOffset, elementSize);
-    }
-    VRO_ENGINE_METRIC_COPY(sparse.count * elementSize);
-
-    return true;
-}
-
 bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
-                                            const tinygltf::Accessor &accessor,
-                                            GLTFType gType,
-                                            GLTFTypeComponent gTypeComponent,
-                                            std::vector<unsigned char> &outputData) {
-    size_t elementSize = (size_t) (getTypeSize(gType) * getComponentTypeSize(gTypeComponent));
-    if (elementSize == 0) {
-        perr("Invalid element size when materializing GLTF accessor data");
+                                             const tinygltf::Accessor &accessor,
+                                             GLTFType gType,
+                                             GLTFTypeComponent gTypeComponent,
+                                             std::vector<unsigned char> &outputData) {
+    const size_t elementSize =
+        static_cast<size_t>(getTypeSize(gType) * getComponentTypeSize(gTypeComponent));
+    if (elementSize == 0 ||
+        accessor.count > std::numeric_limits<size_t>::max() / elementSize) {
+        perr("Invalid accessor size when materializing GLTF data");
         return false;
     }
+
     outputData.resize(accessor.count * elementSize);
     VRO_ENGINE_METRIC_ALLOCATION(outputData.size());
 
@@ -426,22 +321,29 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
     };
 
     if (accessor.bufferView >= 0) {
-        if (accessor.bufferView >= (int) gModel.bufferViews.size()) {
-            perr("GLTF accessor references an out-of-range bufferView %d", accessor.bufferView);
+        if (accessor.bufferView >= static_cast<int>(gModel.bufferViews.size())) {
+            perr("GLTF accessor references an out-of-range bufferView %d",
+                 accessor.bufferView);
             return false;
         }
-        const tinygltf::BufferView &baseBufferView = gModel.bufferViews[accessor.bufferView];
-        if (baseBufferView.buffer < 0 || baseBufferView.buffer >= (int) gModel.buffers.size()) {
-            perr("GLTF bufferView references an out-of-range buffer %d", baseBufferView.buffer);
+        const tinygltf::BufferView &baseBufferView =
+            gModel.bufferViews[accessor.bufferView];
+        if (baseBufferView.buffer < 0 ||
+            baseBufferView.buffer >= static_cast<int>(gModel.buffers.size())) {
+            perr("GLTF bufferView references an out-of-range buffer %d",
+                 baseBufferView.buffer);
             return false;
         }
-        const tinygltf::Buffer &baseBuffer = gModel.buffers[baseBufferView.buffer];
+        const tinygltf::Buffer &baseBuffer =
+            gModel.buffers[baseBufferView.buffer];
         if (baseBufferView.byteOffset > baseBuffer.data.size() ||
-            accessor.byteOffset > baseBuffer.data.size() - baseBufferView.byteOffset) {
+            accessor.byteOffset >
+                baseBuffer.data.size() - baseBufferView.byteOffset) {
             perr("GLTF accessor base offset exceeds its buffer");
             return false;
         }
-        const size_t baseOffset = baseBufferView.byteOffset + accessor.byteOffset;
+        const size_t baseOffset =
+            baseBufferView.byteOffset + accessor.byteOffset;
         materialize.base_stride = baseBufferView.byteStride != 0
             ? static_cast<uint64_t>(baseBufferView.byteStride)
             : static_cast<uint64_t>(elementSize);
@@ -450,16 +352,99 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
             static_cast<uint64_t>(baseBuffer.data.size() - baseOffset);
     }
 
-    if (viro_engine_accessor_materialize(&materialize) != VRO_ENGINE_STATUS_OK) {
-        perr("Failed to materialize GLTF accessor base data through engine contract");
+    if (accessor.sparse.isSparse) {
+        const tinygltf::Sparse &sparse = accessor.sparse;
+
+        if (sparse.indices.bufferView < 0 ||
+            sparse.indices.bufferView >=
+                static_cast<int>(gModel.bufferViews.size()) ||
+            sparse.values.bufferView < 0 ||
+            sparse.values.bufferView >=
+                static_cast<int>(gModel.bufferViews.size())) {
+            perr("Sparse accessor references an out-of-range bufferView");
+            return false;
+        }
+
+        const tinygltf::BufferView &indicesView =
+            gModel.bufferViews[sparse.indices.bufferView];
+        const tinygltf::BufferView &valuesView =
+            gModel.bufferViews[sparse.values.bufferView];
+
+        if (indicesView.buffer < 0 ||
+            indicesView.buffer >= static_cast<int>(gModel.buffers.size()) ||
+            valuesView.buffer < 0 ||
+            valuesView.buffer >= static_cast<int>(gModel.buffers.size())) {
+            perr("Sparse accessor references an out-of-range buffer");
+            return false;
+        }
+
+        const tinygltf::Buffer &indicesBuffer =
+            gModel.buffers[indicesView.buffer];
+        const tinygltf::Buffer &valuesBuffer =
+            gModel.buffers[valuesView.buffer];
+
+        if (indicesView.byteOffset > indicesBuffer.data.size() ||
+            sparse.indices.byteOffset >
+                indicesBuffer.data.size() - indicesView.byteOffset ||
+            valuesView.byteOffset > valuesBuffer.data.size() ||
+            sparse.values.byteOffset >
+                valuesBuffer.data.size() - valuesView.byteOffset) {
+            perr("Sparse accessor offset exceeds its buffer");
+            return false;
+        }
+
+        switch (sparse.indices.componentType) {
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                materialize.sparse_index_type =
+                    VRO_ENGINE_SPARSE_INDEX_UINT8;
+                break;
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                materialize.sparse_index_type =
+                    VRO_ENGINE_SPARSE_INDEX_UINT16;
+                break;
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+                materialize.sparse_index_type =
+                    VRO_ENGINE_SPARSE_INDEX_UINT32;
+                break;
+            default:
+                perr("Invalid sparse indices component type");
+                return false;
+        }
+
+        const size_t indicesOffset =
+            indicesView.byteOffset + sparse.indices.byteOffset;
+        const size_t valuesOffset =
+            valuesView.byteOffset + sparse.values.byteOffset;
+
+        materialize.sparse_count =
+            static_cast<uint64_t>(sparse.count);
+        materialize.sparse_indices =
+            indicesBuffer.data.data() + indicesOffset;
+        materialize.sparse_indices_length =
+            static_cast<uint64_t>(
+                indicesBuffer.data.size() - indicesOffset);
+        materialize.sparse_values =
+            valuesBuffer.data.data() + valuesOffset;
+        materialize.sparse_values_length =
+            static_cast<uint64_t>(
+                valuesBuffer.data.size() - valuesOffset);
+    }
+
+    if (viro_engine_accessor_materialize_selected(&materialize) !=
+        VRO_ENGINE_STATUS_OK) {
+        perr("Failed to materialize GLTF accessor through selected engine backend");
         return false;
     }
+
     if (materialize.base_data != nullptr) {
         VRO_ENGINE_METRIC_COPY(accessor.count * elementSize);
     }
-
-    return applySparseAccessorData(gModel, accessor, outputData);
+    if (materialize.sparse_count != 0) {
+        VRO_ENGINE_METRIC_COPY(materialize.sparse_count * elementSize);
+    }
+    return true;
 }
+
 void VROGLTFLoader::loadGLTFFromResource(std::string gltfManifestFilePath, const std::map<std::string, std::string> overwriteResourceMap,
                                          VROResourceType resourceType, std::shared_ptr<VRONode> rootNode, bool isGLTFBinary,
                                          std::shared_ptr<VRODriver> driver, std::function<void(std::shared_ptr<VRONode>, bool)> onFinish) {
