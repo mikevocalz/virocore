@@ -21,7 +21,7 @@ extern "C" VROEngineStatusCode viro_engine_query_abi(VROEngineAbiInfo *out_info)
     }
 
     const uint32_t caller_size = out_info->struct_size;
-    if (caller_size < sizeof(VROEngineAbiInfo)) {
+    if (caller_size < VRO_ENGINE_ABI_INFO_V0_1_SIZE) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
 
@@ -35,6 +35,8 @@ extern "C" VROEngineStatusCode viro_engine_query_abi(VROEngineAbiInfo *out_info)
     // the scaffold from advertising production features before adapters exist.
     info.capabilities = 0;
 
-    std::memcpy(out_info, &info, sizeof(info));
+    const size_t write_size =
+        caller_size < sizeof(info) ? static_cast<size_t>(caller_size) : sizeof(info);
+    std::memcpy(out_info, &info, write_size);
     return VRO_ENGINE_STATUS_OK;
 }
