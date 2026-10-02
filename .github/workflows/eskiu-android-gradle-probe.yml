@@ -75,6 +75,6 @@ jobs:
           test -f "$so"
           echo "Inspecting unstripped native output: $so"
           nmtool="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
-          "$nmtool" -g --defined-only "$so" | grep "viro_eskiu_android_probe"
-          "$nmtool" -g --defined-only "$so" | grep \
+          "$nmtool" --defined-only "$so" | grep "viro_eskiu_android_probe"
+          "$nmtool" --defined-only "$so" | grep \
             "Java_com_reactvision_eskiuprobe_Probe_nativeProbe"
