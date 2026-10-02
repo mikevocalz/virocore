@@ -12,8 +12,9 @@ if ! command -v "$ESKIUC" >/dev/null 2>&1; then
 fi
 
 VERSION="$("$ESKIUC" --version 2>&1 || true)"
-if [[ "$VERSION" != *"$EXPECTED_VERSION"* ]]; then
-  echo "error: expected Eskiu $EXPECTED_VERSION, got: $VERSION" >&2
+ACTUAL_VERSION="$(printf '%s\n' "$VERSION" | sed -nE 's/^Eskiu[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]].*)?$/\1/p' | head -n 1)"
+if [[ -z "$ACTUAL_VERSION" || "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
+  echo "error: expected exactly Eskiu $EXPECTED_VERSION, got: $VERSION" >&2
   exit 3
 fi
 
