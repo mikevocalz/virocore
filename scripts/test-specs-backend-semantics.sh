@@ -10,8 +10,11 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
   -Wno-unused-variable -Wno-unknown-pragmas \
   -DWASM_PLATFORM \
   -I"$ROOT/ViroRenderer/extension" -I"$ROOT/ViroRenderer" \
-  "$ROOT/ViroRenderer/VROQuaternion.cpp" \
+  "$ROOT/ViroRenderer/VROMath.cpp" \
+  "$ROOT/ViroRenderer/VROVector3f.cpp" \
+  "$ROOT/ViroRenderer/VROVector4f.cpp" \
   "$ROOT/ViroRenderer/VROMatrix4f.cpp" \
+  "$ROOT/ViroRenderer/VROQuaternion.cpp" \
   "$ROOT/tests/xr_backend/specs_semantic_contract_test.cpp" \
   -lm -o "$BUILD_DIR/cpp_test"
 "$BUILD_DIR/c_test"
