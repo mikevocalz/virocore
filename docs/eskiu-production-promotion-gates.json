@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "phase": "phase-3-ready",
+  "repositoryProgram": "complete-after-rollout-stack",
+  "productionDefaultBackend": "cpp",
+  "autoPolicy": "cpp-until-domain-promotion",
+  "gates": [
+    "native-mcp-module-map",
+    "cpp-device-baseline",
+    "eskiu-device-baseline",
+    "correctness-parity",
+    "memory-or-allocation-win",
+    "frame-or-latency-non-regression",
+    "target-platform-matrix",
+    "feature-flagged-soak",
+    "rollback-retained"
+  ],
+  "domains": {
+    "input": {
+      "status": "blocked-on-evidence",
+      "shadowParity": true
+    },
+    "geometry": {
+      "status": "blocked-on-evidence",
+      "shadowParity": true
+    },
+    "worldMesh": {
+      "status": "blocked-on-evidence",
+      "shadowParity": true
+    },
+    "surface": {
+      "status": "blocked-on-evidence",
+      "shadowParity": true
+    },
+    "media": {
+      "status": "blocked-on-evidence",
+      "shadowParity": true
+    },
+    "assetLoading": {
+      "status": "rollout-stack-in-progress",
+      "shadowParity": false
+    },
+    "spatial": {
+      "status": "contract-ready",
+      "shadowParity": false
+    }
+  }
+}
