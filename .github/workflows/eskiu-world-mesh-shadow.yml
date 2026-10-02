@@ -10,7 +10,7 @@ on:
       - "scripts/test-eskiu-world-mesh.sh"
       - "ViroRenderer/extension/VROEngineWorldMeshABI.*"
       - "ViroRenderer/extension/VROEngineGeometryABI.*"
-      - ".github/workflows/eskiu-world-mesh.yml"
+      - ".github/workflows/eskiu-world-mesh-shadow.yml"
 
 permissions:
   contents: read
