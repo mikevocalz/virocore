@@ -17,17 +17,56 @@
   "transforms": [
     {
       "name": "forward-one-and-half-meters",
-      "positionMeters": [0, 0, -1.5],
-      "lensCentimeters": [0, 0, -150]
+      "positionMeters": [
+        0,
+        0,
+        -1.5
+      ],
+      "lensCentimeters": [
+        0,
+        0,
+        -150
+      ]
     },
     {
       "name": "yaw-positive-90",
-      "eulerDegreesXYZ": [0, 90, 0],
-      "quaternionXYZW": [0, 0.7071067811865475, 0, 0.7071067811865476]
+      "eulerDegreesXYZ": [
+        0,
+        90,
+        0
+      ],
+      "quaternionXYZW": [
+        0,
+        0.7071067811865475,
+        0,
+        0.7071067811865476
+      ]
+    },
+    {
+      "name": "mixed-xyz-20-30-40",
+      "eulerDegreesXYZ": [
+        20,
+        30,
+        40
+      ],
+      "quaternionXYZW": [
+        0.0704393377846027,
+        0.29688290455629096,
+        0.283114052808671,
+        0.9092553402520854
+      ]
     }
   ],
   "interaction": {
-    "sources": ["gaze", "hand", "pinch", "controller", "voice", "touch", "neural-band"],
+    "sources": [
+      "gaze",
+      "hand",
+      "pinch",
+      "controller",
+      "voice",
+      "touch",
+      "neural-band"
+    ],
     "phases": [
       "hover-enter",
       "hover-move",
@@ -45,24 +84,52 @@
   },
   "worldQuery": {
     "request": {
-      "originMeters": [0, 0, 0],
-      "direction": [0, 0, -1],
+      "originMeters": [
+        0,
+        0,
+        0
+      ],
+      "direction": [
+        0,
+        0,
+        -1
+      ],
       "maxDistanceMeters": 10
     },
     "result": {
-      "positionMeters": [0, 0, -5.032981872558594],
+      "positionMeters": [
+        0,
+        0,
+        -5.032981872558594
+      ],
       "distanceMeters": 5.032981872558594,
       "surface": "unknown"
     },
     "nativeExample": {
-      "lensCentimeters": [0, 0, -503.2981872558594]
+      "lensCentimeters": [
+        0,
+        0,
+        -503.2981872558594
+      ]
     }
   },
   "polyline": {
     "pointsMeters": [
-      [-0.3, -0.18, -1.38],
-      [0, 0.04, -1.38],
-      [0.3, -0.02, -1.38]
+      [
+        -0.3,
+        -0.18,
+        -1.38
+      ],
+      [
+        0,
+        0.04,
+        -1.38
+      ],
+      [
+        0.3,
+        -0.02,
+        -1.38
+      ]
     ],
     "widthMeters": 0.008,
     "lensRadiusCentimeters": 0.4

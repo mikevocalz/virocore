@@ -30,12 +30,17 @@ assert data["coordinateSystem"]["metersToCentimeters"] == 100
 position = data["cases"]["position"]
 assert [value * 100 for value in position["public"]] == position["lens"]
 
-rotation = data["cases"]["rotationY90"]
-actual_quat = euler_xyz_degrees_to_quaternion(rotation["eulerDegrees"])
-for actual, expected in zip(actual_quat, rotation["quaternion"]):
-    assert close(actual, expected), (actual, expected)
+for key in ("rotationY90", "rotationMixed"):
+    rotation = data["cases"][key]
+    assert len(rotation["eulerDegrees"]) == 3
+    assert len(rotation["quaternion"]) == 4
+    actual_quat = euler_xyz_degrees_to_quaternion(rotation["eulerDegrees"])
+    for actual, expected in zip(actual_quat, rotation["quaternion"]):
+        assert close(actual, expected), (key, actual, expected)
 
 hit = data["cases"]["worldQuery"]
+assert len(hit["lensCentimeters"]) == 3
+assert len(hit["portableMeters"]) == 3
 converted = [value / 100 for value in hit["lensCentimeters"]]
 for actual, expected in zip(converted, hit["portableMeters"]):
     assert close(actual, expected), (actual, expected)
@@ -55,6 +60,19 @@ expected_phases = {
 }
 assert set(data["interactionPhases"]) == expected_phases
 
-assert len(data["requiredCapabilities"]) == len(set(data["requiredCapabilities"]))
+expected_capabilities = {
+    "immersive-rendering",
+    "display",
+    "motion",
+    "hand-tracking",
+    "pinch",
+    "gaze-targeting",
+    "drag-manipulation",
+    "world-query",
+    "surface-placement",
+    "volumetric-line",
+    "location-navigation",
+}
+assert set(data["requiredCapabilities"]) == expected_capabilities
 
 print("portable XR semantic contract: PASS")
