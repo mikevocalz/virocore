@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "coordinateSystem": {
+    "publicPositionUnit": "meters",
+    "lensNativePositionUnit": "centimeters",
+    "metersToCentimeters": 100,
+    "rotationInput": "euler-degrees",
+    "portableRotation": "quaternion"
+  },
+  "cases": {
+    "position": {
+      "public": [0, 0, -1.5],
+      "lens": [0, 0, -150]
+    },
+    "rotationY90": {
+      "eulerDegrees": [0, 90, 0],
+      "quaternion": [0, 0.7071067811865476, 0, 0.7071067811865476]
+    },
+    "worldQuery": {
+      "lensCentimeters": [100, 200, -503.2981872558594],
+      "portableMeters": [1, 2, -5.032981872558594]
+    },
+    "polyline": {
+      "thicknessMeters": 0.008,
+      "radiusMeters": 0.004,
+      "radiusCentimeters": 0.4
+    }
+  },
+  "interactionPhases": [
+    "hover-enter",
+    "hover-move",
+    "hover-exit",
+    "select-start",
+    "select-end",
+    "drag",
+    "cancel"
+  ],
+  "requiredCapabilities": [
+    "immersive-rendering",
+    "display",
+    "motion",
+    "hand-tracking",
+    "pinch",
+    "gaze-targeting",
+    "drag-manipulation",
+    "world-query",
+    "surface-placement",
+    "volumetric-line",
+    "location-navigation"
+  ]
+}
