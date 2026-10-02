@@ -1,0 +1,70 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ba6857c..0000000 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -48,13 +48,16 @@ if(NOT (ESKIU_STATIC AND APPLE))
+     target_compile_definitions(eskiuc PRIVATE ESKIU_HAS_X86)
+ endif()
+ 
++# Viro's web renderer needs wasm32 object emission.
++target_compile_definitions(eskiuc PRIVATE ESKIU_HAS_WASM)
++
+ if(ESKIU_STATIC)
+     # Static LLVM — release binaries.
+     # On Apple Silicon, X86 static libs are not available in Homebrew LLVM.
+     if(APPLE)
+-        set(STATIC_BACKENDS "aarch64codegen aarch64asmparser aarch64desc aarch64info armcodegen armasmparser armdesc arminfo")
++        set(STATIC_BACKENDS "aarch64codegen aarch64asmparser aarch64desc aarch64info armcodegen armasmparser armdesc arminfo webassemblycodegen webassemblyasmparser webassemblydesc webassemblyinfo")
+     else()
+-        set(STATIC_BACKENDS "aarch64codegen aarch64asmparser aarch64desc aarch64info x86codegen x86asmparser x86desc x86info armcodegen armasmparser armdesc arminfo")
++        set(STATIC_BACKENDS "aarch64codegen aarch64asmparser aarch64desc aarch64info x86codegen x86asmparser x86desc x86info armcodegen armasmparser armdesc arminfo webassemblycodegen webassemblyasmparser webassemblydesc webassemblyinfo")
+     endif()
+     execute_process(
+         COMMAND ${LLVM_TOOLS_BINARY_DIR}/llvm-config --link-static --libs
+@@ -78,6 +81,7 @@ else()
+         aarch64codegen aarch64asmparser aarch64desc aarch64info
+         x86codegen x86asmparser x86desc x86info
+         armcodegen armasmparser armdesc arminfo)
++    list(APPEND llvm_libs LLVMWebAssemblyCodeGen LLVMWebAssemblyAsmParser LLVMWebAssemblyDesc LLVMWebAssemblyInfo)
+     target_link_libraries(eskiuc ${llvm_libs})
+ endif()
+diff --git a/codegen/codegen_module.cpp b/codegen/codegen_module.cpp
+index 0000000..0000000 100644
+--- a/codegen/codegen_module.cpp
++++ b/codegen/codegen_module.cpp
+@@ -33,9 +33,9 @@ static std::optional<llvm::Reloc::Model> parseRelocModel(const std::string& s) {
+     return llvm::Reloc::PIC_;   // default (empty or "pic")
+ }
+ 
+-// Register the code-emission backends eskiuc supports: AArch64 and 32-bit ARM
+-// always, X86 only when the build links it (dynamic LLVM, or a non-Apple static
+-// build; the static Apple release ships without X86 libs). `withAsm` also pulls in
++// Register the code-emission backends eskiuc supports: AArch64, 32-bit ARM and
++// WebAssembly always, X86 only when the build links it (dynamic LLVM, or a
++// non-Apple static build; the static Apple release ships without X86 libs). `withAsm` also pulls in
+ // the assembly printer/parser, which the object-emitting paths need.
+ static void initCodegenTargets(bool withAsm) {
+     LLVMInitializeAArch64Target();
+@@ -46,6 +46,11 @@ static void initCodegenTargets(bool withAsm) {
+     LLVMInitializeARMTarget();
+     LLVMInitializeARMTargetInfo();
+     LLVMInitializeARMTargetMC();
++#ifdef ESKIU_HAS_WASM
++    LLVMInitializeWebAssemblyTarget();
++    LLVMInitializeWebAssemblyTargetInfo();
++    LLVMInitializeWebAssemblyTargetMC();
++#endif
+ #ifdef ESKIU_HAS_X86
+     LLVMInitializeX86Target();
+     LLVMInitializeX86TargetInfo();
+@@ -56,6 +61,10 @@ static void initCodegenTargets(bool withAsm) {
+         LLVMInitializeAArch64AsmParser();
+         LLVMInitializeARMAsmPrinter();
+         LLVMInitializeARMAsmParser();
++#ifdef ESKIU_HAS_WASM
++        LLVMInitializeWebAssemblyAsmPrinter();
++        LLVMInitializeWebAssemblyAsmParser();
++#endif
+ #ifdef ESKIU_HAS_X86
+         LLVMInitializeX86AsmPrinter();
+         LLVMInitializeX86AsmParser();
