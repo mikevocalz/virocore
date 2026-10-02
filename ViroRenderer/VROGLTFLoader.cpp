@@ -396,6 +396,7 @@ bool VROGLTFLoader::applySparseAccessorData(const tinygltf::Model &gModel,
 
         memcpy(outputData.data() + destOffset, valuesData + srcOffset, elementSize);
     }
+    VRO_ENGINE_METRIC_COPY(sparse.count * elementSize);
 
     return true;
 }
