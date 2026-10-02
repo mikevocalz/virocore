@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CC="${CC:-cc}"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/viro-specs-semantics.XXXXXX")"
+trap 'rm -rf "$BUILD_DIR"' EXIT
+
+"$CC" -std=c11 -Wall -Wextra -Werror \
+  -I"$ROOT/ViroRenderer/extension" \
+  "$ROOT/tests/xr_backend/specs_semantic_contract_c_test.c" \
+  -lm -o "$BUILD_DIR/specs_semantic_c"
+
+"$BUILD_DIR/specs_semantic_c"
+node "$ROOT/scripts/test-specs-quaternion-source.mjs"
