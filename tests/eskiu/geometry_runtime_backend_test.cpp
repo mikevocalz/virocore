@@ -94,6 +94,25 @@ bool runBackend(
             &fixture.desc, &update) == VRO_ENGINE_STATUS_INVALID_ARGUMENT,
         "invalid range");
 
+    uint8_t active[4] = {1, 2, 3, 4};
+    uint8_t padded[8] = {9, 9, 9, 9, 9, 9, 9, 9};
+    ok &= expect(
+        viro_engine_geometry_pad_copy_selected(
+            active, sizeof(active), padded, sizeof(padded)) ==
+            VRO_ENGINE_STATUS_OK,
+        "pad-copy succeeds");
+    ok &= expect(
+        padded[0] == 1 && padded[1] == 2 &&
+        padded[2] == 3 && padded[3] == 4 &&
+        padded[4] == 0 && padded[5] == 0 &&
+        padded[6] == 0 && padded[7] == 0,
+        "pad-copy preserves active bytes and zeros tail");
+    ok &= expect(
+        viro_engine_geometry_pad_copy_selected(
+            active, sizeof(active), padded, 2) ==
+            VRO_ENGINE_STATUS_INVALID_ARGUMENT,
+        "pad-copy rejects undersized output");
+
     return ok;
 }
 
