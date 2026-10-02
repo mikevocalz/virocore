@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "name": "eskiu",
+  "version": "0.9.2",
+  "tag": "v0.9.2",
+  "tagObjectSha": "d7ad34db0130acb2e403b443b1257032103220fc",
+  "commitSha": "95d7ece7ea8d72bc106a141bc031a1648ed8f2ac",
+  "releasedAt": "2026-09-30T01:44:53Z",
+  "repository": "https://github.com/doranteseduardo/eskiu",
+  "homepage": "https://eskiu-lang.org/",
+  "compiler": "eskiuc",
+  "llvmMinimum": "21",
+  "abi": "platform-native-c",
+  "outputs": [
+    "native-object"
+  ],
+  "compilerFlags": {
+    "object": [
+      "-c",
+      "-o"
+    ],
+    "target": "--target",
+    "cpu": "--mcpu",
+    "attributes": "--mattr",
+    "relocation": "--reloc",
+    "freestanding": "--freestanding",
+    "safe": "--safe",
+    "optimization": [
+      "-O0",
+      "-O1",
+      "-O2",
+      "-O3"
+    ]
+  },
+  "releaseAssets": {
+    "linux-x86_64": {
+      "file": "eskiuc-linux-x86_64.tar.gz",
+      "sha256": "46316ce1553489045aec1cf9fbc432f551cda4850b90d200a7b4c73bc835e8ec"
+    },
+    "linux-arm64": {
+      "file": "eskiuc-linux-arm64.tar.gz",
+      "sha256": "0df564e04c9f36631a6e3c2da7cb033b67db3ddfdc7f235076d729b1a16f44cd"
+    },
+    "macos-arm64": {
+      "file": "eskiuc-macos-arm64.tar.gz",
+      "sha256": "2a8a5c128b0b9a0a5fe22d74cf5e9ab474959226c70937692cfc11bf90b07cc5"
+    },
+    "windows-x86_64": {
+      "file": "eskiuc-windows-x86_64.zip",
+      "sha256": "c1fcdf39445fcc9116fb17cd442e9a442b24efdd2b0ae28e85962751cfa125bd"
+    }
+  },
+  "policy": {
+    "exactVersionRequiredInCi": true,
+    "checksumRequired": true,
+    "productionRendererMigrationRequiresNativeMcpAudit": true
+  }
+}
