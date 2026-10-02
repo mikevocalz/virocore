@@ -53,11 +53,14 @@ int main() {
     d.element_size = 4;
     d.element_count = 3;
     d.base_data = base;
+    d.base_length = sizeof(base);
     d.base_stride = 8;
     d.sparse_index_type = VRO_ENGINE_SPARSE_INDEX_UINT16;
     d.sparse_count = 1;
     d.sparse_indices = reinterpret_cast<uint8_t *>(sparse16);
+    d.sparse_indices_length = sizeof(sparse16);
     d.sparse_values = sparseValue;
+    d.sparse_values_length = sizeof(sparseValue);
     d.output = {cppOut.data(), cppOut.size()};
 
     expectValidationSame(d, "valid");
@@ -66,26 +69,48 @@ int main() {
     uint8_t sparse8[] = {2};
     d.sparse_index_type = VRO_ENGINE_SPARSE_INDEX_UINT8;
     d.sparse_indices = sparse8;
+    d.sparse_indices_length = sizeof(sparse8);
     cppOut.fill(0); eskOut.fill(0);
     expectMaterializeSame(d, cppOut.data(), eskOut.data(), cppOut.size(), "uint8 sparse");
 
     uint32_t sparse32[] = {0};
     d.sparse_index_type = VRO_ENGINE_SPARSE_INDEX_UINT32;
     d.sparse_indices = reinterpret_cast<uint8_t *>(sparse32);
+    d.sparse_indices_length = sizeof(sparse32);
     cppOut.fill(0); eskOut.fill(0);
     expectMaterializeSame(d, cppOut.data(), eskOut.data(), cppOut.size(), "uint32 sparse");
 
     d.sparse_count = 0;
     d.sparse_index_type = VRO_ENGINE_SPARSE_INDEX_NONE;
     d.sparse_indices = nullptr;
+    d.sparse_indices_length = 0;
     d.sparse_values = nullptr;
+    d.sparse_values_length = 0;
     d.base_data = nullptr;
+    d.base_length = 0;
     d.base_stride = 0;
     cppOut.fill(0xff); eskOut.fill(0xff);
     expectMaterializeSame(d, cppOut.data(), eskOut.data(), cppOut.size(), "zero fill");
 
     d.output.length = 2;
     expectValidationSame(d, "short output");
+
+    d.output.length = cppOut.size();
+    d.base_data = base;
+    d.base_length = 4;
+    d.base_stride = 8;
+    expectValidationSame(d, "short base");
+
+    d.base_data = nullptr;
+    d.base_length = 0;
+    d.base_stride = 0;
+    d.sparse_count = 1;
+    d.sparse_index_type = VRO_ENGINE_SPARSE_INDEX_UINT16;
+    d.sparse_indices = reinterpret_cast<uint8_t *>(sparse16);
+    d.sparse_indices_length = 1;
+    d.sparse_values = sparseValue;
+    d.sparse_values_length = sizeof(sparseValue);
+    expectValidationSame(d, "short sparse indices");
 
     std::cout << "C++ / Eskiu accessor materialization differential: PASS\n";
 }
