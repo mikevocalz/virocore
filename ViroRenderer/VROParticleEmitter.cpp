@@ -31,6 +31,7 @@
 #include "VROBillboardConstraint.h"
 #include "VROMaterial.h"
 #include "VROPlatformUtil.h"
+#include "extension/VROEngineMetrics.h"
 #if VRO_METAL
 #  include "VROParticleUBOMetal.h"
 #else
@@ -178,6 +179,8 @@ void VROParticleEmitter::setPause(bool pause) {
 }
 
 void VROParticleEmitter::update(const VRORenderContext &context, const VROMatrix4f &computedTransform) {
+    VRO_ENGINE_METRIC_SCOPE_TIMER(viroParticleUpdateTimer);
+    VRO_ENGINE_METRIC_CALL();
     _lastComputedTransform = computedTransform;
     double currentTime = VROTimeCurrentMillis();
 

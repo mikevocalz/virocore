@@ -36,6 +36,7 @@
 #include "VROLog.h"
 #include "VROShaderModifier.h"
 #include "VROTextureSubstrateOpenGL.h"
+#include "extension/VROEngineMetrics.h"
 
 VROImagePostProcessOpenGL::VROImagePostProcessOpenGL(std::shared_ptr<VROShaderProgram> shader) :
     _shader(shader),
@@ -71,6 +72,8 @@ void VROImagePostProcessOpenGL::setVerticalFlip(bool flip) {
 
 void VROImagePostProcessOpenGL::blit(std::vector<std::shared_ptr<VROTexture>> textures,
                                      std::shared_ptr<VRODriver> &driver) {
+    VRO_ENGINE_METRIC_SCOPE_TIMER(viroPostProcessBlitTimer);
+    VRO_ENGINE_METRIC_CALL();
     
     // Bind the source textures
     if (!bind(textures, driver)) {
@@ -108,6 +111,8 @@ void VROImagePostProcessOpenGL::begin(std::shared_ptr<VRODriver> &driver) {
 
 void VROImagePostProcessOpenGL::blitOpt(std::vector<std::shared_ptr<VROTexture>> textures,
                                         std::shared_ptr<VRODriver> &driver) {
+    VRO_ENGINE_METRIC_SCOPE_TIMER(viroPostProcessBlitOptTimer);
+    VRO_ENGINE_METRIC_CALL();
     
     // Bind the source textures
     if (!bind(textures, driver)) {
