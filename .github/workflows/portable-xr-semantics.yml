@@ -1,0 +1,29 @@
+name: Portable XR semantics
+
+on:
+  pull_request:
+    paths:
+      - "tests/portable_xr/**"
+      - "scripts/test-portable-xr-semantics.py"
+      - "docs/portable-xr-semantics.md"
+      - ".github/workflows/portable-xr-semantics.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "tests/portable_xr/**"
+      - "scripts/test-portable-xr-semantics.py"
+      - "docs/portable-xr-semantics.md"
+      - ".github/workflows/portable-xr-semantics.yml"
+  workflow_dispatch:
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Validate portable XR semantics
+        run: python3 scripts/test-portable-xr-semantics.py
