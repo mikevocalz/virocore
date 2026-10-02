@@ -180,6 +180,7 @@
   ],
   "requiredGates": [
     "eskiu-v0.9.2-abi-smoke",
+    "platform-target-readiness",
     "official-viro-mcp-audit",
     "reactviro-find-native-bridge-map",
     "reactvision-platform-native-mcp-audit-per-production-module",
@@ -196,6 +197,19 @@
     "abi": "platform-native-c",
     "objectEmission": true,
     "noGarbageCollector": true,
-    "cInterop": "extern-and-native-symbols"
+    "cInterop": "extern-and-native-symbols",
+    "androidRoadmap": {
+      "aarch64LinuxAndroid": false,
+      "jniSharedLibrary": false,
+      "gradleNdkPackaging": false
+    }
+  },
+  "platformReadiness": {
+    "hostMacosArm64": "abi-pilot-ready",
+    "hostLinuxX64Arm64": "abi-pilot-ready",
+    "iosVisionos": "requires-target-build-validation",
+    "androidNdk": "blocked-public-roadmap",
+    "questPico": "blocked-on-android-ndk",
+    "webWasm": "requires-separate-toolchain-proof"
   }
 }
