@@ -29,7 +29,7 @@ function(viro_eskiu_require_compiler)
     if(NOT _eskiu_version_result EQUAL 0)
         message(FATAL_ERROR "Failed to run eskiuc --version: ${_eskiu_version}")
     endif()
-    string(REGEX MATCH "^Eskiu[ \\t]+([0-9]+\\\\.[0-9]+\\\\.[0-9]+)([ \\t].*)?$" _eskiu_version_match "${_eskiu_version}")
+    string(REGEX MATCH "^Eskiu +([0-9]+\\.[0-9]+\\.[0-9]+)( .*)?$" _eskiu_version_match "${_eskiu_version}")
     set(_eskiu_version_token "${CMAKE_MATCH_1}")
     if(_eskiu_version_token STREQUAL "" OR
        NOT _eskiu_version_token STREQUAL VIRO_ESKIU_EXPECTED_VERSION)
