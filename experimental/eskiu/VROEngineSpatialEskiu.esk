@@ -1,0 +1,198 @@
+import <math>;
+
+struct VROEngineVec3 {
+    float x;
+    float y;
+    float z;
+}
+
+struct VROEngineQuat {
+    float x;
+    float y;
+    float z;
+    float w;
+}
+
+struct VROEngineRigidTransform {
+    uint32 struct_size;
+    uint32 flags;
+    VROEngineVec3 translation;
+    VROEngineQuat rotation;
+}
+
+struct VROEngineSharedFrame {
+    uint32 struct_size;
+    uint32 tracking_state;
+    uint64 frame_id;
+    uint64 revision;
+    uint64 timestamp_ns;
+    VROEngineRigidTransform local_from_shared;
+    float confidence;
+    uint32 flags;
+}
+
+bool viro_eskiu_float_finite(float value) {
+    if (value != value) {
+        return false;
+    }
+    double magnitude = fabs((double)value);
+    return magnitude <= 3.402823466e38;
+}
+
+bool viro_eskiu_transform_valid(*VROEngineRigidTransform transform) {
+    if (transform == null || transform.struct_size < 36) {
+        return false;
+    }
+    if (!viro_eskiu_float_finite(transform.translation.x) ||
+        !viro_eskiu_float_finite(transform.translation.y) ||
+        !viro_eskiu_float_finite(transform.translation.z) ||
+        !viro_eskiu_float_finite(transform.rotation.x) ||
+        !viro_eskiu_float_finite(transform.rotation.y) ||
+        !viro_eskiu_float_finite(transform.rotation.z) ||
+        !viro_eskiu_float_finite(transform.rotation.w)) {
+        return false;
+    }
+    float n2 =
+        transform.rotation.x * transform.rotation.x +
+        transform.rotation.y * transform.rotation.y +
+        transform.rotation.z * transform.rotation.z +
+        transform.rotation.w * transform.rotation.w;
+    return viro_eskiu_float_finite(n2) && n2 > 0.0;
+}
+
+VROEngineQuat viro_eskiu_quat_normalize(VROEngineQuat q) {
+    float n2 =
+        q.x * q.x +
+        q.y * q.y +
+        q.z * q.z +
+        q.w * q.w;
+    if (!viro_eskiu_float_finite(n2) || n2 <= 0.0) {
+        return VROEngineQuat{0.0, 0.0, 0.0, 1.0};
+    }
+    float inv = 1.0 / sqrt(n2);
+    return VROEngineQuat{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
+}
+
+VROEngineQuat viro_eskiu_quat_multiply(VROEngineQuat a, VROEngineQuat b) {
+    VROEngineQuat q = VROEngineQuat{
+        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
+    };
+    return viro_eskiu_quat_normalize(q);
+}
+
+VROEngineQuat viro_eskiu_quat_conjugate(VROEngineQuat q) {
+    q = viro_eskiu_quat_normalize(q);
+    return VROEngineQuat{-q.x, -q.y, -q.z, q.w};
+}
+
+VROEngineVec3 viro_eskiu_rotate(VROEngineQuat q, VROEngineVec3 v) {
+    q = viro_eskiu_quat_normalize(q);
+    VROEngineVec3 u = VROEngineVec3{q.x, q.y, q.z};
+    float s = q.w;
+    float dot_uv = u.x*v.x + u.y*v.y + u.z*v.z;
+    float dot_uu = u.x*u.x + u.y*u.y + u.z*u.z;
+    VROEngineVec3 cross = VROEngineVec3{
+        u.y*v.z - u.z*v.y,
+        u.z*v.x - u.x*v.z,
+        u.x*v.y - u.y*v.x
+    };
+    return VROEngineVec3{
+        2.0*dot_uv*u.x + (s*s - dot_uu)*v.x + 2.0*s*cross.x,
+        2.0*dot_uv*u.y + (s*s - dot_uu)*v.y + 2.0*s*cross.y,
+        2.0*dot_uv*u.z + (s*s - dot_uu)*v.z + 2.0*s*cross.z
+    };
+}
+
+int viro_eskiu_transform_identity(*VROEngineRigidTransform out_transform) {
+    if (out_transform == null || out_transform.struct_size < 36) {
+        return 2;
+    }
+    out_transform.struct_size = 36;
+    out_transform.flags = 0;
+    out_transform.translation = VROEngineVec3{0.0, 0.0, 0.0};
+    out_transform.rotation = VROEngineQuat{0.0, 0.0, 0.0, 1.0};
+    return 0;
+}
+
+int viro_eskiu_transform_compose(
+    *VROEngineRigidTransform parent_from_mid,
+    *VROEngineRigidTransform mid_from_child,
+    *VROEngineRigidTransform out_parent_from_child) {
+    if (!viro_eskiu_transform_valid(parent_from_mid) ||
+        !viro_eskiu_transform_valid(mid_from_child) ||
+        out_parent_from_child == null ||
+        out_parent_from_child.struct_size < 36) {
+        return 2;
+    }
+
+    VROEngineRigidTransform parent = *parent_from_mid;
+    VROEngineRigidTransform child = *mid_from_child;
+    VROEngineVec3 rotated =
+        viro_eskiu_rotate(parent.rotation, child.translation);
+
+    out_parent_from_child.struct_size = 36;
+    out_parent_from_child.flags = parent.flags | child.flags;
+    out_parent_from_child.rotation =
+        viro_eskiu_quat_multiply(parent.rotation, child.rotation);
+    out_parent_from_child.translation = VROEngineVec3{
+        parent.translation.x + rotated.x,
+        parent.translation.y + rotated.y,
+        parent.translation.z + rotated.z
+    };
+    return 0;
+}
+
+int viro_eskiu_transform_invert(
+    *VROEngineRigidTransform parent_from_child,
+    *VROEngineRigidTransform out_child_from_parent) {
+    if (!viro_eskiu_transform_valid(parent_from_child) ||
+        out_child_from_parent == null ||
+        out_child_from_parent.struct_size < 36) {
+        return 2;
+    }
+
+    VROEngineQuat inverse =
+        viro_eskiu_quat_conjugate(parent_from_child.rotation);
+    VROEngineVec3 negated = VROEngineVec3{
+        -parent_from_child.translation.x,
+        -parent_from_child.translation.y,
+        -parent_from_child.translation.z
+    };
+    out_child_from_parent.struct_size = 36;
+    out_child_from_parent.flags = parent_from_child.flags;
+    out_child_from_parent.rotation = inverse;
+    out_child_from_parent.translation =
+        viro_eskiu_rotate(inverse, negated);
+    return 0;
+}
+
+int viro_eskiu_transform_point(
+    *VROEngineRigidTransform parent_from_child,
+    *VROEngineVec3 child_point,
+    *VROEngineVec3 out_parent_point) {
+    if (!viro_eskiu_transform_valid(parent_from_child) ||
+        child_point == null || out_parent_point == null) {
+        return 2;
+    }
+
+    VROEngineVec3 rotated =
+        viro_eskiu_rotate(parent_from_child.rotation, *child_point);
+    out_parent_point.x = parent_from_child.translation.x + rotated.x;
+    out_parent_point.y = parent_from_child.translation.y + rotated.y;
+    out_parent_point.z = parent_from_child.translation.z + rotated.z;
+    return 0;
+}
+
+int viro_eskiu_shared_frame_validate(*VROEngineSharedFrame frame) {
+    if (frame == null ||
+        frame.struct_size < 80 ||
+        frame.tracking_state > 2 ||
+        !viro_eskiu_transform_valid(&frame.local_from_shared) ||
+        !viro_eskiu_float_finite(frame.confidence)) {
+        return 2;
+    }
+    return 0;
+}
