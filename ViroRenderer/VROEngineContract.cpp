@@ -1,5 +1,7 @@
 #include "VROEngineContract.h"
 
+#include <stddef.h>
+
 #ifndef VRO_ENGINE_BUILD_ID
 #define VRO_ENGINE_BUILD_ID "unknown"
 #endif
@@ -17,12 +19,27 @@
 #endif
 
 namespace {
+constexpr uint64_t kCapabilities =
+    static_cast<uint64_t>(VRO_ENGINE_CAPABILITIES);
+
 constexpr uint32_t packVersion() {
-    return (VRO_ENGINE_CONTRACT_MAJOR << 16) | VRO_ENGINE_CONTRACT_MINOR;
+    return (VRO_ENGINE_ABI_MAJOR << 16) | VRO_ENGINE_ABI_MINOR;
 }
 
-constexpr VROEngineCapabilityBits kCapabilities =
-    static_cast<VROEngineCapabilityBits>(VRO_ENGINE_CAPABILITIES);
+constexpr uint32_t lowWord(uint64_t value) {
+    return static_cast<uint32_t>(value & 0xffffffffull);
+}
+
+constexpr uint32_t highWord(uint64_t value) {
+    return static_cast<uint32_t>((value >> 32) & 0xffffffffull);
+}
+
+static_assert(sizeof(VROEngineAbiInfo) == VRO_ENGINE_ABI_INFO_SIZE,
+              "VROEngineAbiInfo must remain a 24-byte ABI prefix");
+static_assert(offsetof(VROEngineAbiInfo, capabilities_low) == 16,
+              "capabilities_low offset is part of the ABI");
+static_assert(offsetof(VROEngineAbiInfo, capabilities_high) == 20,
+              "capabilities_high offset is part of the ABI");
 }
 
 extern "C" uint32_t vro_engine_contract_version(void) {
@@ -30,26 +47,36 @@ extern "C" uint32_t vro_engine_contract_version(void) {
 }
 
 extern "C" VROEngineStatus
-vro_engine_contract_get_info(VROEngineContractInfo *out_info) {
+vro_engine_contract_query(VROEngineAbiInfo *out_info) {
     if (out_info == nullptr) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
-
-    if (out_info->struct_size < sizeof(VROEngineContractInfo)) {
+    if (out_info->struct_size < VRO_ENGINE_ABI_INFO_SIZE) {
         return VRO_ENGINE_STATUS_VERSION_MISMATCH;
     }
 
-    out_info->major = static_cast<uint16_t>(VRO_ENGINE_CONTRACT_MAJOR);
-    out_info->minor = static_cast<uint16_t>(VRO_ENGINE_CONTRACT_MINOR);
-    out_info->backend = static_cast<VROEngineBackend>(VRO_ENGINE_BACKEND_KIND);
+    out_info->abi_major = static_cast<uint16_t>(VRO_ENGINE_ABI_MAJOR);
+    out_info->abi_minor = static_cast<uint16_t>(VRO_ENGINE_ABI_MINOR);
+    out_info->backend_kind = static_cast<VROEngineBackendKind>(VRO_ENGINE_BACKEND_KIND);
     out_info->reserved0 = 0;
-    out_info->capabilities = kCapabilities;
-    out_info->backend_name = VRO_ENGINE_BACKEND_NAME;
-    out_info->build_id = VRO_ENGINE_BUILD_ID;
+    out_info->capabilities_low = lowWord(kCapabilities);
+    out_info->capabilities_high = highWord(kCapabilities);
     return VRO_ENGINE_STATUS_OK;
 }
 
-extern "C" int32_t
-vro_engine_contract_has_capabilities(VROEngineCapabilityBits required) {
+extern "C" int32_t vro_engine_contract_has_capabilities(
+    uint32_t required_low,
+    uint32_t required_high) {
+    const uint64_t required =
+        static_cast<uint64_t>(required_low) |
+        (static_cast<uint64_t>(required_high) << 32);
     return (kCapabilities & required) == required ? 1 : 0;
+}
+
+extern "C" const char *vro_engine_contract_backend_name(void) {
+    return VRO_ENGINE_BACKEND_NAME;
+}
+
+extern "C" const char *vro_engine_contract_build_id(void) {
+    return VRO_ENGINE_BUILD_ID;
 }
