@@ -1,0 +1,23 @@
+name: Engine media ABI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineMediaABI.*"
+      - "ViroRenderer/extension/VROEngineSurfaceABI.*"
+      - "tests/extension/engine_media_*"
+      - "scripts/test-engine-media.sh"
+      - ".github/workflows/engine-media.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  c-and-cpp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify media frame ABI
+        run: bash scripts/test-engine-media.sh
