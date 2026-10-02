@@ -25,6 +25,7 @@
 
 #include <map>
 #include "VROPhysicsWorld.h"
+#include "extension/VROEngineSubsystemMetrics.h"
 #include "VROPhysicsBodyDelegate.h"
 #include <btBulletDynamicsCommon.h>
 #include "VROPhysicsContactResultCallback.h"
@@ -127,6 +128,8 @@ void VROPhysicsWorld::removePhysicsBody(std::shared_ptr<VROPhysicsBody> body) {
 }
 
 void VROPhysicsWorld::computePhysics(const VRORenderContext &context) {
+    VRO_ENGINE_SUBSYSTEM_SCOPE_TIMER(VRO_ENGINE_SUBSYSTEM_PHYSICS, physicsTimer);
+    VRO_ENGINE_SUBSYSTEM_WORK(VRO_ENGINE_SUBSYSTEM_PHYSICS, _activePhysicsBodies.size());
     // Update all VROPhysicsBodies as need be before the physics step.
     std::map<std::string, std::shared_ptr<VROPhysicsBody>>::iterator it;
     for (it = _activePhysicsBodies.begin(); it != _activePhysicsBodies.end(); ++it) {
@@ -186,6 +189,7 @@ void VROPhysicsWorld::computeCollisions() {
     // Iterate through the dynamic world to generate collidedPairs from bullet's set of
     // collision pairs (manifolds) to be used for notifying our physics delegates.
     int numManifolds = _dynamicsWorld->getDispatcher()->getNumManifolds();
+    VRO_ENGINE_SUBSYSTEM_WORK(VRO_ENGINE_SUBSYSTEM_PHYSICS, numManifolds);
     for (int i = 0; i < numManifolds; i++) {
         btPersistentManifold* contactManifold =  _dynamicsWorld->getDispatcher()->getManifoldByIndexInternal(i);
         int numContacts = contactManifold->getNumContacts();
