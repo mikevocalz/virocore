@@ -1,0 +1,36 @@
+name: Eskiu WebAssembly backend probe
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tools/eskiu/patch-eskiu-wasm.py"
+      - "tests/eskiu/wasm_target_probe.esk"
+      - "scripts/eskiu/probe-wasm-backend.sh"
+      - ".github/workflows/eskiu-wasm-probe.yml"
+      - "docs/ESKIU-WASM-ENABLEMENT.md"
+
+permissions:
+  contents: read
+
+jobs:
+  wasm-object:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 22 with WebAssembly backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22 all
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential llvm-22-dev lld-22
+
+      - name: Build patched compiler and emit WASM
+        env:
+          LLVM_DIR: /usr/lib/llvm-22/lib/cmake/llvm
+        run: bash scripts/eskiu/probe-wasm-backend.sh
