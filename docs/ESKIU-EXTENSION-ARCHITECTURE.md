@@ -78,6 +78,19 @@ The custom/native work in this fork currently touches areas including:
 
 These are not all Eskiu candidates. They are all **boundary candidates**.
 
+## Cross-language aggregate rule
+
+The C-compatible extension boundary does **not** expose arbitrary Eskiu aggregate-by-value
+implementation functions directly to C++. For aggregate data:
+
+1. prefer pointer + explicit lifetime / length views;
+2. use small scalar fields directly where practical;
+3. use an Eskiu-generated C callback thunk only when that exact thunk path is tested;
+4. never infer C-callability from symbol visibility alone.
+
+This rule is based on the Eskiu v0.9.2 ABI documentation and a CI experiment in this fork
+that demonstrated a direct seven-float by-value top-level call is not a safe universal seam.
+
 ## Boundary design principles
 
 ### 1. Opaque handles
