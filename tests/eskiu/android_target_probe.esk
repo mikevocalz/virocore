@@ -1,0 +1,5 @@
+// Minimal Android-target object probe.
+// No libc or JNI dependency: this isolates Eskiu target/object emission first.
+int viro_eskiu_android_probe(int value) {
+    return value + 1;
+}
