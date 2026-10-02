@@ -31,7 +31,7 @@ uint64 viro_eskiu_sparse_index_at(*VROEngineAccessorMaterializeDesc desc, uint64
 }
 
 int viro_eskiu_accessor_materialize_validate(*VROEngineAccessorMaterializeDesc desc) {
-    if (desc == null || desc.struct_size < 80 || desc.element_size == 0 ||
+    if (desc == null || desc.struct_size < (uint32)sizeof(VROEngineAccessorMaterializeDesc) || desc.element_size == 0 ||
         desc.element_count == 0 || desc.output.data == null) {
         return 2;
     }
