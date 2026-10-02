@@ -28,7 +28,10 @@ jobs:
         run: |
           set -euo pipefail
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "platforms;android-33"             "cmake;3.22.1"             "ndk;27.2.12479018"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-33" \
+            "cmake;3.22.1" \
+            "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Install pinned Eskiu compiler
@@ -37,7 +40,9 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/eskiuc-linux-x86_64.tar.gz"
           prefix="$RUNNER_TEMP/eskiu"
-          curl -fsSL             "https://github.com/doranteseduardo/eskiu/releases/download/v${ESKIU_VERSION}/eskiuc-linux-x86_64.tar.gz"             -o "$archive"
+          curl -fsSL \
+            "https://github.com/doranteseduardo/eskiu/releases/download/v${ESKIU_VERSION}/eskiuc-linux-x86_64.tar.gz" \
+            -o "$archive"
           echo "${ESKIU_ARCHIVE_SHA256}  $archive" | sha256sum -c -
           mkdir -p "$prefix"
           tar -xzf "$archive" -C "$prefix"
@@ -45,9 +50,13 @@ jobs:
 
       - name: Build probe AAR through Gradle + NDK CMake
         run: |
-          ./android/gradlew             -p tools/eskiu/android-probe             :probe:assembleDebug             --no-daemon             --stacktrace
+          ./android/gradlew \
+            -p tools/eskiu/android-probe \
+            :probe:assembleDebug \
+            --no-daemon \
+            --stacktrace
 
-      - name: Verify packaged JNI symbols and 16 KB alignment
+      - name: Verify packaged JNI library and 16 KB alignment
         shell: bash
         run: |
           set -euo pipefail
@@ -56,8 +65,16 @@ jobs:
           unzip -l "$aar" | grep "jni/arm64-v8a/libviro_eskiu_probe.so"
           python3 scripts/verify-16kb-alignment.py "$aar" --abi arm64-v8a
 
-          so="$RUNNER_TEMP/libviro_eskiu_probe.so"
-          unzip -p "$aar" jni/arm64-v8a/libviro_eskiu_probe.so > "$so"
+      - name: Verify Eskiu and JNI symbols before Android stripping
+        shell: bash
+        run: |
+          set -euo pipefail
+          so="$(find tools/eskiu/android-probe/probe/.cxx/Debug \
+            -path "*/obj/arm64-v8a/libviro_eskiu_probe.so" -print -quit)"
+          test -n "$so"
+          test -f "$so"
+          echo "Inspecting unstripped native output: $so"
           nmtool="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           "$nmtool" -g --defined-only "$so" | grep "viro_eskiu_android_probe"
-          "$nmtool" -g --defined-only "$so" | grep             "Java_com_reactvision_eskiuprobe_Probe_nativeProbe"
+          "$nmtool" -g --defined-only "$so" | grep \
+            "Java_com_reactvision_eskiuprobe_Probe_nativeProbe"
