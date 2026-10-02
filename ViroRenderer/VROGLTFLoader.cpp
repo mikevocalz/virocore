@@ -42,6 +42,7 @@
 #include "VROCompress.h"
 #include "VROModelIOUtil.h"
 #include "extension/VROEngineMetrics.h"
+#include "extension/VROEngineAccessorABI.h"
 #include "VROBone.h"
 #include "VROKeyframeAnimation.h"
 #include "VROTimingFunction.h"
@@ -411,13 +412,22 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
         perr("Invalid element size when materializing GLTF accessor data");
         return false;
     }
-    outputData.assign(accessor.count * elementSize, 0);
+    outputData.resize(accessor.count * elementSize);
     VRO_ENGINE_METRIC_ALLOCATION(outputData.size());
 
-    // Copy the base data, if any. Per spec accessor.bufferView is legitimately -1 when the
-    // accessor is sparse-only (e.g. a morph target delta with no unaffected-vertex base) —
-    // in that case the base is implicitly all-zero, so outputData's zero-fill above is already
-    // correct and there's nothing to copy.
+    VROEngineAccessorMaterializeDesc materialize{};
+    materialize.struct_size = sizeof(materialize);
+    materialize.element_size = static_cast<uint32_t>(elementSize);
+    materialize.element_count = static_cast<uint64_t>(accessor.count);
+    materialize.sparse_index_type = VRO_ENGINE_SPARSE_INDEX_NONE;
+    materialize.output = {
+        outputData.data(),
+        static_cast<uint64_t>(outputData.size())
+    };
+
+    // Resolve only the base view here. Sparse bounds checking and overlay stay
+    // in the existing helper for this first adapter, which keeps the
+    // production behavior delta intentionally small.
     if (accessor.bufferView >= 0) {
         if (accessor.bufferView >= (int) gModel.bufferViews.size()) {
             perr("GLTF accessor references an out-of-range bufferView %d", accessor.bufferView);
@@ -429,18 +439,31 @@ bool VROGLTFLoader::materializeAccessorData(const tinygltf::Model &gModel,
             return false;
         }
         const tinygltf::Buffer &baseBuffer = gModel.buffers[baseBufferView.buffer];
-        size_t baseStride = baseBufferView.byteStride != 0 ? baseBufferView.byteStride : elementSize;
-        const unsigned char *baseData = baseBuffer.data.data() + baseBufferView.byteOffset + accessor.byteOffset;
-        for (size_t i = 0; i < accessor.count; i++) {
-            memcpy(outputData.data() + i * elementSize, baseData + i * baseStride, elementSize);
+        if (baseBufferView.byteOffset > baseBuffer.data.size() ||
+            accessor.byteOffset > baseBuffer.data.size() - baseBufferView.byteOffset) {
+            perr("GLTF accessor base offset exceeds its buffer");
+            return false;
         }
+        const size_t baseOffset = baseBufferView.byteOffset + accessor.byteOffset;
+        materialize.base_stride = baseBufferView.byteStride != 0
+            ? static_cast<uint64_t>(baseBufferView.byteStride)
+            : static_cast<uint64_t>(elementSize);
+        materialize.base_data = baseBuffer.data.data() + baseOffset;
+        materialize.base_length =
+            static_cast<uint64_t>(baseBuffer.data.size() - baseOffset);
+    }
+
+    if (viro_engine_accessor_materialize(&materialize) != VRO_ENGINE_STATUS_OK) {
+        perr("Failed to materialize GLTF accessor base data through engine contract");
+        return false;
+    }
+    if (materialize.base_data != nullptr) {
         VRO_ENGINE_METRIC_COPY(accessor.count * elementSize);
     }
 
     // Overlay the sparse deltas, if any (no-op if accessor.sparse.isSparse is false).
     return applySparseAccessorData(gModel, accessor, outputData);
 }
-
 void VROGLTFLoader::loadGLTFFromResource(std::string gltfManifestFilePath, const std::map<std::string, std::string> overwriteResourceMap,
                                          VROResourceType resourceType, std::shared_ptr<VRONode> rootNode, bool isGLTFBinary,
                                          std::shared_ptr<VRODriver> driver, std::function<void(std::shared_ptr<VRONode>, bool)> onFinish) {
