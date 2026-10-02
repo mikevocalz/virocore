@@ -1,0 +1,126 @@
+// Experimental Eskiu implementation of the v0.1 geometry validation contract.
+//
+// Cross-language entry points take pointers only. This intentionally avoids
+// aggregate-by-value C ABI at the Viro boundary.
+
+struct VROEngineByteView {
+    *uint8 data;
+    uint64 length;
+}
+
+struct VROEngineVertexAttribute {
+    uint32 semantic;
+    uint32 component_type;
+    uint32 component_count;
+    uint32 offset_bytes;
+}
+
+struct VROEngineGeometryDesc {
+    uint32 struct_size;
+    uint32 topology;
+    uint32 vertex_stride_bytes;
+    uint32 vertex_count;
+    uint32 index_type;
+    uint32 index_count;
+    uint32 attribute_count;
+    uint32 flags;
+    *VROEngineVertexAttribute attributes;
+    VROEngineByteView vertices;
+    VROEngineByteView indices;
+    uint64 geometry_id;
+    uint64 version;
+}
+
+struct VROEngineGeometryRangeUpdate {
+    uint32 struct_size;
+    uint32 stream_kind;
+    uint64 geometry_id;
+    uint64 base_version;
+    uint64 next_version;
+    uint64 offset_bytes;
+    VROEngineByteView bytes;
+}
+
+int viro_eskiu_geometry_validate(*VROEngineGeometryDesc desc) {
+    if (desc == null) {
+        return 2;
+    }
+    if (desc.struct_size < 88 ||
+        desc.topology < 1 ||
+        desc.topology > 5 ||
+        desc.vertex_stride_bytes == 0 ||
+        desc.vertex_count == 0 ||
+        desc.attribute_count == 0 ||
+        desc.attributes == null) {
+        return 2;
+    }
+
+    uint64 vertex_bytes =
+        (uint64)desc.vertex_stride_bytes * (uint64)desc.vertex_count;
+    if (desc.vertices.data == null || desc.vertices.length < vertex_bytes) {
+        return 2;
+    }
+
+    for (uint32 i = 0; i < desc.attribute_count; i += 1) {
+        VROEngineVertexAttribute attribute = desc.attributes[i];
+        if (attribute.component_count == 0 ||
+            attribute.offset_bytes >= desc.vertex_stride_bytes) {
+            return 2;
+        }
+    }
+
+    uint32 index_stride = 0;
+    if (desc.index_type == 0) {
+        index_stride = 0;
+    } else if (desc.index_type == 1) {
+        index_stride = 2;
+    } else if (desc.index_type == 2) {
+        index_stride = 4;
+    } else {
+        return 2;
+    }
+
+    if (desc.index_type == 0) {
+        if (desc.index_count != 0) {
+            return 2;
+        }
+    } else {
+        uint64 index_bytes =
+            (uint64)index_stride * (uint64)desc.index_count;
+        if (desc.indices.data == null || desc.indices.length < index_bytes) {
+            return 2;
+        }
+    }
+
+    return 0;
+}
+
+int viro_eskiu_geometry_range_validate(
+    *VROEngineGeometryDesc desc,
+    *VROEngineGeometryRangeUpdate update) {
+    if (viro_eskiu_geometry_validate(desc) != 0 || update == null) {
+        return 2;
+    }
+    if (update.struct_size < 56 ||
+        update.geometry_id != desc.geometry_id ||
+        update.base_version != desc.version ||
+        update.next_version <= update.base_version ||
+        update.stream_kind > 1 ||
+        update.bytes.data == null ||
+        update.bytes.length == 0) {
+        return 2;
+    }
+
+    uint64 total = desc.indices.length;
+    if (update.stream_kind == 0) {
+        total = desc.vertices.length;
+    }
+
+    if (update.offset_bytes > total) {
+        return 2;
+    }
+    if (update.bytes.length > total - update.offset_bytes) {
+        return 2;
+    }
+    return 0;
+}
