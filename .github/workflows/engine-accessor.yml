@@ -1,0 +1,17 @@
+name: Engine accessor materialize ABI
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineAccessorABI.*"
+      - "tests/extension/engine_accessor_test.cpp"
+      - "scripts/test-engine-accessor.sh"
+      - ".github/workflows/engine-accessor.yml"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/test-engine-accessor.sh
