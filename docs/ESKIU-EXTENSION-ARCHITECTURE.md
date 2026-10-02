@@ -6,18 +6,35 @@ Paired repository: `mikevocalz/viro`
 
 ## Purpose
 
-Prepare this ViroCore fork for incremental C++/Eskiu coexistence without coupling custom XR features to an unpublished Eskiu toolchain or ABI.
+Prepare this ViroCore fork for incremental C++/Eskiu coexistence using the published Eskiu v0.9.2 toolchain and native C ABI, without coupling custom XR features to ReactVision-internal module conventions.
 
 This document governs native implementation boundaries. The paired Viro document governs public React/TypeScript behavior.
 
+## Verified Eskiu contract
+
+The public Eskiu v0.9.2 ABI is explicit enough for a real integration scaffold:
+
+- Eskiu targets the platform's native C ABI through LLVM; there is no separate Eskiu calling convention.
+- `eskiuc file.esk -c -o file.o` emits a native object that can be linked by the host C/C++ toolchain.
+- Non-template top-level Eskiu functions keep their source symbol names.
+- `extern` declarations bind to exact C symbols.
+- C callbacks are supported; aggregate callbacks receive generated `__cabi_*` thunks when required by the target ABI.
+- Plain structs use the target's natural C layout; `packed struct` and `#pragma pack(N)` have specified C-compatible layouts.
+- Pointers lower to native opaque pointers and `const` has no ABI effect.
+- The documented C ABI covers AArch64, x86-64 SysV, Windows x64, ARM32/AAPCS, and 32-bit x86.
+
+Initial toolchain pin: **Eskiu v0.9.2**. The pin changes only through a dedicated toolchain PR with ABI smoke tests.
+
 ## Hard rule
 
-**Do not add Eskiu source, compiler flags, ABI declarations, allocator shims, or build steps based on inference.**
+**Do not infer ReactVision's production ViroCore module wiring from the language documentation.**
 
-The ReactVision native/platform MCP must be queried first for the current ViroCore/Eskiu integration details. Until then:
+We can safely add Eskiu source, object-file build steps, ABI declarations, and isolated experiments that follow the public v0.9.2 ABI. However, before replacing an existing production ViroCore module, the ReactVision native/platform MCP must still be queried for that module's current ownership, threading, build, and internal integration conventions.
+
+Until a module passes that production gate:
 - C++ is the reference implementation;
-- all new boundaries are language-neutral;
-- C-compatible data layout is preferred where a binary boundary is required;
+- all public/native boundaries remain language-neutral C ABI;
+- Eskiu experiments stay extension-owned and swappable;
 - internal C++ abstractions may remain idiomatic C++ as long as they do not leak across the boundary.
 
 ## Current fork areas that need isolation
@@ -191,9 +208,19 @@ Responsibilities:
 - cancellation;
 - peak-memory instrumentation.
 
-## First implementation milestone
+## First implementation milestones
 
-Before any Eskiu backend:
+### Milestone 0 — ABI proof
+
+1. Pin Eskiu v0.9.2.
+2. Compile a `.esk` file to a native object.
+3. Call Eskiu from C++.
+4. Call a C++ `extern "C"` callback from Eskiu.
+5. Pass a POD pose-like struct across the boundary.
+6. Run the proof in CI.
+7. Keep it completely outside production renderer code.
+
+### Milestone 1 — engine contract
 
 1. Add native contract version + backend diagnostics.
 2. Add C++ reference implementation.
@@ -204,7 +231,15 @@ Before any Eskiu backend:
 7. Route one surface/texture producer through the contract.
 8. Verify no public React API change.
 9. Benchmark old vs contract-routed C++ path.
-10. Only then begin backend substitution.
+
+### Milestone 2 — selective backend substitution
+
+Only after the target module's ReactVision native-MCP audit and baseline benchmark:
+1. add an Eskiu implementation behind the same C ABI;
+2. run old/new implementations side-by-side in tests where practical;
+3. compare memory, correctness, latency and frame-time;
+4. switch behind a feature flag;
+5. remove the old path only after cross-platform soak coverage.
 
 ## Candidate order for backend substitution
 
