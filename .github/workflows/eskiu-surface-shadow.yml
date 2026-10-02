@@ -8,7 +8,7 @@ on:
       - "tests/eskiu/surface_differential.cpp"
       - "scripts/test-eskiu-surface.sh"
       - "ViroRenderer/extension/VROEngineSurfaceABI.*"
-      - ".github/workflows/eskiu-surface.yml"
+      - ".github/workflows/eskiu-surface-shadow.yml"
 
 permissions:
   contents: read
