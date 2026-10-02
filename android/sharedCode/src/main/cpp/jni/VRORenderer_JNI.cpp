@@ -49,6 +49,7 @@
 #include "VRORenderer.h"
 #include "VROChoreographer.h"
 #include "VROEngineABI.h"
+#include "VROEngineBackendSelector.h"
 #include "ViroUtils_JNI.h"
 
 #if VRO_PLATFORM_ANDROID
@@ -58,6 +59,17 @@
 #endif
 
 extern "C" {
+
+VRO_METHOD(jint, nativeSetEngineBackendPreference)(VRO_ARGS jint domain, jint preference) {
+    return static_cast<jint>(viro_engine_backend_preference_set(
+        static_cast<VROEngineDomain>(domain),
+        static_cast<VROEngineBackendPreference>(preference)));
+}
+
+VRO_METHOD(jint, nativeGetEngineBackendPreference)(VRO_ARGS jint domain) {
+    return static_cast<jint>(viro_engine_backend_preference_get(
+        static_cast<VROEngineDomain>(domain)));
+}
 
 VRO_METHOD(jintArray, nativeQueryEngineAbi)(VRO_NO_ARGS) {
     VROEngineAbiInfo info{};
