@@ -1,0 +1,22 @@
+name: Engine input ABI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineInputABI.*"
+      - "tests/extension/engine_input_*"
+      - "scripts/test-engine-input.sh"
+      - ".github/workflows/engine-input.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  c-and-cpp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile C header probe and run bounded-ring tests
+        run: bash scripts/test-engine-input.sh
