@@ -6,11 +6,15 @@
 extern "C" {
 #endif
 
-#define VRO_ENGINE_CONTRACT_MAJOR 1u
-#define VRO_ENGINE_CONTRACT_MINOR 0u
+/*
+ * ABI 0.1 is already consumed by the React/TypeScript facade in
+ * components/Engine/ViroEngineContract.ts.
+ */
+#define VRO_ENGINE_ABI_MAJOR 0u
+#define VRO_ENGINE_ABI_MINOR 1u
+#define VRO_ENGINE_ABI_INFO_SIZE 24u
 
-typedef uint64_t VROEngineCapabilityBits;
-typedef uint32_t VROEngineBackend;
+typedef uint32_t VROEngineBackendKind;
 typedef int32_t VROEngineStatus;
 
 #define VRO_ENGINE_STATUS_OK 0
@@ -37,34 +41,39 @@ typedef int32_t VROEngineStatus;
 #define VRO_ENGINE_CAP_DYNAMIC_GEOMETRY     (1ull << 12)
 #define VRO_ENGINE_CAP_WEB_WASM             (1ull << 13)
 
-typedef struct VROEngineContractInfo {
-    uint32_t struct_size;
-    uint16_t major;
-    uint16_t minor;
-    VROEngineBackend backend;
-    uint32_t reserved0;
-    VROEngineCapabilityBits capabilities;
-    const char *backend_name;
-    const char *build_id;
-} VROEngineContractInfo;
-
-/**
- * Returns (major << 16) | minor.
+/*
+ * Keep this prefix ABI-stable. JS transports the 64-bit capability mask as two
+ * uint32 words because JavaScript numbers cannot represent arbitrary uint64.
+ *
+ * Layout:
+ *  0  uint32 struct_size
+ *  4  uint16 abi_major
+ *  6  uint16 abi_minor
+ *  8  uint32 backend_kind
+ * 12  uint32 reserved0
+ * 16  uint32 capabilities_low
+ * 20  uint32 capabilities_high
  */
+typedef struct VROEngineAbiInfo {
+    uint32_t struct_size;
+    uint16_t abi_major;
+    uint16_t abi_minor;
+    VROEngineBackendKind backend_kind;
+    uint32_t reserved0;
+    uint32_t capabilities_low;
+    uint32_t capabilities_high;
+} VROEngineAbiInfo;
+
 uint32_t vro_engine_contract_version(void);
 
-/**
- * Fills an ABI-stable snapshot for the current renderer backend.
- *
- * Callers must set out_info->struct_size to sizeof(VROEngineContractInfo).
- * backend_name/build_id are borrowed process-lifetime strings and must not be freed.
- */
-VROEngineStatus vro_engine_contract_get_info(VROEngineContractInfo *out_info);
+VROEngineStatus vro_engine_contract_query(VROEngineAbiInfo *out_info);
 
-/**
- * Returns 1 when every bit in required is supported, else 0.
- */
-int32_t vro_engine_contract_has_capabilities(VROEngineCapabilityBits required);
+int32_t vro_engine_contract_has_capabilities(
+    uint32_t required_low,
+    uint32_t required_high);
+
+const char *vro_engine_contract_backend_name(void);
+const char *vro_engine_contract_build_id(void);
 
 #ifdef __cplusplus
 }
