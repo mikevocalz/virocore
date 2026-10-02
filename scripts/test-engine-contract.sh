@@ -9,8 +9,14 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 INCLUDE="-I$ROOT/ViroRenderer/extension"
 
-"$CC" -std=c11 -Wall -Wextra -Werror $INCLUDE   -c "$ROOT/tests/extension/engine_abi_c_compile.c"   -o "$BUILD_DIR/engine_abi_c_compile.o"
+"$CC" -std=c11 -Wall -Wextra -Werror $INCLUDE \
+  -c "$ROOT/tests/extension/engine_abi_c_compile.c" \
+  -o "$BUILD_DIR/engine_abi_c_compile.o"
 
-"$CXX" -std=c++17 -Wall -Wextra -Werror $INCLUDE   "$ROOT/ViroRenderer/extension/VROEngineContract.cpp"   "$ROOT/tests/extension/engine_contract_test.cpp"   -o "$BUILD_DIR/engine_contract_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror $INCLUDE \
+  "$ROOT/ViroRenderer/extension/VROEngineContract.cpp" \
+  "$ROOT/tests/extension/engine_contract_test.cpp" \
+  "$BUILD_DIR/engine_abi_c_compile.o" \
+  -o "$BUILD_DIR/engine_contract_test"
 
 "$BUILD_DIR/engine_contract_test"
