@@ -1,0 +1,17 @@
+name: Engine backend selector
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineBackendSelector.*"
+      - "tests/extension/engine_backend_selector_test.cpp"
+      - "scripts/test-engine-backend-selector.sh"
+      - ".github/workflows/engine-backend-selector.yml"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/test-engine-backend-selector.sh
