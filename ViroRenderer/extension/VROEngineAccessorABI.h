@@ -35,7 +35,17 @@ typedef struct VROEngineAccessorMaterializeDesc {
     VROEngineMutableByteView output;
 } VROEngineAccessorMaterializeDesc;
 
+/*
+ * This ABI contains native pointers, so its frozen native layout differs by
+ * pointer width. The field order/meaning is stable; size follows the target C ABI.
+ */
+#if UINTPTR_MAX == UINT64_MAX
 #define VRO_ENGINE_ACCESSOR_MATERIALIZE_DESC_V0_1_SIZE 80u
+#elif UINTPTR_MAX == UINT32_MAX
+#define VRO_ENGINE_ACCESSOR_MATERIALIZE_DESC_V0_1_SIZE 72u
+#else
+#error "Unsupported pointer width for VROEngineAccessorMaterializeDesc"
+#endif
 
 VROEngineStatusCode viro_engine_accessor_materialize_validate(
     const VROEngineAccessorMaterializeDesc *desc);
