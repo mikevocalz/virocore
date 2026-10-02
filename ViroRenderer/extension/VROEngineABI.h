@@ -68,6 +68,12 @@ typedef struct VROEngineAbiInfo {
     uint64_t capabilities;
 } VROEngineAbiInfo;
 
+/*
+ * Frozen size of the v0.1 ABI-info prefix. Future minor versions may append
+ * fields but must not change the meaning or layout of these first 24 bytes.
+ */
+#define VRO_ENGINE_ABI_INFO_V0_1_SIZE 24u
+
 typedef struct VROEngineVec3 {
     float x;
     float y;
@@ -105,10 +111,12 @@ typedef struct VROEngineMutableByteView {
  * Caller contract:
  * - out_info must be non-null.
  * - out_info->struct_size is the caller's allocated size.
- * - sizes >= sizeof(VROEngineAbiInfo) are accepted.
- * - the implementation writes only sizeof(VROEngineAbiInfo) bytes, so a newer
- *   caller's tail remains untouched.
- * - on success, struct_size is replaced with the size understood by this binary.
+ * - sizes >= VRO_ENGINE_ABI_INFO_V0_1_SIZE are accepted.
+ * - the implementation writes min(caller_size, sizeof(VROEngineAbiInfo)) bytes.
+ * - a newer caller's unknown tail remains untouched.
+ * - an older caller can therefore consume the frozen v0.1 prefix after a minor
+ *   implementation update that only appends fields.
+ * - on success, struct_size is replaced with the full size understood by this binary.
  *
  * Threading: worker-safe; no renderer state is touched.
  * Ownership: no allocation; all values are copied into caller-owned storage.
@@ -130,6 +138,8 @@ uint32_t viro_engine_abi_version(void);
 } // extern "C"
 
 static_assert(sizeof(VROEngineHandle) == 8, "VROEngineHandle must remain 64-bit");
+static_assert(sizeof(VROEngineAbiInfo) >= VRO_ENGINE_ABI_INFO_V0_1_SIZE,
+              "VROEngineAbiInfo must retain the frozen v0.1 prefix");
 static_assert(sizeof(VROEngineVec3) == sizeof(float) * 3, "Unexpected VROEngineVec3 layout");
 static_assert(sizeof(VROEngineQuat) == sizeof(float) * 4, "Unexpected VROEngineQuat layout");
 #endif
