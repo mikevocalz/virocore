@@ -1,0 +1,22 @@
+name: Engine spatial ABI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineSpatialABI.*"
+      - "tests/extension/engine_spatial_*"
+      - "scripts/test-engine-spatial.sh"
+      - ".github/workflows/engine-spatial.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  c-and-cpp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify spatial ABI and rigid transform math
+        run: bash scripts/test-engine-spatial.sh
