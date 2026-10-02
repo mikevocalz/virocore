@@ -1,0 +1,49 @@
+struct VROEngineByteView { *uint8 data; uint64 length; }
+struct VROEngineMediaPlane {
+    uint32 struct_size; uint32 plane_index; uint32 width; uint32 height;
+    uint32 row_stride_bytes; uint32 pixel_stride_bytes; uint32 flags; uint32 reserved0;
+    VROEngineByteView bytes;
+}
+struct VROEngineMediaFrame {
+    uint32 struct_size; uint32 width; uint32 height; uint32 pixel_format;
+    uint32 color_space; uint32 color_range; uint32 plane_count; uint32 ownership;
+    uint64 frame_id; uint64 timestamp_ns; uint64 surface; uint64 lease;
+    *VROEngineMediaPlane planes; uint32 flags; uint32 reserved0;
+}
+
+int viro_eskiu_media_plane_validate(*VROEngineMediaPlane plane) {
+    if (plane == null || plane.struct_size < 48 || plane.width == 0 || plane.height == 0 ||
+        plane.row_stride_bytes == 0 || plane.pixel_stride_bytes == 0 || plane.bytes.data == null) return 2;
+    uint64 minimum = (uint64)plane.row_stride_bytes * (uint64)plane.height;
+    if (plane.bytes.length < minimum) return 2;
+    return 0;
+}
+
+int viro_eskiu_media_frame_validate(*VROEngineMediaFrame frame) {
+    if (frame == null || frame.struct_size < 80 || frame.width == 0 || frame.height == 0 ||
+        frame.pixel_format < 1 || frame.pixel_format > 4 || frame.color_space > 4 ||
+        frame.color_range > 2 || frame.ownership < 1 || frame.ownership > 3 || frame.plane_count > 4) return 2;
+    if (frame.ownership == 1 && frame.lease != 0) return 2;
+    if (frame.ownership == 2 && frame.lease == 0) return 2;
+    if (frame.plane_count == 0) {
+        if (frame.surface != 0) return 0;
+        return 2;
+    }
+    if (frame.planes == null) return 2;
+    for (uint32 i = 0; i < frame.plane_count; i += 1) {
+        if (frame.planes[i].plane_index != i || viro_eskiu_media_plane_validate(&frame.planes[i]) != 0) return 2;
+    }
+    return 0;
+}
+
+int viro_eskiu_media_frame_payload_bytes(*VROEngineMediaFrame frame, *uint64 out_bytes) {
+    if (out_bytes == null || viro_eskiu_media_frame_validate(frame) != 0) return 2;
+    uint64 total = 0;
+    for (uint32 i = 0; i < frame.plane_count; i += 1) {
+        uint64 len = frame.planes[i].bytes.length;
+        if (len > 0xffffffffffffffff - total) return 2;
+        total += len;
+    }
+    *out_bytes = total;
+    return 0;
+}
