@@ -1,0 +1,4 @@
+// Apple target object-emission probe. No runtime or libc dependency.
+int viro_eskiu_apple_probe() {
+    return 42;
+}
