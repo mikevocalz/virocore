@@ -52,24 +52,24 @@ bool viro_eskiu_transform_valid(*VROEngineRigidTransform transform) {
         !viro_eskiu_float_finite(transform.rotation.w)) {
         return false;
     }
-    double n2 =
-        (double)transform.rotation.x * (double)transform.rotation.x +
-        (double)transform.rotation.y * (double)transform.rotation.y +
-        (double)transform.rotation.z * (double)transform.rotation.z +
-        (double)transform.rotation.w * (double)transform.rotation.w;
-    return n2 == n2 && n2 > 0.0 && n2 <= 1.7976931348623157e308;
+    float n2 =
+        transform.rotation.x * transform.rotation.x +
+        transform.rotation.y * transform.rotation.y +
+        transform.rotation.z * transform.rotation.z +
+        transform.rotation.w * transform.rotation.w;
+    return viro_eskiu_float_finite(n2) && n2 > 0.0;
 }
 
 VROEngineQuat viro_eskiu_quat_normalize(VROEngineQuat q) {
-    double n2 =
-        (double)q.x * (double)q.x +
-        (double)q.y * (double)q.y +
-        (double)q.z * (double)q.z +
-        (double)q.w * (double)q.w;
-    if (n2 != n2 || n2 <= 0.0 || n2 > 1.7976931348623157e308) {
+    float n2 =
+        q.x * q.x +
+        q.y * q.y +
+        q.z * q.z +
+        q.w * q.w;
+    if (!viro_eskiu_float_finite(n2) || n2 <= 0.0) {
         return VROEngineQuat{0.0, 0.0, 0.0, 1.0};
     }
-    float inv = (float)(1.0 / sqrt(n2));
+    float inv = 1.0 / sqrt(n2);
     return VROEngineQuat{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
 }
 
