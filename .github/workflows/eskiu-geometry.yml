@@ -1,0 +1,38 @@
+name: Eskiu geometry differential pilot
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "experimental/eskiu/VROEngineGeometryEskiu.esk"
+      - "tests/eskiu/geometry_differential.cpp"
+      - "scripts/test-eskiu-geometry.sh"
+      - ".github/workflows/eskiu-geometry.yml"
+      - "docs/ESKIU-GEOMETRY-PILOT.md"
+      - "ViroRenderer/extension/VROEngineGeometryABI.*"
+
+permissions:
+  contents: read
+
+jobs:
+  cpp-vs-eskiu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ESKIU_VERSION: "0.9.2"
+      ESKIU_ARCHIVE_SHA256: "46316ce1553489045aec1cf9fbc432f551cda4850b90d200a7b4c73bc835e8ec"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Eskiu compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/eskiuc-linux-x86_64.tar.gz"
+          prefix="$RUNNER_TEMP/eskiu"
+          curl -fsSL             "https://github.com/doranteseduardo/eskiu/releases/download/v${ESKIU_VERSION}/eskiuc-linux-x86_64.tar.gz"             -o "$archive"
+          echo "${ESKIU_ARCHIVE_SHA256}  $archive" | sha256sum -c -
+          mkdir -p "$prefix"
+          tar -xzf "$archive" -C "$prefix"
+          echo "ESKIUC=$prefix/bin/eskiuc" >> "$GITHUB_ENV"
+      - name: Differential geometry contract test
+        run: bash scripts/test-eskiu-geometry.sh
