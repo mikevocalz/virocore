@@ -139,6 +139,7 @@ SET( VIRO_CORE_SRC
              ${VIRO_RENDERER_SRC}/extension/VROEngineSurfaceABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineMediaABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineGeometryABI.cpp
+              ${VIRO_RENDERER_SRC}/extension/VROEngineGeometryBackend.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineWorldMeshABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineAccessorABI.cpp
      ${VIRO_RENDERER_SRC}/VRODynamicGeometry.cpp

@@ -12,6 +12,35 @@ set(VIRO_RENDERER_SRC     ${CMAKE_SOURCE_DIR}/../../ViroRenderer)
 set(VIRO_CAPI_SRC         ${CMAKE_SOURCE_DIR}/../../ViroRenderer/capi)
 set(VIRO_ANDROID_SRC      ${CMAKE_SOURCE_DIR}/../sharedCode/src/main/cpp)
 
+# Optional production Eskiu geometry backend. C++ stays the default and
+# builds without Eskiu unless explicitly enabled. Quest/PICO arm64 and x86_64
+# Android targets are supported by Eskiu 0.9.2's native LLVM backends.
+option(VIRO_ENABLE_ESKIU_GEOMETRY "Compile the Eskiu geometry backend into viro_renderer" OFF)
+set(VIRO_ESKIU_GEOMETRY_OBJECT "")
+if(VIRO_ENABLE_ESKIU_GEOMETRY)
+    find_program(ESKIUC_EXECUTABLE NAMES eskiuc REQUIRED)
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+        set(VIRO_ESKIU_TARGET_TRIPLE "aarch64-linux-android")
+    elseif(ANDROID_ABI STREQUAL "x86_64")
+        set(VIRO_ESKIU_TARGET_TRIPLE "x86_64-linux-android")
+    else()
+        message(FATAL_ERROR "VIRO_ENABLE_ESKIU_GEOMETRY supports arm64-v8a and x86_64; got ${ANDROID_ABI}")
+    endif()
+    set(VIRO_ESKIU_GEOMETRY_OBJECT
+        "${CMAKE_CURRENT_BINARY_DIR}/eskiu/geometry_${ANDROID_ABI}.o")
+    add_custom_command(
+        OUTPUT "${VIRO_ESKIU_GEOMETRY_OBJECT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/eskiu"
+        COMMAND ${ESKIUC_EXECUTABLE}
+                "${CMAKE_SOURCE_DIR}/../../experimental/eskiu/VROEngineGeometryEskiu.esk"
+                -c -O2 --target "${VIRO_ESKIU_TARGET_TRIPLE}" --reloc pic
+                -o "${VIRO_ESKIU_GEOMETRY_OBJECT}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/../../experimental/eskiu/VROEngineGeometryEskiu.esk"
+        VERBATIM)
+    set_source_files_properties("${VIRO_ESKIU_GEOMETRY_OBJECT}"
+        PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+endif()
+
 include_directories(${VIRO_RENDERER_SRC}
                     ${VIRO_RENDERER_SRC}/extension
                     ${VIRO_CAPI_SRC}
@@ -198,6 +227,8 @@ add_library( # Sets the name of the library.
              ${VIRO_RENDERER_SRC}/extension/VROEngineSurfaceABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineMediaABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineGeometryABI.cpp
+             ${VIRO_RENDERER_SRC}/extension/VROEngineGeometryBackend.cpp
+             ${VIRO_ESKIU_GEOMETRY_OBJECT}
              ${VIRO_RENDERER_SRC}/extension/VROEngineWorldMeshABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineAccessorABI.cpp
              ${VIRO_RENDERER_SRC}/VRODynamicGeometry.cpp
@@ -543,3 +574,7 @@ target_link_libraries( # Specifies the target library.
                        ${lib-z}
                        "-Wl,-z,max-page-size=16384"
         )
+
+if(VIRO_ENABLE_ESKIU_GEOMETRY)
+    target_compile_definitions(viro_renderer PRIVATE VRO_ENGINE_ESKIU_GEOMETRY_AVAILABLE=1)
+endif()

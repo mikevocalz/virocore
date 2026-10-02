@@ -87,7 +87,8 @@ int viro_eskiu_geometry_validate(*VROEngineGeometryDesc desc) {
     } else {
         uint64 index_bytes =
             (uint64)index_stride * (uint64)desc.index_count;
-        if (desc.indices.data == null || desc.indices.length < index_bytes) {
+        if ((index_bytes != 0 && desc.indices.data == null) ||
+            desc.indices.length < index_bytes) {
             return 2;
         }
     }
@@ -121,6 +122,26 @@ int viro_eskiu_geometry_range_validate(
     }
     if (update.bytes.length > total - update.offset_bytes) {
         return 2;
+    }
+    return 0;
+}
+
+int viro_eskiu_geometry_pad_copy(
+    *uint8 active_data,
+    uint64 active_bytes,
+    *uint8 output_data,
+    uint64 output_bytes) {
+    if (output_data == null ||
+        output_bytes < active_bytes ||
+        (active_bytes != 0 && active_data == null)) {
+        return 2;
+    }
+
+    for (uint64 i = 0; i < active_bytes; i += 1) {
+        output_data[i] = active_data[i];
+    }
+    for (uint64 i = active_bytes; i < output_bytes; i += 1) {
+        output_data[i] = 0;
     }
     return 0;
 }

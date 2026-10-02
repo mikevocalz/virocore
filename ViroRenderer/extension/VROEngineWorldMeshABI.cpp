@@ -3,6 +3,7 @@
 //
 
 #include "VROEngineWorldMeshABI.h"
+#include "VROEngineGeometryBackend.h"
 
 #include <algorithm>
 #include <atomic>
@@ -55,7 +56,7 @@ extern "C" VROEngineStatusCode viro_engine_world_mesh_chunk_validate(
         chunk->geometry.topology != VRO_ENGINE_TOPOLOGY_TRIANGLES ||
         chunk->geometry.index_type == VRO_ENGINE_INDEX_NONE ||
         (chunk->geometry.index_count % 3u) != 0u ||
-        viro_engine_geometry_validate(&chunk->geometry) != VRO_ENGINE_STATUS_OK) {
+        viro_engine_geometry_validate_selected(&chunk->geometry) != VRO_ENGINE_STATUS_OK) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
 

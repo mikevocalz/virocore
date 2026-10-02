@@ -93,6 +93,17 @@ VROEngineStatusCode viro_engine_geometry_range_validate(
     const VROEngineGeometryDesc *desc,
     const VROEngineGeometryRangeUpdate *update);
 
+/*
+ * Copy active geometry bytes into caller-owned reusable storage and zero the
+ * unused tail. This is the language-neutral buffer-preparation primitive used
+ * by dynamic geometry before VROData/GPU upload.
+ */
+VROEngineStatusCode viro_engine_geometry_pad_copy(
+    const uint8_t *active_data,
+    uint64_t active_bytes,
+    uint8_t *output_data,
+    uint64_t output_bytes);
+
 #ifdef __cplusplus
 } // extern "C"
 
