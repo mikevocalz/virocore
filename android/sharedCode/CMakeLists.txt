@@ -192,6 +192,7 @@ add_library( # Sets the name of the library.
              ${VIRO_RENDERER_SRC}/extension/VROEngineContract.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSpatialABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSurfaceABI.cpp
+             ${VIRO_RENDERER_SRC}/extension/VROEngineGeometryABI.cpp
              ${VIRO_RENDERER_SRC}/VRODynamicGeometry.cpp
              ${VIRO_RENDERER_SRC}/VRODynamicMeshNode.cpp
              ${VIRO_RENDERER_SRC}/VROInputState.cpp
