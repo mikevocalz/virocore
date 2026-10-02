@@ -131,7 +131,8 @@ SET( VIRO_CORE_SRC
      ${VIRO_RENDERER_SRC}/VROGeometry.cpp
      ${VIRO_RENDERER_SRC}/VROGeometryElement.cpp
      ${VIRO_RENDERER_SRC}/VROGeometrySource.cpp
-     ${VIRO_RENDERER_SRC}/VRODynamicGeometry.cpp
+     ${VIRO_RENDERER_SRC}/VROEngineContract.cpp
+             ${VIRO_RENDERER_SRC}/VRODynamicGeometry.cpp
      ${VIRO_RENDERER_SRC}/VRODynamicMeshNode.cpp
      ${VIRO_RENDERER_SRC}/VROInputState.cpp
      ${VIRO_RENDERER_SRC}/VROVirtualControllerRegistry.cpp
@@ -406,7 +407,12 @@ ENDIF()
 MESSAGE(STATUS "VIRO_WEB_BUILD_ID:     ${VIRO_WEB_BUILD_ID}")
 
 ADD_EXECUTABLE       (viro_web ${VIRO_CORE_SRC} src/cpp/VROSceneWeb.cpp)
-TARGET_COMPILE_DEFINITIONS(viro_web PRIVATE VIRO_WEB_BUILD_ID="${VIRO_WEB_BUILD_ID}")
+TARGET_COMPILE_DEFINITIONS(viro_web PRIVATE
+                      VIRO_WEB_BUILD_ID="${VIRO_WEB_BUILD_ID}"
+                      VRO_ENGINE_BUILD_ID="${VIRO_WEB_BUILD_ID}"
+                      VRO_ENGINE_BACKEND_KIND=3
+                      VRO_ENGINE_BACKEND_NAME="wasm"
+                      VRO_ENGINE_CAPABILITIES=12288ull)
 SET_TARGET_PROPERTIES(viro_web PROPERTIES
                       LINK_FLAGS ${VIRO_WEB_LINK_FLAGS}
                       OUTPUT_NAME "viro-web"
