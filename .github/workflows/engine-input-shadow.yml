@@ -1,0 +1,22 @@
+name: Engine input shadow adapter
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineInputShadow.*"
+      - "tests/extension/engine_input_shadow_test.cpp"
+      - "scripts/test-engine-input-shadow.sh"
+      - ".github/workflows/engine-input-shadow.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cxx:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Viro math -> engine input shadow mapping
+        run: bash scripts/test-engine-input-shadow.sh

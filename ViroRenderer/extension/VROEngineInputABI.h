@@ -84,7 +84,7 @@ typedef struct VROEngineInputSample {
     VROEngineInputPayload payload;
 } VROEngineInputSample;
 
-#define VRO_ENGINE_INPUT_SAMPLE_V0_1_SIZE 96u
+#define VRO_ENGINE_INPUT_SAMPLE_V0_1_SIZE ((uint32_t)sizeof(VROEngineInputSample))
 
 typedef struct VROEngineInputRing VROEngineInputRing;
 
