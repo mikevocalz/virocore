@@ -48,6 +48,7 @@
 #include "Camera_JNI.h"
 #include "VRORenderer.h"
 #include "VROChoreographer.h"
+#include "VROEngineABI.h"
 #include "ViroUtils_JNI.h"
 
 #if VRO_PLATFORM_ANDROID
@@ -58,7 +59,7 @@
 
 extern "C" {
 
-VRO_METHOD(jintArray, nativeQueryEngineAbi)(VRO_ARGS) {
+VRO_METHOD(jintArray, nativeQueryEngineAbi)(VRO_NO_ARGS) {
     VROEngineAbiInfo info{};
     info.struct_size = static_cast<uint32_t>(sizeof(info));
     if (viro_engine_query_abi(&info) != VRO_ENGINE_STATUS_OK) {
