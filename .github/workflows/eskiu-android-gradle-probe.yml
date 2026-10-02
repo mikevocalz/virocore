@@ -1,0 +1,88 @@
+name: Eskiu Android JNI + Gradle probe
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tools/eskiu/android-probe/**"
+      - "tests/eskiu/android_target_probe.esk"
+      - "scripts/verify-16kb-alignment.py"
+      - ".github/workflows/eskiu-android-gradle-probe.yml"
+      - "docs/ESKIU-ANDROID-ENABLEMENT.md"
+
+permissions:
+  contents: read
+
+jobs:
+  gradle-aar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ESKIU_VERSION: "0.9.2"
+      ESKIU_ARCHIVE_SHA256: "46316ce1553489045aec1cf9fbc432f551cda4850b90d200a7b4c73bc835e8ec"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Android SDK/NDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-33" \
+            "cmake;3.22.1" \
+            "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Install pinned Eskiu compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/eskiuc-linux-x86_64.tar.gz"
+          prefix="$RUNNER_TEMP/eskiu"
+          curl -fsSL \
+            "https://github.com/doranteseduardo/eskiu/releases/download/v${ESKIU_VERSION}/eskiuc-linux-x86_64.tar.gz" \
+            -o "$archive"
+          echo "${ESKIU_ARCHIVE_SHA256}  $archive" | sha256sum -c -
+          mkdir -p "$prefix"
+          tar -xzf "$archive" -C "$prefix"
+          echo "ESKIUC=$prefix/bin/eskiuc" >> "$GITHUB_ENV"
+
+      - name: Build probe AAR through Gradle + NDK CMake
+        run: |
+          ./android/gradlew \
+            -p tools/eskiu/android-probe \
+            :probe:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Verify packaged JNI library and 16 KB alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          aar="tools/eskiu/android-probe/probe/build/outputs/aar/probe-debug.aar"
+          test -f "$aar"
+          unzip -l "$aar" | grep "jni/arm64-v8a/libviro_eskiu_probe.so"
+          python3 scripts/verify-16kb-alignment.py "$aar" --abi arm64-v8a
+
+      - name: Verify Eskiu object and linked JNI closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_root="tools/eskiu/android-probe/probe/.cxx/Debug"
+          obj="$(find "$build_root" -name "android_target_probe.o" -print -quit)"
+          so="$(find "$build_root" -path "*/obj/arm64-v8a/libviro_eskiu_probe.so" -print -quit)"
+          test -n "$obj"
+          test -f "$obj"
+          test -n "$so"
+          test -f "$so"
+          readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          echo "Inspecting generated Eskiu object: $obj"
+          "$readelf" -h "$obj" | grep -E "Class:.*ELF64"
+          "$readelf" -h "$obj" | grep -E "Machine:.*AArch64"
+          echo "Checking final JNI library for unresolved project symbols"
+          if "$readelf" -Ws "$so" | grep " UND " | grep -E "viro_eskiu_android_probe|Java_com_reactvision_eskiuprobe_Probe_nativeProbe"; then
+            echo "Project symbol remained unresolved after JNI link" >&2
+            exit 1
+          fi
+          echo "Eskiu Android object + JNI shared-library closure verified"
