@@ -1,0 +1,22 @@
+name: Engine subsystem metrics
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineSubsystemMetrics.*"
+      - "tests/extension/engine_subsystem_metrics_*"
+      - "scripts/test-engine-subsystem-metrics.sh"
+      - ".github/workflows/engine-subsystem-metrics.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  metrics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify named subsystem metrics
+        run: bash scripts/test-engine-subsystem-metrics.sh
