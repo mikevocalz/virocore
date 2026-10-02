@@ -190,6 +190,7 @@ add_library( # Sets the name of the library.
              ${VIRO_RENDERER_SRC}/VROGeometryElement.cpp
              ${VIRO_RENDERER_SRC}/VROGeometrySource.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineContract.cpp
+             ${VIRO_RENDERER_SRC}/extension/VROEngineMetrics.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSpatialABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSurfaceABI.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineGeometryABI.cpp
