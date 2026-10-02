@@ -9,7 +9,18 @@
 namespace {
 
 bool validTransform(const VROEngineRigidTransform *t) {
-    return t != nullptr && t->struct_size >= VRO_ENGINE_RIGID_TRANSFORM_V0_1_SIZE;
+    if (t == nullptr || t->struct_size < VRO_ENGINE_RIGID_TRANSFORM_V0_1_SIZE) {
+        return false;
+    }
+    const auto &p = t->translation;
+    const auto &q = t->rotation;
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        !std::isfinite(q.x) || !std::isfinite(q.y) ||
+        !std::isfinite(q.z) || !std::isfinite(q.w)) {
+        return false;
+    }
+    const float n2 = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w;
+    return std::isfinite(n2) && n2 > 0.0f;
 }
 
 VROEngineQuat normalize(VROEngineQuat q) {
@@ -87,13 +98,18 @@ extern "C" VROEngineStatusCode viro_engine_transform_compose(
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
 
-    out_parent_from_child->struct_size = sizeof(VROEngineRigidTransform);
-    out_parent_from_child->flags = parent_from_mid->flags | mid_from_child->flags;
-    out_parent_from_child->rotation =
-        multiply(parent_from_mid->rotation, mid_from_child->rotation);
-    out_parent_from_child->translation = add(
-        parent_from_mid->translation,
-        rotate(parent_from_mid->rotation, mid_from_child->translation));
+    // Snapshot both inputs before writing the output so in-place composition is safe.
+    const VROEngineRigidTransform parent = *parent_from_mid;
+    const VROEngineRigidTransform child = *mid_from_child;
+
+    VROEngineRigidTransform result{};
+    result.struct_size = sizeof(result);
+    result.flags = parent.flags | child.flags;
+    result.rotation = multiply(parent.rotation, child.rotation);
+    result.translation = add(
+        parent.translation,
+        rotate(parent.rotation, child.translation));
+    *out_parent_from_child = result;
     return VRO_ENGINE_STATUS_OK;
 }
 
