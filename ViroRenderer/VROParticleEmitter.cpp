@@ -32,6 +32,7 @@
 #include "VROMaterial.h"
 #include "VROPlatformUtil.h"
 #include "extension/VROEngineMetrics.h"
+#include "extension/VROEngineSubsystemMetrics.h"
 #if VRO_METAL
 #  include "VROParticleUBOMetal.h"
 #else
@@ -181,6 +182,9 @@ void VROParticleEmitter::setPause(bool pause) {
 void VROParticleEmitter::update(const VRORenderContext &context, const VROMatrix4f &computedTransform) {
     VRO_ENGINE_METRIC_SCOPE_TIMER(viroParticleUpdateTimer);
     VRO_ENGINE_METRIC_CALL();
+    VRO_ENGINE_SUBSYSTEM_SCOPE_TIMER(VRO_ENGINE_SUBSYSTEM_PARTICLES, viroParticleSubsystemTimer);
+    VRO_ENGINE_SUBSYSTEM_WORK(VRO_ENGINE_SUBSYSTEM_PARTICLES, _particles.size());
+    VRO_ENGINE_SUBSYSTEM_WORK(VRO_ENGINE_SUBSYSTEM_PARTICLES, _zombieParticles.size());
     _lastComputedTransform = computedTransform;
     double currentTime = VROTimeCurrentMillis();
 
