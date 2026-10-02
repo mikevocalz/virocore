@@ -43,6 +43,12 @@ import java.lang.ref.WeakReference;
  */
 public class Renderer {
 
+    static {
+        // Engine ABI queries are valid before a ViroView exists, so Renderer
+        // must make its own JNI library availability guarantee.
+        System.loadLibrary("viro_renderer");
+    }
+
     protected long mNativeRef;
     private CameraListener mCameraListener;
     private FrameListener mFrameListener;
