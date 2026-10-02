@@ -9,16 +9,54 @@
   },
   "cases": {
     "position": {
-      "public": [0, 0, -1.5],
-      "lens": [0, 0, -150]
+      "public": [
+        0,
+        0,
+        -1.5
+      ],
+      "lens": [
+        0,
+        0,
+        -150
+      ]
     },
     "rotationY90": {
-      "eulerDegrees": [0, 90, 0],
-      "quaternion": [0, 0.7071067811865476, 0, 0.7071067811865476]
+      "eulerDegrees": [
+        0,
+        90,
+        0
+      ],
+      "quaternion": [
+        0,
+        0.7071067811865476,
+        0,
+        0.7071067811865476
+      ]
+    },
+    "rotationMixed": {
+      "eulerDegrees": [
+        20,
+        30,
+        40
+      ],
+      "quaternion": [
+        0.0704393377846027,
+        0.29688290455629096,
+        0.283114052808671,
+        0.9092553402520854
+      ]
     },
     "worldQuery": {
-      "lensCentimeters": [100, 200, -503.2981872558594],
-      "portableMeters": [1, 2, -5.032981872558594]
+      "lensCentimeters": [
+        100,
+        200,
+        -503.2981872558594
+      ],
+      "portableMeters": [
+        1,
+        2,
+        -5.032981872558594
+      ]
     },
     "polyline": {
       "thicknessMeters": 0.008,
