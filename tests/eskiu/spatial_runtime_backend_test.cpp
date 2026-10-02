@@ -108,6 +108,32 @@ bool runBackend(
             VRO_ENGINE_STATUS_INVALID_ARGUMENT,
         "nan confidence rejected");
 
+    // The largest finite float is valid at the ABI boundary. A rounded
+    // double-precision FLT_MAX literal must not reject it in one backend.
+    for (float boundary : {FLT_MAX, -FLT_MAX}) {
+        frame.confidence = boundary;
+        ok &= expect(
+            viro_engine_shared_frame_validate_selected(&frame) ==
+                VRO_ENGINE_STATUS_OK,
+            "finite float boundary confidence accepted");
+        auto boundaryTransform = parent;
+        boundaryTransform.translation.x = boundary;
+        VROEngineVec3 origin{};
+        VROEngineVec3 boundaryPoint{};
+        ok &= expect(
+            viro_engine_transform_point_selected(
+                &boundaryTransform, &origin, &boundaryPoint) ==
+                VRO_ENGINE_STATUS_OK && boundaryPoint.x == boundary,
+            "finite float boundary translation accepted");
+    }
+    for (float nonfinite : {INFINITY, -INFINITY, std::nanf("")}) {
+        frame.confidence = nonfinite;
+        ok &= expect(
+            viro_engine_shared_frame_validate_selected(&frame) ==
+                VRO_ENGINE_STATUS_INVALID_ARGUMENT,
+            "nonfinite confidence rejected");
+    }
+
     return ok;
 }
 
