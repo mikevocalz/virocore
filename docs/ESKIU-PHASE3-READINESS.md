@@ -21,13 +21,14 @@ The fork now has:
 - portable XR semantic conformance;
 - profiling gates for physics, particles, post-processing, glTF, world mesh and media.
 
-The remaining repository rollout work is tracked by the open backend-selector and
-accessor-materialization PR stack. No public JSX redesign is required by those changes.
+The repository rollout stack is now landed. The backend selector, accessor-materialization ABI,
+Eskiu differential shadow, and production C++ glTF adapter are all on `main`. No public JSX
+redesign was required.
 
 ## What "complete" means at repository level
 
-Repository completion means every production promotion prerequisite that can be
-implemented without a physical target is present:
+Repository completion is now achieved: every production promotion prerequisite that can be
+implemented without per-device evidence is present:
 
 1. stable ABI;
 2. C++ reference behavior;
@@ -36,7 +37,8 @@ implemented without a physical target is present:
 5. instrumentation;
 6. reproducible benchmark schema;
 7. CI target/build validation;
-8. public API compatibility.
+8. public API compatibility;
+9. glTF accessor transient-buffer contract + Eskiu differential shadow + C++ production adapter.
 
 It does **not** mean an unmeasured renderer subsystem is switched to Eskiu by default.
 
