@@ -197,6 +197,17 @@ public class Renderer {
     public String[] getRuntimeCapabilities() {
         return nativeGetRuntimeCapabilities(mNativeRef);
     }
+    /**
+     * Language-neutral engine ABI snapshot.
+     *
+     * Shape: [structSize, abiMajor, abiMinor, backendKind, capabilitiesLow, capabilitiesHigh].
+     * Capability words are transported separately so JavaScript callers can preserve uint64 bits.
+     * This query is renderer-independent and safe before a view/session exists.
+     */
+    public static int[] queryEngineAbi() {
+        return nativeQueryEngineAbi();
+    }
+
     /* ----------     Common lifecycle methods    ---------- */
 
     public void destroy() {
@@ -378,6 +389,8 @@ public class Renderer {
     void setBloomEnabled(boolean enabled) { nativeSetBloomEnabled(mNativeRef, enabled); }
 
     /* ----------     Native methods    ---------- */
+
+    private static native int[] nativeQueryEngineAbi();
 
     private native long nativeCreateRendererGVR(ClassLoader appClassLoader, Context context,
                                                 AssetManager assets, PlatformUtil platformUtil, long nativeGvrContext,
