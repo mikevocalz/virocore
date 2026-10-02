@@ -72,7 +72,7 @@ typedef struct VROEngineGeometryDesc {
     uint64_t version;
 } VROEngineGeometryDesc;
 
-#define VRO_ENGINE_GEOMETRY_DESC_V0_1_SIZE 80u
+#define VRO_ENGINE_GEOMETRY_DESC_V0_1_SIZE 88u
 
 typedef struct VROEngineGeometryRangeUpdate {
     uint32_t struct_size;
@@ -99,7 +99,7 @@ VROEngineStatusCode viro_engine_geometry_range_validate(
 static_assert(sizeof(VROEngineVertexAttribute) == 16,
               "Vertex attribute ABI v0.1 must stay 16 bytes");
 static_assert(sizeof(VROEngineGeometryDesc) == VRO_ENGINE_GEOMETRY_DESC_V0_1_SIZE,
-              "Geometry descriptor ABI v0.1 must stay 80 bytes");
+              "Geometry descriptor ABI v0.1 must stay 88 bytes");
 static_assert(sizeof(VROEngineGeometryRangeUpdate) ==
                   VRO_ENGINE_GEOMETRY_RANGE_UPDATE_V0_1_SIZE,
               "Geometry range ABI v0.1 must stay 56 bytes");
