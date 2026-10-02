@@ -58,6 +58,15 @@ int main() {
     ok &= expect(close(roundtrip.x,p.x) && close(roundtrip.y,p.y) && close(roundtrip.z,p.z),
                  "roundtrip");
 
+    // In-place composition must be equivalent to out-of-place composition.
+    auto aliasedParent = worldFromParent;
+    ok &= expect(viro_engine_transform_compose(
+        &aliasedParent, &parentFromChild, &aliasedParent) == VRO_ENGINE_STATUS_OK,
+        "aliased compose");
+    ok &= expect(close(aliasedParent.translation.x, worldFromChild.translation.x) &&
+                 close(aliasedParent.translation.y, worldFromChild.translation.y),
+                 "aliased compose translation");
+
     VROEngineSharedFrame frame{};
     frame.struct_size = sizeof(frame);
     frame.tracking_state = VRO_ENGINE_TRACKING_NORMAL;
@@ -73,6 +82,18 @@ int main() {
     ok &= expect(viro_engine_shared_frame_validate(&frame) ==
                      VRO_ENGINE_STATUS_INVALID_ARGUMENT,
                  "invalid nested transform");
+
+    frame.local_from_shared = worldFromChild;
+    frame.local_from_shared.translation.x = NAN;
+    ok &= expect(viro_engine_shared_frame_validate(&frame) ==
+                     VRO_ENGINE_STATUS_INVALID_ARGUMENT,
+                 "non-finite translation rejected");
+
+    frame.local_from_shared = worldFromChild;
+    frame.local_from_shared.rotation = {0,0,0,0};
+    ok &= expect(viro_engine_shared_frame_validate(&frame) ==
+                     VRO_ENGINE_STATUS_INVALID_ARGUMENT,
+                 "degenerate quaternion rejected");
 
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
