@@ -1,0 +1,94 @@
+struct VROEngineMutableByteView { *uint8 data; uint64 length; }
+
+struct VROEngineAccessorMaterializeDesc {
+    uint32 struct_size;
+    uint32 element_size;
+    uint64 element_count;
+    *uint8 base_data;
+    uint64 base_stride;
+    uint32 sparse_index_type;
+    uint32 reserved0;
+    uint64 sparse_count;
+    *uint8 sparse_indices;
+    *uint8 sparse_values;
+    VROEngineMutableByteView output;
+}
+
+uint64 viro_eskiu_sparse_index_at(*VROEngineAccessorMaterializeDesc desc, uint64 i) {
+    if (desc.sparse_index_type == 1) {
+        return (uint64)desc.sparse_indices[i];
+    }
+    if (desc.sparse_index_type == 2) {
+        uint64 o = i * 2;
+        return (uint64)desc.sparse_indices[o] |
+               ((uint64)desc.sparse_indices[o + 1] << 8);
+    }
+    uint64 o = i * 4;
+    return (uint64)desc.sparse_indices[o] |
+           ((uint64)desc.sparse_indices[o + 1] << 8) |
+           ((uint64)desc.sparse_indices[o + 2] << 16) |
+           ((uint64)desc.sparse_indices[o + 3] << 24);
+}
+
+int viro_eskiu_accessor_materialize_validate(*VROEngineAccessorMaterializeDesc desc) {
+    if (desc == null || desc.struct_size < 80 || desc.element_size == 0 ||
+        desc.element_count == 0 || desc.output.data == null) {
+        return 2;
+    }
+    uint64 max = 0xffffffffffffffff;
+    if (desc.element_count > max / (uint64)desc.element_size) {
+        return 2;
+    }
+    uint64 required = desc.element_count * (uint64)desc.element_size;
+    if (desc.output.length < required) {
+        return 2;
+    }
+    if (desc.base_data != null && desc.base_stride < (uint64)desc.element_size) {
+        return 2;
+    }
+    if (desc.sparse_count == 0) {
+        if (desc.sparse_index_type == 0) return 0;
+        return 2;
+    }
+    if (desc.sparse_count > desc.element_count ||
+        desc.sparse_indices == null || desc.sparse_values == null ||
+        desc.sparse_index_type < 1 || desc.sparse_index_type > 3) {
+        return 2;
+    }
+    return 0;
+}
+
+int viro_eskiu_accessor_materialize(*VROEngineAccessorMaterializeDesc desc) {
+    if (viro_eskiu_accessor_materialize_validate(desc) != 0) {
+        return 2;
+    }
+    uint64 total = desc.element_count * (uint64)desc.element_size;
+    for (uint64 i = 0; i < total; i += 1) {
+        desc.output.data[i] = 0;
+    }
+
+    if (desc.base_data != null) {
+        for (uint64 e = 0; e < desc.element_count; e += 1) {
+            uint64 src = e * desc.base_stride;
+            uint64 dst = e * (uint64)desc.element_size;
+            for (uint32 b = 0; b < desc.element_size; b += 1) {
+                desc.output.data[dst + (uint64)b] =
+                    desc.base_data[src + (uint64)b];
+            }
+        }
+    }
+
+    for (uint64 s = 0; s < desc.sparse_count; s += 1) {
+        uint64 index = viro_eskiu_sparse_index_at(desc, s);
+        if (index >= desc.element_count) {
+            return 2;
+        }
+        uint64 dst = index * (uint64)desc.element_size;
+        uint64 src = s * (uint64)desc.element_size;
+        for (uint32 b = 0; b < desc.element_size; b += 1) {
+            desc.output.data[dst + (uint64)b] =
+                desc.sparse_values[src + (uint64)b];
+        }
+    }
+    return 0;
+}
