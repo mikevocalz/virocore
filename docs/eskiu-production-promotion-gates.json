@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "phase": "phase-3-ready",
-  "repositoryProgram": "complete-after-rollout-stack",
+  "repositoryProgram": "complete",
   "productionDefaultBackend": "cpp",
   "autoPolicy": "cpp-until-domain-promotion",
   "gates": [
@@ -37,12 +37,16 @@
       "shadowParity": true
     },
     "assetLoading": {
-      "status": "rollout-stack-in-progress",
-      "shadowParity": false
+      "status": "blocked-on-evidence",
+      "shadowParity": true,
+      "contract": true,
+      "cppProductionAdapter": true,
+      "note": "glTF base accessor materialization is routed through the C++ engine contract; Eskiu remains shadow-only until device A/B promotion."
     },
     "spatial": {
       "status": "contract-ready",
       "shadowParity": false
     }
-  }
+  },
+  "lastRepositoryMilestone": "gltf-accessor-contract-shadow-adapter-landed"
 }
