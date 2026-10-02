@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "name": "viro-xr-backend-conformance",
+  "coordinateSystem": {
+    "handedness": "right-handed",
+    "right": "+X",
+    "up": "+Y",
+    "forward": "-Z"
+  },
+  "units": {
+    "position": "meters",
+    "distance": "meters",
+    "polylineWidth": "meters",
+    "anglesAtPublicViroJSXBoundary": "degrees",
+    "portableRotation": "quaternion-xyzw"
+  },
+  "transforms": [
+    {
+      "name": "forward-one-and-half-meters",
+      "positionMeters": [0, 0, -1.5],
+      "lensCentimeters": [0, 0, -150]
+    },
+    {
+      "name": "yaw-positive-90",
+      "eulerDegreesXYZ": [0, 90, 0],
+      "quaternionXYZW": [0, 0.7071067811865475, 0, 0.7071067811865476]
+    }
+  ],
+  "interaction": {
+    "sources": ["gaze", "hand", "pinch", "controller", "voice", "touch", "neural-band"],
+    "phases": [
+      "hover-enter",
+      "hover-move",
+      "hover-exit",
+      "select-start",
+      "select-end",
+      "drag",
+      "cancel"
+    ],
+    "rules": [
+      "targeting-source-is-independent-from-commit-source",
+      "select-end-may-map-to-viro-onClick",
+      "drag-position-is-world-meters"
+    ]
+  },
+  "worldQuery": {
+    "request": {
+      "originMeters": [0, 0, 0],
+      "direction": [0, 0, -1],
+      "maxDistanceMeters": 10
+    },
+    "result": {
+      "positionMeters": [0, 0, -5.032981872558594],
+      "distanceMeters": 5.032981872558594,
+      "surface": "unknown"
+    },
+    "nativeExample": {
+      "lensCentimeters": [0, 0, -503.2981872558594]
+    }
+  },
+  "polyline": {
+    "pointsMeters": [
+      [-0.3, -0.18, -1.38],
+      [0, 0.04, -1.38],
+      [0.3, -0.02, -1.38]
+    ],
+    "widthMeters": 0.008,
+    "lensRadiusCentimeters": 0.4
+  },
+  "capabilities": [
+    "immersive-rendering",
+    "world-tracking",
+    "world-query",
+    "surface-placement",
+    "anchors",
+    "plane-detection",
+    "hand-tracking",
+    "gaze-targeting",
+    "eye-gaze",
+    "pinch",
+    "drag-manipulation",
+    "controllers",
+    "camera",
+    "depth",
+    "spatial-audio",
+    "location-navigation",
+    "volumetric-line",
+    "colocation",
+    "system-windows"
+  ]
+}
