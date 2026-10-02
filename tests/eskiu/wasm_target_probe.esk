@@ -1,0 +1,4 @@
+// WebAssembly object-emission probe. No libc/runtime dependency.
+int viro_eskiu_wasm_probe(int value) {
+    return value + 1;
+}
