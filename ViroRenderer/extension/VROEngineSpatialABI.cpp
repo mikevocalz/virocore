@@ -8,8 +8,12 @@
 
 namespace {
 
+bool writableTransform(const VROEngineRigidTransform *t) {
+    return t != nullptr && t->struct_size >= VRO_ENGINE_RIGID_TRANSFORM_V0_1_SIZE;
+}
+
 bool validTransform(const VROEngineRigidTransform *t) {
-    if (t == nullptr || t->struct_size < VRO_ENGINE_RIGID_TRANSFORM_V0_1_SIZE) {
+    if (!writableTransform(t)) {
         return false;
     }
     const auto &p = t->translation;
@@ -78,7 +82,7 @@ VROEngineVec3 negate(VROEngineVec3 v) {
 
 extern "C" VROEngineStatusCode viro_engine_transform_identity(
     VROEngineRigidTransform *out_transform) {
-    if (!validTransform(out_transform)) {
+    if (!writableTransform(out_transform)) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
     out_transform->struct_size = sizeof(VROEngineRigidTransform);
@@ -94,7 +98,7 @@ extern "C" VROEngineStatusCode viro_engine_transform_compose(
     VROEngineRigidTransform *out_parent_from_child) {
     if (!validTransform(parent_from_mid) ||
         !validTransform(mid_from_child) ||
-        !validTransform(out_parent_from_child)) {
+        !writableTransform(out_parent_from_child)) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
 
@@ -116,7 +120,7 @@ extern "C" VROEngineStatusCode viro_engine_transform_compose(
 extern "C" VROEngineStatusCode viro_engine_transform_invert(
     const VROEngineRigidTransform *parent_from_child,
     VROEngineRigidTransform *out_child_from_parent) {
-    if (!validTransform(parent_from_child) || !validTransform(out_child_from_parent)) {
+    if (!validTransform(parent_from_child) || !writableTransform(out_child_from_parent)) {
         return VRO_ENGINE_STATUS_INVALID_ARGUMENT;
     }
 
