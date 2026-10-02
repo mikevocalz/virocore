@@ -1,0 +1,29 @@
+struct VROEngineByteView { *uint8 data; uint64 length; }
+struct VROEngineVertexAttribute { uint32 semantic; uint32 component_type; uint32 component_count; uint32 offset_bytes; }
+struct VROEngineGeometryDesc {
+    uint32 struct_size; uint32 topology; uint32 vertex_stride_bytes; uint32 vertex_count;
+    uint32 index_type; uint32 index_count; uint32 attribute_count; uint32 flags;
+    *VROEngineVertexAttribute attributes; VROEngineByteView vertices; VROEngineByteView indices;
+    uint64 geometry_id; uint64 version;
+}
+struct VROEngineWorldMeshChunk {
+    uint32 struct_size; uint32 update_kind; uint64 chunk_id; uint64 version; uint64 timestamp_ns;
+    uint32 source; uint32 flags; VROEngineGeometryDesc geometry; VROEngineByteView confidences;
+}
+extern int viro_eskiu_geometry_validate(*VROEngineGeometryDesc desc);
+
+int viro_eskiu_world_mesh_chunk_validate(*VROEngineWorldMeshChunk chunk) {
+    if (chunk == null || chunk.struct_size < 144 || chunk.chunk_id == 0 ||
+        chunk.version == 0 || chunk.source > 3) return 2;
+    if (chunk.update_kind == 2) {
+        if (chunk.geometry.struct_size != 0 || chunk.confidences.data != null || chunk.confidences.length != 0) return 2;
+        return 0;
+    }
+    if (chunk.update_kind != 1 || chunk.geometry.topology != 4 || chunk.geometry.index_type == 0 ||
+        (chunk.geometry.index_count % 3) != 0 || viro_eskiu_geometry_validate(&chunk.geometry) != 0) return 2;
+    uint64 confidence_bytes = (uint64)chunk.geometry.vertex_count * 4;
+    if (chunk.confidences.length != 0) {
+        if (chunk.confidences.data == null || chunk.confidences.length < confidence_bytes) return 2;
+    }
+    return 0;
+}
