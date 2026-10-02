@@ -1,0 +1,23 @@
+name: Engine world mesh ABI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/VROEngineWorldMeshABI.*"
+      - "ViroRenderer/extension/VROEngineGeometryABI.*"
+      - "tests/extension/engine_world_mesh_*"
+      - "scripts/test-engine-world-mesh.sh"
+      - ".github/workflows/engine-world-mesh.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  c-and-cpp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify world mesh ABI and metrics
+        run: bash scripts/test-engine-world-mesh.sh
