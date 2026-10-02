@@ -1,0 +1,21 @@
+name: Engine contract
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ViroRenderer/extension/**"
+      - "tests/extension/**"
+      - "scripts/test-engine-contract.sh"
+      - ".github/workflows/engine-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  c-and-cpp:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile C ABI header and run C++ reference conformance
+        run: bash scripts/test-engine-contract.sh
