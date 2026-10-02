@@ -48,6 +48,7 @@
 #include "Camera_JNI.h"
 #include "VRORenderer.h"
 #include "VROChoreographer.h"
+#include "VROEngineABI.h"
 #include "ViroUtils_JNI.h"
 
 #if VRO_PLATFORM_ANDROID
@@ -57,6 +58,30 @@
 #endif
 
 extern "C" {
+
+VRO_METHOD(jintArray, nativeQueryEngineAbi)(VRO_NO_ARGS) {
+    VROEngineAbiInfo info{};
+    info.struct_size = static_cast<uint32_t>(sizeof(info));
+    if (viro_engine_query_abi(&info) != VRO_ENGINE_STATUS_OK) {
+        return nullptr;
+    }
+
+    const jint values[6] = {
+        static_cast<jint>(info.struct_size),
+        static_cast<jint>(info.abi_major),
+        static_cast<jint>(info.abi_minor),
+        static_cast<jint>(info.backend_kind),
+        static_cast<jint>(info.capabilities & UINT64_C(0xffffffff)),
+        static_cast<jint>((info.capabilities >> 32u) & UINT64_C(0xffffffff)),
+    };
+
+    jintArray result = env->NewIntArray(6);
+    if (result == nullptr) {
+        return nullptr;
+    }
+    env->SetIntArrayRegion(result, 0, 6, values);
+    return result;
+}
 
 // The renderer test runs VROSample.cpp, for fast prototyping when working
 // on renderer features (no bridge integration).
