@@ -8,7 +8,7 @@ on:
       - "tests/eskiu/media_differential.cpp"
       - "scripts/test-eskiu-media-backend.sh"
       - "ViroRenderer/extension/VROEngineMediaABI.*"
-      - ".github/workflows/eskiu-media-backend.yml"
+      - ".github/workflows/eskiu-media-shadow.yml"
 
 permissions:
   contents: read
