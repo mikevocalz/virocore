@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "status": "phase-0",
+  "status": "phase-0-abi-scaffold",
   "backendPolicy": {
     "referenceBackend": "cpp",
-    "eskiuAllowedBeforeNativeMcpVerification": false,
     "binaryBoundary": "language-neutral",
-    "crossRuntimeOwnership": "explicit-only"
+    "crossRuntimeOwnership": "explicit-only",
+    "eskiuAbiScaffoldAllowed": true,
+    "productionMigrationRequiresNativeMcp": true
   },
   "modules": [
     {
@@ -178,11 +179,23 @@
     }
   ],
   "requiredGates": [
+    "eskiu-v0.9.2-abi-smoke",
     "official-viro-mcp-audit",
     "reactviro-find-native-bridge-map",
-    "reactvision-platform-native-mcp-audit",
+    "reactvision-platform-native-mcp-audit-per-production-module",
     "ownership-threading-contract",
     "cpp-reference-conformance",
     "before-after-benchmark"
-  ]
+  ],
+  "toolchain": {
+    "repository": "doranteseduardo/eskiu",
+    "version": "v0.9.2",
+    "compiler": "eskiuc",
+    "sourceExtension": ".esk",
+    "llvm": "21+",
+    "abi": "platform-native-c",
+    "objectEmission": true,
+    "noGarbageCollector": true,
+    "cInterop": "extern-and-native-symbols"
+  }
 }
