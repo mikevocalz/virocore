@@ -10,6 +10,14 @@
 
 #include <cstring>
 
+#ifndef VRO_ENGINE_BACKEND_KIND
+#define VRO_ENGINE_BACKEND_KIND VRO_ENGINE_BACKEND_CPP
+#endif
+
+#ifndef VRO_ENGINE_CAPABILITIES
+#define VRO_ENGINE_CAPABILITIES 0ull
+#endif
+
 extern "C" uint32_t viro_engine_abi_version(void) {
     return (static_cast<uint32_t>(VRO_ENGINE_ABI_VERSION_MAJOR) << 16u) |
            static_cast<uint32_t>(VRO_ENGINE_ABI_VERSION_MINOR);
