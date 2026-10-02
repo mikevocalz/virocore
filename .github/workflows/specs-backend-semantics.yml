@@ -6,6 +6,7 @@ on:
       - "ViroRenderer/extension/VROBackendSemanticContract.h"
       - "tests/xr_backend/specs_semantic_contract_*"
       - "scripts/test-specs-backend-semantics.sh"
+      - "scripts/test-specs-quaternion-source.mjs"
       - "docs/SPECS-BACKEND-SEMANTICS.md"
       - ".github/workflows/specs-backend-semantics.yml"
 permissions:
