@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cfloat>
 #include <iostream>
 
 namespace {
@@ -82,6 +83,14 @@ bool runBackend(
         near(world.y, 5.0f) &&
         near(world.z, 7.0f),
         "point value");
+
+    VROEngineRigidTransform tiny = parent;
+    tiny.rotation = {FLT_TRUE_MIN, 0.0f, 0.0f, 0.0f};
+    VROEngineVec3 tinyOut{};
+    ok &= expect(
+        viro_engine_transform_point_selected(&tiny, &point, &tinyOut) ==
+            VRO_ENGINE_STATUS_INVALID_ARGUMENT,
+        "subnormal quaternion rejected");
 
     VROEngineSharedFrame frame{};
     frame.struct_size = sizeof(frame);
