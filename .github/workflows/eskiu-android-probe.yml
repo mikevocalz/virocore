@@ -1,0 +1,37 @@
+name: Eskiu Android target probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-target:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Install pinned Eskiu v0.9.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/doranteseduardo/eskiu/releases/download/v0.9.2/eskiuc-linux-x86_64.tar.gz"
+          expected="46316ce1553489045aec1cf9fbc432f551cda4850b90d200a7b4c73bc835e8ec"
+          curl -fsSL "$url" -o /tmp/eskiuc.tar.gz
+          echo "$expected  /tmp/eskiuc.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/eskiu
+          tar -xzf /tmp/eskiuc.tar.gz -C /tmp/eskiu
+          echo "ESKIUC=/tmp/eskiu/bin/eskiuc" >> "$GITHUB_ENV"
+
+      - name: Probe Android target
+        run: bash scripts/eskiu/probe-android-target.sh
