@@ -37,6 +37,24 @@ From `docs/dev/abi.md` and the compiler documentation:
 - cross compilation accepts `--target`, `--mcpu`, `--mattr`, and `--reloc`.
 - `--freestanding` exists for runtime-free targets.
 
+## Aggregate entry-point caveat verified by CI
+
+A direct C++ call to an ordinary top-level Eskiu symbol using a seven-float struct
+by value did **not** preserve values in our Linux x86-64 probe. This is consistent
+with the distinction in Eskiu's ABI documentation:
+
+- Eskiu -> `extern` C calls receive target C-ABI aggregate lowering;
+- C callbacks into Eskiu can use generated `__cabi_*` thunks for aggregate signatures;
+- ordinary Eskiu functions may use Eskiu's internal aggregate lowering between Eskiu callers.
+
+Therefore this fork does not treat "source symbol is visible" as proof that an arbitrary
+aggregate-by-value top-level Eskiu function is a safe C entry point. Cross-language Viro
+contracts use scalars, opaque handles, and pointer/view structures unless a C-ABI thunk
+path has its own conformance test.
+
+The existing passing ABI probe on `main` already follows this rule: scalar calls cross
+directly, while the pose-like POD crosses by pointer.
+
 ## ReactVision Viro case-study facts
 
 The Eskiu repository's `site/case-study-reactvision.html` states that ReactVision selectively replaces memory-sensitive C++ ViroCore components with Eskiu modules linked over the C ABI, preserving the surrounding engine. It reports roughly 85% less memory in the rendering modules migrated so far.
