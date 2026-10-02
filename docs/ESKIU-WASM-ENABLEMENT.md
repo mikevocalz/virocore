@@ -8,7 +8,7 @@ being built with the WebAssembly target.
 
 ## Viro patch
 
-`tools/eskiu/patches/0001-enable-webassembly-backend.patch` is a pinned patch against
+`tools/eskiu/patch-eskiu-wasm.py` is a fail-fast source patcher pinned against
 Eskiu v0.9.2 / commit `95d7ece7ea8d72bc106a141bc031a1648ed8f2ac`.
 
 It does two things:
@@ -27,5 +27,5 @@ backend registration/linkage rather than a reason to redesign the Viro ABI.
 After the probe is green, the next Web step is to compile one extension-owned engine
 contract implementation to WASM and A/B it against the C++ reference implementation.
 
-The patch should be dropped as soon as an upstream Eskiu release ships equivalent
+The patcher should be dropped as soon as an upstream Eskiu release ships equivalent
 WebAssembly backend support.
