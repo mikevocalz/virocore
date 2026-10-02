@@ -1,0 +1,34 @@
+// Minimal ViroCore <-> Eskiu C ABI proof.
+//
+// This intentionally uses only ABI-stable scalar/POD values and no Eskiu runtime
+// allocation. It proves:
+//   1. C++ can call an Eskiu symbol.
+//   2. Eskiu can call a C/C++ extern symbol.
+//   3. A pose-like POD struct can cross the boundary by pointer.
+
+struct ViroAbiPose {
+    float px;
+    float py;
+    float pz;
+    float qx;
+    float qy;
+    float qz;
+    float qw;
+    int flags;
+}
+
+extern int viro_cpp_scale(int value);
+
+int viro_eskiu_add(int a, int b) {
+    return a + b;
+}
+
+int viro_eskiu_callback_roundtrip(int value) {
+    return viro_cpp_scale(value) + 1;
+}
+
+float viro_eskiu_pose_checksum(ViroAbiPose* pose) {
+    return pose.px + pose.py + pose.pz
+        + pose.qx + pose.qy + pose.qz + pose.qw
+        + pose.flags;
+}
