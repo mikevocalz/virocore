@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <stdint.h>
+#include <vector>
 #include "VROGeometry.h"
 
 class VROVertexBuffer;
@@ -142,6 +143,11 @@ private:
     std::shared_ptr<VROVertexBuffer> _colorBuffer;
 
     std::shared_ptr<VROGeometryElement> _triangleSoupElement;
+
+    // Reused CPU staging storage for padded dynamic attributes. A single scratch
+    // buffer is sufficient because VROData copies each prepared payload before
+    // the next attribute reuses it.
+    std::vector<uint8_t> _paddingScratch;
 
     /*
      Allocate the per-attribute VBOs and wire up the parent VROGeometry's
