@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
-  "status": "phase-0-abi-scaffold",
+  "status": "phase-2-validated-boundaries",
   "backendPolicy": {
     "referenceBackend": "cpp",
     "binaryBoundary": "language-neutral",
     "crossRuntimeOwnership": "explicit-only",
     "eskiuAbiScaffoldAllowed": true,
-    "productionMigrationRequiresNativeMcp": true
+    "productionMigrationRequiresNativeMcp": true,
+    "eskiuShadowBackendsAllowed": true
   },
   "modules": [
     {
@@ -21,7 +22,8 @@
         "frame-time",
         "allocations"
       ],
-      "eskiuEligibility": "after-verification"
+      "eskiuEligibility": "after-verification",
+      "status": "contract-and-semantic-conformance-ready-native-mcp-device-benchmark-gated"
     },
     {
       "module": "VROInputControllerBase",
@@ -34,7 +36,8 @@
         "input-latency",
         "allocations"
       ],
-      "eskiuEligibility": "strong-candidate-after-verification"
+      "eskiuEligibility": "strong-candidate-after-verification",
+      "status": "input-abi-cpp-reference-eskiu-shadow-parity-green"
     },
     {
       "module": "VROInputControllerOpenXR",
@@ -47,7 +50,8 @@
         "input-latency",
         "sample-throughput"
       ],
-      "eskiuEligibility": "strong-candidate-after-verification"
+      "eskiuEligibility": "strong-candidate-after-verification",
+      "status": "input-abi-cpp-reference-eskiu-shadow-parity-green"
     },
     {
       "module": "VRODynamicGeometry",
@@ -61,7 +65,8 @@
         "gpu-upload-bytes",
         "frame-time"
       ],
-      "eskiuEligibility": "strong-candidate-after-verification"
+      "eskiuEligibility": "strong-candidate-after-verification",
+      "status": "geometry-abi-cpp-vs-eskiu-differential-pilot-green"
     },
     {
       "module": "world-mesh-processing",
@@ -76,7 +81,8 @@
         "update-time",
         "allocations"
       ],
-      "eskiuEligibility": "strong-candidate-after-verification"
+      "eskiuEligibility": "strong-candidate-after-verification",
+      "status": "world-mesh-abi-and-payload-metrics-ready"
     },
     {
       "module": "camera-frame-path",
@@ -91,7 +97,8 @@
         "peak-memory",
         "latency"
       ],
-      "eskiuEligibility": "strong-candidate-after-verification"
+      "eskiuEligibility": "strong-candidate-after-verification",
+      "status": "media-frame-abi-and-copy-metrics-ready"
     },
     {
       "module": "external-panel-surfaces",
@@ -105,7 +112,8 @@
         "gpu-upload-bytes",
         "frame-time"
       ],
-      "eskiuEligibility": "candidate-after-verification"
+      "eskiuEligibility": "candidate-after-verification",
+      "status": "surface-abi-ready-react-panel-adapters-landed"
     },
     {
       "module": "VROGLTFLoader",
@@ -120,7 +128,8 @@
         "copies",
         "load-time"
       ],
-      "eskiuEligibility": "instrument-first"
+      "eskiuEligibility": "instrument-first",
+      "status": "transient-memory-instrumentation-ready"
     },
     {
       "module": "VROImagePostProcess*",
@@ -133,7 +142,8 @@
         "scratch-memory",
         "frame-time"
       ],
-      "eskiuEligibility": "profile-first"
+      "eskiuEligibility": "profile-first",
+      "status": "named-profile-gate-ready"
     },
     {
       "module": "VROPhysicsWorld",
@@ -146,7 +156,8 @@
         "allocations",
         "frame-time"
       ],
-      "eskiuEligibility": "profile-first"
+      "eskiuEligibility": "profile-first",
+      "status": "named-profile-gate-ready"
     },
     {
       "module": "VROParticleEmitter",
@@ -159,7 +170,8 @@
         "allocations",
         "frame-time"
       ],
-      "eskiuEligibility": "profile-first"
+      "eskiuEligibility": "profile-first",
+      "status": "named-profile-gate-ready"
     },
     {
       "module": "wasm-tracking-renderer",
@@ -175,7 +187,8 @@
         "frame-time",
         "copies"
       ],
-      "eskiuEligibility": "strong-candidate-after-verification"
+      "eskiuEligibility": "strong-candidate-after-verification",
+      "status": "wasm-object-link-proven-production-renderer-integration-gated"
     }
   ],
   "requiredGates": [
@@ -198,18 +211,59 @@
     "objectEmission": true,
     "noGarbageCollector": true,
     "cInterop": "extern-and-native-symbols",
-    "androidRoadmap": {
-      "aarch64LinuxAndroid": false,
-      "jniSharedLibrary": false,
-      "gradleNdkPackaging": false
+    "upstreamRoadmapAtV0_9_2": {
+      "aarch64LinuxAndroidListedComplete": false,
+      "jniSharedLibraryListedComplete": false,
+      "gradleNdkPackagingListedComplete": false
+    },
+    "forkValidation": {
+      "aarch64LinuxAndroidObject": true,
+      "jniSharedLibrary": true,
+      "gradleAarPackaging": true,
+      "alignment16Kb": true,
+      "wasmObjectLink": true,
+      "appleObjectTargets": true
     }
   },
   "platformReadiness": {
     "hostMacosArm64": "abi-pilot-ready",
     "hostLinuxX64Arm64": "abi-pilot-ready",
-    "iosVisionos": "requires-target-build-validation",
-    "androidNdk": "blocked-public-roadmap",
-    "questPico": "blocked-on-android-ndk",
-    "webWasm": "requires-separate-toolchain-proof"
+    "iosVisionos": "object-target-proven-runtime-device-validation-required",
+    "androidNdk": "object-jni-gradle-aar-16kb-proven-device-runtime-validation-required",
+    "questPico": "android-toolchain-ready-openxr-production-swap-not-yet-approved",
+    "webWasm": "object-link-proven-renderer-integration-required"
+  },
+  "validation": {
+    "hostCAbi": "proven",
+    "appleObjectTargets": "proven",
+    "androidAarch64Object": "proven",
+    "androidJniSharedLibrary": "proven",
+    "androidGradleAarPackaging": "proven",
+    "android16KbAlignment": "proven",
+    "wasmObjectAndLink": "proven",
+    "portableXrSemantics": "proven",
+    "geometryCppVsEskiuDifferential": "proven",
+    "inputEskiuShadowParity": "proven",
+    "cppReferenceBenchmarkHarness": "proven",
+    "namedSubsystemMetrics": "proven"
+  },
+  "gateStatus": {
+    "eskiu-v0.9.2-abi-smoke": "green",
+    "platform-target-readiness": "green-for-build-probes",
+    "official-viro-mcp-audit": "public-api-audit-done-native-platform-mcp-not-connected-in-session",
+    "reactviro-find-native-bridge-map": "required-per-production-swap",
+    "reactvision-platform-native-mcp-audit-per-production-module": "required-per-production-swap",
+    "ownership-threading-contract": "green",
+    "cpp-reference-conformance": "green",
+    "before-after-benchmark": "harness-green-results-required-per-production-swap"
+  },
+  "productionSwapPolicy": {
+    "allowedNow": false,
+    "reason": "Build/ABI/conformance gates are ready, but each production renderer substitution still requires module-specific native-MCP mapping, device benchmarks, and soak evidence.",
+    "firstCandidates": [
+      "bounded input/pose storage after atomic SPSC parity",
+      "dynamic geometry buffer preparation after device A/B",
+      "world-mesh chunk processing after device A/B"
+    ]
   }
 }
