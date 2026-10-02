@@ -214,6 +214,19 @@ public class Renderer {
         return nativeQueryEngineAbi();
     }
 
+    /**
+     * Set the preferred implementation for one language-neutral engine domain.
+     * 0=auto, 1=C++, 2=Eskiu. This records preference only; unavailable backends
+     * are never silently activated.
+     */
+    public static int setEngineBackendPreference(int domain, int preference) {
+        return nativeSetEngineBackendPreference(domain, preference);
+    }
+
+    public static int getEngineBackendPreference(int domain) {
+        return nativeGetEngineBackendPreference(domain);
+    }
+
     /* ----------     Common lifecycle methods    ---------- */
 
     public void destroy() {
@@ -397,6 +410,8 @@ public class Renderer {
     /* ----------     Native methods    ---------- */
 
     private static native int[] nativeQueryEngineAbi();
+    private static native int nativeSetEngineBackendPreference(int domain, int preference);
+    private static native int nativeGetEngineBackendPreference(int domain);
 
     private native long nativeCreateRendererGVR(ClassLoader appClassLoader, Context context,
                                                 AssetManager assets, PlatformUtil platformUtil, long nativeGvrContext,
