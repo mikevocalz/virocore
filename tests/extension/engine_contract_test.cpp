@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <iostream>
 
+extern "C" int viro_engine_abi_c_header_probe(void);
+
 namespace {
 
 bool expect(bool condition, const char *message) {
@@ -23,7 +25,7 @@ int main() {
                  "null ABI info must be rejected");
 
     VROEngineAbiInfo too_small{};
-    too_small.struct_size = static_cast<uint32_t>(sizeof(VROEngineAbiInfo) - 1);
+    too_small.struct_size = VRO_ENGINE_ABI_INFO_V0_1_SIZE - 1;
     too_small.backend_kind = 0xA5A5A5A5u;
     ok &= expect(viro_engine_query_abi(&too_small) == VRO_ENGINE_STATUS_INVALID_ARGUMENT,
                  "undersized ABI info must be rejected");
@@ -58,6 +60,9 @@ int main() {
                  "implementation must report only the bytes it understands");
     ok &= expect(extended.future_tail == kSentinel,
                  "unknown future caller tail must remain untouched");
+
+    ok &= expect(viro_engine_abi_c_header_probe() == 1,
+                 "C-compiled caller must link and execute the C ABI");
 
     const uint32_t packed = viro_engine_abi_version();
     const uint32_t expected =
