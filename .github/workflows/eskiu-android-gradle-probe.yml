@@ -65,7 +65,7 @@ jobs:
           unzip -l "$aar" | grep "jni/arm64-v8a/libviro_eskiu_probe.so"
           python3 scripts/verify-16kb-alignment.py "$aar" --abi arm64-v8a
 
-      - name: Verify Eskiu and JNI symbols before Android stripping
+      - name: Verify Eskiu object and linked JNI closure
         shell: bash
         run: |
           set -euo pipefail
@@ -76,9 +76,13 @@ jobs:
           test -f "$obj"
           test -n "$so"
           test -f "$so"
-          nmtool="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           echo "Inspecting generated Eskiu object: $obj"
-          "$nmtool" -g --defined-only "$obj" | grep "viro_eskiu_android_probe"
-          echo "Inspecting linked JNI output: $so"
-          "$readelf" -Ws "$so" | grep "Java_com_reactvision_eskiuprobe_Probe_nativeProbe"
+          "$readelf" -h "$obj" | grep -E "Class:.*ELF64"
+          "$readelf" -h "$obj" | grep -E "Machine:.*AArch64"
+          echo "Checking final JNI library for unresolved project symbols"
+          if "$readelf" -Ws "$so" | grep " UND " | grep -E "viro_eskiu_android_probe|Java_com_reactvision_eskiuprobe_Probe_nativeProbe"; then
+            echo "Project symbol remained unresolved after JNI link" >&2
+            exit 1
+          fi
+          echo "Eskiu Android object + JNI shared-library closure verified"
