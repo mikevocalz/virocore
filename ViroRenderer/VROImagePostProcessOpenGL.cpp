@@ -37,6 +37,7 @@
 #include "VROShaderModifier.h"
 #include "VROTextureSubstrateOpenGL.h"
 #include "extension/VROEngineMetrics.h"
+#include "extension/VROEngineSubsystemMetrics.h"
 
 VROImagePostProcessOpenGL::VROImagePostProcessOpenGL(std::shared_ptr<VROShaderProgram> shader) :
     _shader(shader),
@@ -74,6 +75,8 @@ void VROImagePostProcessOpenGL::blit(std::vector<std::shared_ptr<VROTexture>> te
                                      std::shared_ptr<VRODriver> &driver) {
     VRO_ENGINE_METRIC_SCOPE_TIMER(viroPostProcessBlitTimer);
     VRO_ENGINE_METRIC_CALL();
+    VRO_ENGINE_SUBSYSTEM_SCOPE_TIMER(VRO_ENGINE_SUBSYSTEM_POST_PROCESS, viroPostProcessSubsystemTimer);
+    VRO_ENGINE_SUBSYSTEM_WORK(VRO_ENGINE_SUBSYSTEM_POST_PROCESS, textures.size());
     
     // Bind the source textures
     if (!bind(textures, driver)) {
@@ -113,6 +116,8 @@ void VROImagePostProcessOpenGL::blitOpt(std::vector<std::shared_ptr<VROTexture>>
                                         std::shared_ptr<VRODriver> &driver) {
     VRO_ENGINE_METRIC_SCOPE_TIMER(viroPostProcessBlitOptTimer);
     VRO_ENGINE_METRIC_CALL();
+    VRO_ENGINE_SUBSYSTEM_SCOPE_TIMER(VRO_ENGINE_SUBSYSTEM_POST_PROCESS, viroPostProcessOptSubsystemTimer);
+    VRO_ENGINE_SUBSYSTEM_WORK(VRO_ENGINE_SUBSYSTEM_POST_PROCESS, textures.size());
     
     // Bind the source textures
     if (!bind(textures, driver)) {
