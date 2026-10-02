@@ -133,6 +133,7 @@ SET( VIRO_CORE_SRC
      ${VIRO_RENDERER_SRC}/VROGeometrySource.cpp
      ${VIRO_RENDERER_SRC}/extension/VROEngineContract.cpp
              ${VIRO_RENDERER_SRC}/extension/VROEngineSpatialABI.cpp
+             ${VIRO_RENDERER_SRC}/extension/VROEngineSurfaceABI.cpp
      ${VIRO_RENDERER_SRC}/VRODynamicGeometry.cpp
      ${VIRO_RENDERER_SRC}/VRODynamicMeshNode.cpp
      ${VIRO_RENDERER_SRC}/VROInputState.cpp
