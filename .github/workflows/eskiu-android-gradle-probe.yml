@@ -69,12 +69,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          so="$(find tools/eskiu/android-probe/probe/.cxx/Debug \
-            -path "*/obj/arm64-v8a/libviro_eskiu_probe.so" -print -quit)"
+          build_root="tools/eskiu/android-probe/probe/.cxx/Debug"
+          obj="$(find "$build_root" -name "android_target_probe.o" -print -quit)"
+          so="$(find "$build_root" -path "*/obj/arm64-v8a/libviro_eskiu_probe.so" -print -quit)"
+          test -n "$obj"
+          test -f "$obj"
           test -n "$so"
           test -f "$so"
-          echo "Inspecting unstripped native output: $so"
           nmtool="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
-          "$nmtool" --defined-only "$so" | grep "viro_eskiu_android_probe"
-          "$nmtool" --defined-only "$so" | grep \
-            "Java_com_reactvision_eskiuprobe_Probe_nativeProbe"
+          readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          echo "Inspecting generated Eskiu object: $obj"
+          "$nmtool" -g --defined-only "$obj" | grep "viro_eskiu_android_probe"
+          echo "Inspecting linked JNI output: $so"
+          "$readelf" -Ws "$so" | grep "Java_com_reactvision_eskiuprobe_Probe_nativeProbe"
