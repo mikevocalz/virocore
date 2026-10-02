@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "tools/eskiu/patches/0001-enable-webassembly-backend.patch"
+      - "tools/eskiu/patch-eskiu-wasm.py"
       - "tests/eskiu/wasm_target_probe.esk"
       - "scripts/eskiu/probe-wasm-backend.sh"
       - ".github/workflows/eskiu-wasm-probe.yml"
