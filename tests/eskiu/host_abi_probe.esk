@@ -1,5 +1,10 @@
 // Host-only Eskiu ABI smoke probe.
-// This file intentionally avoids Viro renderer classes. It proves only the C ABI seam.
+// This file intentionally avoids Viro renderer classes.
+//
+// Important: exported cross-language aggregate APIs use pointers/views. Eskiu's
+// internal aggregate calling convention is not the same promise as an extern C
+// call for every by-value shape, so Viro does not depend on direct aggregate
+// by-value calls into an Eskiu symbol.
 
 struct ViroEskiuPose {
     float px;
@@ -17,20 +22,18 @@ int viro_eskiu_contract_version() {
     return 1;
 }
 
-ViroEskiuPose viro_eskiu_pose_identity() {
-    return ViroEskiuPose {
-        px: 0.0,
-        py: 0.0,
-        pz: 0.0,
-        qx: 0.0,
-        qy: 0.0,
-        qz: 0.0,
-        qw: 1.0
-    };
+void viro_eskiu_write_identity(ViroEskiuPose* pose) {
+    (*pose).px = 0.0;
+    (*pose).py = 0.0;
+    (*pose).pz = 0.0;
+    (*pose).qx = 0.0;
+    (*pose).qy = 0.0;
+    (*pose).qz = 0.0;
+    (*pose).qw = 1.0;
 }
 
-float viro_eskiu_pose_position_sum(ViroEskiuPose pose) {
-    return pose.px + pose.py + pose.pz;
+float viro_eskiu_pose_position_sum(const ViroEskiuPose* pose) {
+    return (*pose).px + (*pose).py + (*pose).pz;
 }
 
 int viro_eskiu_call_cpp(int base, int delta) {
