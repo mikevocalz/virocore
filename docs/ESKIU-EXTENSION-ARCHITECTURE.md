@@ -37,6 +37,31 @@ Until a module passes that production gate:
 - Eskiu experiments stay extension-owned and swappable;
 - internal C++ abstractions may remain idiomatic C++ as long as they do not leak across the boundary.
 
+## Platform/toolchain reality
+
+The Eskiu language ABI is mature enough for native C interop, but target support is not uniform.
+
+Verified from the public v0.9.2 project:
+- LLVM 21+ code generation;
+- native object emission;
+- AArch64, x86-64 SysV, Windows x64, ARM32/AAPCS and x86-32 C ABI lowering;
+- callbacks through generated C-ABI thunks;
+- `--target`, `--mcpu`, `--mattr`, `--reloc`, and `--freestanding`;
+- freestanding allocation hooks `esk_alloc` / `esk_free`;
+- object files can be linked beside C/C++.
+
+Still explicitly unfinished in Eskiu's public roadmap:
+- Android `aarch64-linux-android` + bionic validation;
+- Android JNI shared-library path;
+- Gradle/NDK APK packaging.
+
+Therefore:
+- **macOS/Linux ABI pilots may start now**;
+- **visionOS/iOS experiments require Apple-target build validation before renderer use**;
+- **Quest/PICO/Android renderer migration is blocked on an Android enablement track**;
+- generic AArch64 ABI support must not be mistaken for Android-NDK readiness;
+- Web/WASM requires its own toolchain proof before being treated as an Eskiu backend.
+
 ## Current fork areas that need isolation
 
 The custom/native work in this fork currently touches areas including:
@@ -285,6 +310,16 @@ No performance claim is accepted without a reproducible fixture.
 
 ### Android / Quest / PICO
 
+Before any Eskiu-backed path, complete an Android-target enablement track:
+- prove `eskiuc --target aarch64-linux-android` against the selected NDK triple/sysroot;
+- validate bionic C ABI and required runtime symbols;
+- produce a JNI-loadable `.so`;
+- integrate that object/library into the existing Gradle/CMake build without replacing the C++ reference implementation;
+- verify 16 KB page/alignment requirements;
+- run ABI smoke tests on Android hardware;
+- only then evaluate Quest/PICO hot paths.
+
+After that:
 - verify OpenXR capability parity;
 - verify 16 KB alignment/release packaging remains intact;
 - keep JNI thin;
