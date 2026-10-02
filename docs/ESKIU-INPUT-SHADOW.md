@@ -1,26 +1,17 @@
-# C++ engine input shadow adapter
+# Eskiu input ring shadow backend
 
-This adapter translates existing Viro math/input values into the bounded input ABI.
+This is the first executable Eskiu implementation behind an existing Viro engine-contract domain.
 
-It is intentionally **not wired into production event dispatch yet**. That separation keeps
-the current event path authoritative while we establish mapping parity and benchmarking.
+It deliberately does **not** replace the production C++ SPSC ring. The C++ implementation uses atomics and remains authoritative for renderer input until Eskiu's atomic/threading path is benchmarked under real producer/consumer load.
 
-## Mapping guarantees
+The shadow backend matches:
+- the 96-byte `VROEngineInputSample` layout;
+- FIFO behavior;
+- bounded capacity;
+- FULL/EMPTY/INVALID result codes;
+- dropped-sample counting;
+- zero allocation during push/pop after ring creation.
 
-- source id is preserved;
-- timestamp and frame id are supplied by the producer;
-- sequence is monotonic within one shadow instance;
-- position and quaternion components are copied without coordinate conversion;
-- controller axes/buttons/trigger/grip remain explicit;
-- stylus pressure/tilt/buttons remain explicit;
-- gaze direction remains a vector, not a derived orientation;
-- each hand joint is one bounded sample.
+The CI fixture links the Eskiu object directly with a C++ consumer that uses the production ABI header. This catches layout and symbol drift.
 
-## Why this is the comparison seam
-
-The later production adapter can mirror real `VROInputControllerBase` / OpenXR samples into
-this class under a feature flag. Tests and diagnostics can then compare the legacy event
-source against the contract samples before any backend is changed.
-
-An Eskiu implementation of the storage layer is not promoted until it produces the same
-sample sequence and improves measured memory/allocation behavior.
+Next gate: add an atomic SPSC Eskiu variant and run it through the engine benchmark harness before any runtime switch.

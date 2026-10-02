@@ -1,0 +1,101 @@
+import <mem>;
+
+struct ViroEskiuInputSample {
+    uint32 struct_size;
+    uint32 kind;
+    uint64 sequence;
+    uint64 timestamp_ns;
+    uint64 frame_id;
+    uint32 source_id;
+    uint32 flags;
+    uint8[56] payload;
+}
+
+struct ViroEskiuInputRing {
+    uint32 capacity;
+    uint32 write_index;
+    uint32 read_index;
+    uint64 dropped_count;
+    *ViroEskiuInputSample samples;
+}
+
+*void viro_eskiu_input_ring_create(uint32 capacity) {
+    if (capacity == 0) {
+        return null;
+    }
+    *ViroEskiuInputRing ring = alloc<ViroEskiuInputRing>(1);
+    if (ring == null) {
+        return null;
+    }
+    ring.capacity = capacity;
+    ring.samples = alloc<ViroEskiuInputSample>(capacity);
+    if (ring.samples == null) {
+        free(ring);
+        return null;
+    }
+    return (*void)ring;
+}
+
+void viro_eskiu_input_ring_destroy(*void opaque) {
+    if (opaque == null) {
+        return;
+    }
+    *ViroEskiuInputRing ring = (ViroEskiuInputRing*)opaque;
+    free(ring.samples);
+    free(ring);
+}
+
+uint32 viro_eskiu_input_ring_capacity(*void opaque) {
+    if (opaque == null) {
+        return 0;
+    }
+    *ViroEskiuInputRing ring = (ViroEskiuInputRing*)opaque;
+    return ring.capacity;
+}
+
+uint32 viro_eskiu_input_ring_size(*void opaque) {
+    if (opaque == null) {
+        return 0;
+    }
+    *ViroEskiuInputRing ring = (ViroEskiuInputRing*)opaque;
+    return ring.write_index - ring.read_index;
+}
+
+uint64 viro_eskiu_input_ring_dropped_count(*void opaque) {
+    if (opaque == null) {
+        return 0;
+    }
+    *ViroEskiuInputRing ring = (ViroEskiuInputRing*)opaque;
+    return ring.dropped_count;
+}
+
+int viro_eskiu_input_ring_push(*void opaque, *ViroEskiuInputSample sample) {
+    if (opaque == null || sample == null || sample.struct_size < 96) {
+        return 3;
+    }
+    *ViroEskiuInputRing ring = (ViroEskiuInputRing*)opaque;
+    if (ring.write_index - ring.read_index >= ring.capacity) {
+        ring.dropped_count += 1;
+        return 2;
+    }
+    uint32 index = ring.write_index % ring.capacity;
+    ring.samples[index] = *sample;
+    ring.samples[index].struct_size = 96;
+    ring.write_index += 1;
+    return 0;
+}
+
+int viro_eskiu_input_ring_pop(*void opaque, *ViroEskiuInputSample out_sample) {
+    if (opaque == null || out_sample == null || out_sample.struct_size < 96) {
+        return 3;
+    }
+    *ViroEskiuInputRing ring = (ViroEskiuInputRing*)opaque;
+    if (ring.read_index == ring.write_index) {
+        return 1;
+    }
+    uint32 index = ring.read_index % ring.capacity;
+    *out_sample = ring.samples[index];
+    out_sample.struct_size = 96;
+    ring.read_index += 1;
+    return 0;
+}
