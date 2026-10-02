@@ -1,0 +1,48 @@
+struct VROEngineSurfaceDesc {
+    uint32 struct_size;
+    uint32 width;
+    uint32 height;
+    uint32 pixel_format;
+    uint32 origin;
+    uint32 usage;
+    uint32 plane_count;
+    uint32 reserved0;
+}
+
+struct VROEngineSurfaceFrame {
+    uint32 struct_size;
+    uint32 flags;
+    uint64 surface;
+    uint64 frame_id;
+    uint64 timestamp_ns;
+    uint64 acquire_token;
+    uint64 release_token;
+}
+
+int viro_eskiu_surface_desc_validate(*VROEngineSurfaceDesc desc) {
+    if (desc == null ||
+        desc.struct_size < 32 ||
+        desc.width == 0 ||
+        desc.height == 0 ||
+        desc.pixel_format < 1 ||
+        desc.pixel_format > 4 ||
+        desc.origin > 1 ||
+        desc.plane_count == 0) {
+        return 2;
+    }
+    return 0;
+}
+
+int viro_eskiu_surface_frame_validate(*VROEngineSurfaceFrame frame) {
+    if (frame == null || frame.struct_size < 48 || frame.surface == 0) {
+        return 2;
+    }
+    return 0;
+}
+
+int viro_eskiu_surface_frame_is_newer(uint64 consumed_frame_id, uint64 candidate_frame_id) {
+    if (candidate_frame_id > consumed_frame_id) {
+        return 1;
+    }
+    return 0;
+}
