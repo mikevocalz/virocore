@@ -47,6 +47,13 @@ public:
     // action: 0 = down, 1 = move, 2 = up. x/y in device pixels, top-left origin.
     void onTouch(int action, float x, float y);
 
+    // Forward a browser two-pointer pinch into Viro's existing pinch pipeline.
+    // state matches VROEventDelegate::PinchState: 1=start, 2=move, 3=end.
+    void onPinch(float scaleFactor, int state);
+
+    // Forward browser wheel / trackpad deltas to Viro's OnScroll path.
+    void onScroll(float x, float y);
+
     // Root node of the active scene — the C API attaches bridge-created nodes here.
     std::shared_ptr<VROPortal> getRootNode();
 

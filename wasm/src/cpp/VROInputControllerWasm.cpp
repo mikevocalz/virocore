@@ -45,8 +45,26 @@ void VROInputControllerWasm::onScreenTouch(int action, float x, float y) {
         return;
     }
 
+    if (action == 0 || (action == 1 && _pointerDown)) {
+        _pointerDown = true;
+        _pointerX = x;
+        _pointerY = y;
+    }
+
     VROVector3f ray = calculateCameraRay(x, y);
     VROInputControllerBase::updateHitNode(_latestCamera, _latestCamera.getPosition(), ray);
+
+    // Treat the browser pointer as a controller ray. Updating the input pose on
+    // every pointer event seeds drag state on pointer-down, advances the native
+    // drag solver on pointer-move, and applies the final position before release.
+    // This deliberately reuses VROInputControllerBase's FixedDistance /
+    // FixedDistanceOrigin / FixedToPlane behavior instead of maintaining a
+    // second JS-only drag implementation.
+    VROInputControllerBase::onMove(
+        ViroCardBoard::InputSource::Controller,
+        _latestCamera.getPosition(),
+        _latestCamera.getRotation(),
+        ray);
 
     if (action == 0) {
         VROInputControllerBase::onButtonEvent(ViroCardBoard::ViewerButton,
@@ -54,9 +72,11 @@ void VROInputControllerWasm::onScreenTouch(int action, float x, float y) {
     } else if (action == 2) {
         VROInputControllerBase::onButtonEvent(ViroCardBoard::ViewerButton,
                                               VROEventDelegate::ClickState::ClickUp);
+        _pointerDown = false;
     }
-    // action == 1 (move): the hit node is refreshed above; drag/hover
-    // propagation via onMove is a follow-up once components consume it.
+    // action == 1 (move) is handled by onMove above; if the pointer currently
+    // owns a VRODraggedObject, VROInputControllerBase::processDragging updates
+    // its world transform and emits OnDrag.
 }
 
 void VROInputControllerWasm::updateScreenTouch(int touchAction) {
@@ -68,6 +88,13 @@ void VROInputControllerWasm::updateOrientation(const VROCamera &camera) {
     // Grab controller orientation
     VROQuaternion rotation = camera.getRotation();
     VROVector3f controllerForward = rotation.getMatrix().multiply(kBaseForward);
+
+    // A held pointer owns the ray. Aiming along the camera forward here would
+    // feed onMove a screen-center ray every frame and drag the held node there
+    // between pointer events.
+    if (_pointerDown && _viewportWidth > 0 && _viewportHeight > 0) {
+        controllerForward = calculateCameraRay(_pointerX, _pointerY);
+    }
 
     // Perform hit test
     VROInputControllerBase::updateHitNode(camera, camera.getPosition(), controllerForward);

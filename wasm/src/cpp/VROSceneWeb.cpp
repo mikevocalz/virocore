@@ -19,6 +19,7 @@
 #include "VRODriverOpenGLWasm.h"
 #include "VROInputControllerWasm.h"
 #include "VROInputControllerBase.h"
+#include "VROInputType.h"
 #include "VROThreadRestricted.h"
 #include "VROEye.h"
 #include "VROPlatformUtil.h"
@@ -427,6 +428,23 @@ void VROSceneWeb::onTouch(int action, float x, float y) {
     }
 }
 
+void VROSceneWeb::onPinch(float scaleFactor, int state) {
+    if (!_inputController || state < (int) VROEventDelegate::PinchState::PinchStart ||
+        state > (int) VROEventDelegate::PinchState::PinchEnd) {
+        return;
+    }
+    _inputController->onPinch(
+        ViroCardBoard::InputSource::Controller,
+        scaleFactor,
+        static_cast<VROEventDelegate::PinchState>(state));
+}
+
+void VROSceneWeb::onScroll(float x, float y) {
+    if (_inputController) {
+        _inputController->onScroll(ViroCardBoard::InputSource::Controller, x, y);
+    }
+}
+
 #pragma mark - JS bindings
 
 // A single global scene instance owned by the module. JS calls initViroScene()
@@ -514,6 +532,18 @@ static void viroOnTouch(int action, float x, float y) {
     }
 }
 
+static void viroOnPinch(float scaleFactor, int state) {
+    if (sScene) {
+        sScene->onPinch(scaleFactor, state);
+    }
+}
+
+static void viroOnScroll(float x, float y) {
+    if (sScene) {
+        sScene->onScroll(x, y);
+    }
+}
+
 static void viroBuildDemoCube() {
     if (sScene) {
         sScene->buildCubeScene();
@@ -555,8 +585,11 @@ static std::unordered_map<int, std::shared_ptr<WebAnimState>> sNodeAnimations;
 
 // Single JS callback the bridge registers to receive node events. Signature:
 //   cb(nodeHandle, eventAction, source, intArg, x, y, z)
-// eventAction matches VROEventDelegate::EventAction (1=Hover, 2=Click). intArg
-// carries ClickState for clicks (1=down,2=up,3=clicked) or isHovering (0/1).
+// eventAction matches VROEventDelegate::EventAction:
+//   1=Hover, 2=Click, 7=Scroll, 8=Drag, 10=Pinch.
+// intArg carries ClickState / hover bool / PinchState. For scroll, x/y are the
+// deltas. For drag, x/y/z are the
+// new world position; for pinch, x carries the scale factor.
 static emscripten::val sEventCallback = emscripten::val::undefined();
 
 // Per-node event delegate that forwards to sEventCallback tagged with the node's
@@ -573,6 +606,20 @@ public:
     virtual void onHover(int source, std::shared_ptr<VRONode> node,
                          bool isHovering, std::vector<float> position) {
         emit(EventAction::OnHover, source, isHovering ? 1 : 0, position);
+    }
+    virtual void onScroll(int source, std::shared_ptr<VRONode> node,
+                          float x, float y) {
+        emit(EventAction::OnScroll, source, 0, { x, y, 0.0f });
+    }
+    virtual void onDrag(int source, std::shared_ptr<VRONode> node,
+                        VROVector3f newPosition) {
+        emit(EventAction::OnDrag, source, 0,
+             { newPosition.x, newPosition.y, newPosition.z });
+    }
+    virtual void onPinch(int source, std::shared_ptr<VRONode> node,
+                         float scaleFactor, PinchState pinchState) {
+        emit(EventAction::OnPinch, source, (int) pinchState,
+             { scaleFactor, 0.0f, 0.0f });
     }
 
 private:
@@ -804,6 +851,28 @@ static void viroSetNodeEventEnabled(int node, int eventAction, bool enabled) {
         delegate = it->second;
     }
     delegate->setEnabledEvent(static_cast<VROEventDelegate::EventAction>(eventAction), enabled);
+}
+
+// Configure the native Viro drag solver for a web node.
+// dragType: 0=FixedDistance, 1=FixedDistanceOrigin, 2=FixedToPlane, 3=FixedToWorld.
+static void viroSetNodeDragConfig(int nodeHandle, int dragType,
+                                  float pointX, float pointY, float pointZ,
+                                  float normalX, float normalY, float normalZ,
+                                  float maxDistance) {
+    auto node = getNode(nodeHandle);
+    if (!node) return;
+
+    VRODragType type = VRODragType::FixedDistance;
+    switch (dragType) {
+        case 1: type = VRODragType::FixedDistanceOrigin; break;
+        case 2: type = VRODragType::FixedToPlane; break;
+        case 3: type = VRODragType::FixedToWorld; break;
+        default: type = VRODragType::FixedDistance; break;
+    }
+    node->setDragType(type);
+    node->setDragPlanePoint({ pointX, pointY, pointZ });
+    node->setDragPlaneNormal({ normalX, normalY, normalZ });
+    node->setDragMaxDistance(maxDistance);
 }
 
 // --- Geometries ---
@@ -2168,6 +2237,8 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroClearPhysicsBody", &viroClearPhysicsBody);
     emscripten::function("viroSetCollisionCallback", &viroSetCollisionCallback);
     emscripten::function("viroOnTouch", &viroOnTouch);
+    emscripten::function("viroOnPinch", &viroOnPinch);
+    emscripten::function("viroOnScroll", &viroOnScroll);
     emscripten::function("viroBuildDemoCube", &viroBuildDemoCube);
 
     // Scene graph C API (handle-based)
@@ -2249,6 +2320,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
 
     emscripten::function("viroSetEventCallback", &viroSetEventCallback);
     emscripten::function("viroSetNodeEventEnabled", &viroSetNodeEventEnabled);
+    emscripten::function("viroSetNodeDragConfig", &viroSetNodeDragConfig);
 
     emscripten::function("viroCreateLight", &viroCreateLight);
     emscripten::function("viroSetLightColor", &viroSetLightColor);
