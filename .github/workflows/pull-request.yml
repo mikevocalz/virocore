@@ -91,3 +91,41 @@ jobs:
         with:
           name: ios_dist.tgz
           path: ./ios/dist/
+
+
+  wasmBuild:
+    name: WebAssembly renderer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Emscripten SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install latest
+          /tmp/emsdk/emsdk activate latest
+
+      - name: Build Viro WebAssembly renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+          cd wasm
+          ./build_web.sh
+          test -s products/build/viro-web.js
+          test -s products/build/viro-web.wasm
+          test -s products/build/viro-web.data
+
+      - name: Upload WASM renderer
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: viro-web-renderer
+          path: |
+            wasm/products/build/viro-web.js
+            wasm/products/build/viro-web.wasm
+            wasm/products/build/viro-web.data
