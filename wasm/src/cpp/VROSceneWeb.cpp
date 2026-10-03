@@ -438,6 +438,12 @@ void VROSceneWeb::onPinch(float scaleFactor, int state) {
         static_cast<VROEventDelegate::PinchState>(state));
 }
 
+void VROSceneWeb::onScroll(float x, float y) {
+    if (_inputController) {
+        _inputController->onScroll(ViroCardBoard::InputSource::Controller, x, y);
+    }
+}
+
 #pragma mark - JS bindings
 
 // A single global scene instance owned by the module. JS calls initViroScene()
@@ -531,6 +537,12 @@ static void viroOnPinch(float scaleFactor, int state) {
     }
 }
 
+static void viroOnScroll(float x, float y) {
+    if (sScene) {
+        sScene->onScroll(x, y);
+    }
+}
+
 static void viroBuildDemoCube() {
     if (sScene) {
         sScene->buildCubeScene();
@@ -573,8 +585,9 @@ static std::unordered_map<int, std::shared_ptr<WebAnimState>> sNodeAnimations;
 // Single JS callback the bridge registers to receive node events. Signature:
 //   cb(nodeHandle, eventAction, source, intArg, x, y, z)
 // eventAction matches VROEventDelegate::EventAction:
-//   1=Hover, 2=Click, 8=Drag, 10=Pinch.
-// intArg carries ClickState / hover bool / PinchState. For drag, x/y/z are the
+//   1=Hover, 2=Click, 7=Scroll, 8=Drag, 10=Pinch.
+// intArg carries ClickState / hover bool / PinchState. For scroll, x/y are the
+// deltas. For drag, x/y/z are the
 // new world position; for pinch, x carries the scale factor.
 static emscripten::val sEventCallback = emscripten::val::undefined();
 
@@ -592,6 +605,10 @@ public:
     virtual void onHover(int source, std::shared_ptr<VRONode> node,
                          bool isHovering, std::vector<float> position) {
         emit(EventAction::OnHover, source, isHovering ? 1 : 0, position);
+    }
+    virtual void onScroll(int source, std::shared_ptr<VRONode> node,
+                          float x, float y) {
+        emit(EventAction::OnScroll, source, 0, { x, y, 0.0f });
     }
     virtual void onDrag(int source, std::shared_ptr<VRONode> node,
                         VROVector3f newPosition) {
@@ -2220,6 +2237,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetCollisionCallback", &viroSetCollisionCallback);
     emscripten::function("viroOnTouch", &viroOnTouch);
     emscripten::function("viroOnPinch", &viroOnPinch);
+    emscripten::function("viroOnScroll", &viroOnScroll);
     emscripten::function("viroBuildDemoCube", &viroBuildDemoCube);
 
     // Scene graph C API (handle-based)
