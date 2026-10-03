@@ -253,6 +253,12 @@ jobject VROPlatformGetClassLoader(JNIEnv *jni, jobject jcontext);
 // This is safe to call from any thread, even those not spawned in Java
 // (i.e. threads created using pthread_create).
 jclass VROPlatformFindClass(JNIEnv *jni, jobject javaObject, const char *className);
+/*
+ Finds an app class (e.g. "com/viro/core/internal/AVPlayer") from any thread.
+ JNI FindClass only sees bootstrap classes on pure-native threads such as the
+ OpenXR render thread; this falls back to the app context's class loader.
+ */
+jclass VROPlatformFindAppClass(JNIEnv *env, const char *className);
 
 #pragma mark - Android Image Tracking Debugging
 

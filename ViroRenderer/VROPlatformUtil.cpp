@@ -1267,6 +1267,24 @@ jclass VROPlatformFindClass(JNIEnv *jni, jobject javaObject, const char *classNa
     return cls;
 }
 
+jclass VROPlatformFindAppClass(JNIEnv *env, const char *className) {
+    jclass cls = env->FindClass(className);
+    if (cls != nullptr) {
+        return cls;
+    }
+    env->ExceptionClear();
+
+    // ClassLoader.loadClass takes binary names: dots, not slashes.
+    std::string binaryName(className);
+    std::replace(binaryName.begin(), binaryName.end(), '/', '.');
+    cls = VROPlatformFindClass(env, VROPlatformGetJavaAppContext(), binaryName.c_str());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    return cls;
+}
+
 void VROPlatformSetBool(JNIEnv *env, jobject jObj, const char *fieldName, jboolean value) {
     if (jObj == nullptr) {
         pinfo("Attempted to set bool on null object");
@@ -1341,7 +1359,7 @@ void VROPlatformSetEnumValue(JNIEnv *env, jobject jObj, const char *fieldName,
     std::string enumClassPathType = ("L" + enumClassPathName) + ";";
 
     // Grab the jEnumValue for the given C++ Enum string and Enum class.
-    jclass enumClass = env->FindClass(enumClassPathName.c_str());
+    jclass enumClass = VROPlatformFindAppClass(env, enumClassPathName.c_str());
     jfieldID enumValueField = env->GetStaticFieldID(enumClass , enumValueStr.c_str(), enumClassPathType.c_str());
     jobject jEnumValue = env->GetStaticObjectField(enumClass, enumValueField);
 
@@ -1412,7 +1430,7 @@ void VROPlatformSetTrackingImageView(std::string filepath) {
         JNIEnv *env;
         getJNIEnv(&env);
 
-        jclass cls = env->FindClass("com/viro/core/ViroViewARCore");
+        jclass cls = VROPlatformFindAppClass(env, "com/viro/core/ViroViewARCore");
         jmethodID jmethod = env->GetStaticMethodID(cls, "setImageOnTrackingImageView", "(Ljava/lang/String;)Z");
 
         VRO_STRING string = VRO_NEW_STRING(filepath.c_str());

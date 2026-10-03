@@ -111,7 +111,7 @@ VROAVPlayer::VROAVPlayer() :
     _textureId(0) {
     JNIEnv *env = VROPlatformGetJNIEnv();
 
-    jclass cls = env->FindClass(AVPlayerClass);
+    jclass cls = VROPlatformFindAppClass(env, AVPlayerClass);
     jobject jcontext = VROPlatformGetJavaAppContext();
     jmethodID jmethod = env->GetMethodID(cls, "<init>", "(JLandroid/content/Context;)V");
 

@@ -25,7 +25,7 @@ VROAudioPlayerStreamAndroid::VROAudioPlayerStreamAndroid()
     : _jPlayer(nullptr), _streaming(false) {
 
     JNIEnv *env = VROPlatformGetJNIEnv();
-    jclass cls = env->FindClass(kClass);
+    jclass cls = VROPlatformFindAppClass(env, kClass);
     if (!cls) {
         pinfo("VROAudioPlayerStreamAndroid: StreamingAudioPlayer class not found");
         return;
