@@ -19,6 +19,7 @@
 #include "VRODriverOpenGLWasm.h"
 #include "VROInputControllerWasm.h"
 #include "VROInputControllerBase.h"
+#include "VROInputType.h"
 #include "VROThreadRestricted.h"
 #include "VROEye.h"
 #include "VROPlatformUtil.h"
