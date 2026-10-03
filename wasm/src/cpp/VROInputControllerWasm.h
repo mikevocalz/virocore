@@ -62,5 +62,12 @@ private:
     int _viewportWidth = 0;
     int _viewportHeight = 0;
 
+    // Pointer held between DOM down and up, in canvas device pixels. While it
+    // is held the per-frame update aims along the pointer instead of the camera
+    // forward, so the frame loop does not pull a dragged node to screen center.
+    bool _pointerDown = false;
+    float _pointerX = 0;
+    float _pointerY = 0;
+
 };
 #endif

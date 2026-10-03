@@ -45,6 +45,12 @@ void VROInputControllerWasm::onScreenTouch(int action, float x, float y) {
         return;
     }
 
+    if (action == 0 || (action == 1 && _pointerDown)) {
+        _pointerDown = true;
+        _pointerX = x;
+        _pointerY = y;
+    }
+
     VROVector3f ray = calculateCameraRay(x, y);
     VROInputControllerBase::updateHitNode(_latestCamera, _latestCamera.getPosition(), ray);
 
@@ -66,6 +72,7 @@ void VROInputControllerWasm::onScreenTouch(int action, float x, float y) {
     } else if (action == 2) {
         VROInputControllerBase::onButtonEvent(ViroCardBoard::ViewerButton,
                                               VROEventDelegate::ClickState::ClickUp);
+        _pointerDown = false;
     }
     // action == 1 (move) is handled by onMove above; if the pointer currently
     // owns a VRODraggedObject, VROInputControllerBase::processDragging updates
@@ -81,6 +88,13 @@ void VROInputControllerWasm::updateOrientation(const VROCamera &camera) {
     // Grab controller orientation
     VROQuaternion rotation = camera.getRotation();
     VROVector3f controllerForward = rotation.getMatrix().multiply(kBaseForward);
+
+    // A held pointer owns the ray. Aiming along the camera forward here would
+    // feed onMove a screen-center ray every frame and drag the held node there
+    // between pointer events.
+    if (_pointerDown && _viewportWidth > 0 && _viewportHeight > 0) {
+        controllerForward = calculateCameraRay(_pointerX, _pointerY);
+    }
 
     // Perform hit test
     VROInputControllerBase::updateHitNode(camera, camera.getPosition(), controllerForward);
