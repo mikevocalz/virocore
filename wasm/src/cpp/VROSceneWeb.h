@@ -51,6 +51,9 @@ public:
     // state matches VROEventDelegate::PinchState: 1=start, 2=move, 3=end.
     void onPinch(float scaleFactor, int state);
 
+    // Forward browser wheel / trackpad deltas to Viro's OnScroll path.
+    void onScroll(float x, float y);
+
     // Root node of the active scene — the C API attaches bridge-created nodes here.
     std::shared_ptr<VROPortal> getRootNode();
 
