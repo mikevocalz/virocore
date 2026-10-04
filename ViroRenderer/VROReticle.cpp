@@ -145,6 +145,7 @@ void VROReticle::trigger() {
 }
 
 void VROReticle::setEnabled(bool enabled) {
+    _enabled = enabled;
     /*
      Note: As the reticle doesn't currently support hierarchal rendering, We have
      to manually set the property of each node.
