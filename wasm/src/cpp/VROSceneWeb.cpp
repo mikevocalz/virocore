@@ -445,6 +445,16 @@ void VROSceneWeb::onScroll(float x, float y) {
     }
 }
 
+void VROSceneWeb::setReticleVisible(bool visible) {
+    if (!_inputController) return;
+    std::shared_ptr<VROInputPresenter> presenter = _inputController->getPresenter();
+    if (!presenter) return;
+    std::shared_ptr<VROReticle> reticle = presenter->getReticle();
+    if (reticle) {
+        reticle->setEnabled(visible);
+    }
+}
+
 #pragma mark - JS bindings
 
 // A single global scene instance owned by the module. JS calls initViroScene()
@@ -541,6 +551,12 @@ static void viroOnPinch(float scaleFactor, int state) {
 static void viroOnScroll(float x, float y) {
     if (sScene) {
         sScene->onScroll(x, y);
+    }
+}
+
+static void viroSetReticleVisible(bool visible) {
+    if (sScene) {
+        sScene->setReticleVisible(visible);
     }
 }
 
@@ -2239,6 +2255,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroOnTouch", &viroOnTouch);
     emscripten::function("viroOnPinch", &viroOnPinch);
     emscripten::function("viroOnScroll", &viroOnScroll);
+    emscripten::function("viroSetReticleVisible", &viroSetReticleVisible);
     emscripten::function("viroBuildDemoCube", &viroBuildDemoCube);
 
     // Scene graph C API (handle-based)

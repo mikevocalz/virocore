@@ -54,6 +54,10 @@ public:
     // Forward browser wheel / trackpad deltas to Viro's OnScroll path.
     void onScroll(float x, float y);
 
+    // Show or hide the gaze reticle. A mouse or touch user aims with the
+    // pointer, so a dot fixed at screen centre only gets in the way there.
+    void setReticleVisible(bool visible);
+
     // Root node of the active scene — the C API attaches bridge-created nodes here.
     std::shared_ptr<VROPortal> getRootNode();
 
