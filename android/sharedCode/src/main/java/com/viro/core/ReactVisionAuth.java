@@ -62,7 +62,8 @@ public final class ReactVisionAuth {
         nativeSetProjectId(projectId);
     }
 
-    private static native void nativeSetSession(String baseUrl, String accessToken, String clientTag);
+    private static native void nativeSetSession(String baseUrl, String accessToken, String clientTag,
+                                                String functionRegion);
     private static native void nativeClearSession();
     private static native void nativeSetProjectId(String projectId);
 }
