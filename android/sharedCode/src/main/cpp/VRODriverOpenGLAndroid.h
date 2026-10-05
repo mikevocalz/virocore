@@ -38,6 +38,7 @@
 #include "VROPlatformUtil.h"
 #include "VROStringUtil.h"
 #include "VROTypefaceCollection.h"
+#include <unistd.h>
 
 class VRODriverOpenGLAndroid : public VRODriverOpenGL {
 
@@ -180,8 +181,36 @@ protected:
             }
         }
 
+        // System fallback fonts, appended last so VROTypefaceCollection::computeRuns
+        // only routes uncovered code points (emoji, arrows, symbols) to them.
+        int fallbacksAttached = 0;
+        for (const std::string &fallback : kFallbackFontFiles) {
+            if (access(fallback.c_str(), R_OK) != 0) {
+                continue;
+            }
+            std::shared_ptr<VROTypeface> typeface = std::make_shared<VROTypefaceAndroid>(
+                    fallback, fallback, 0, size, VROFontStyle::Normal, VROFontWeight::Regular, driver);
+            typeface->loadFace();
+            typefaces.push_back(typeface);
+            if (++fallbacksAttached >= 4) {
+                break; // emoji + symbols is enough; keep glyph-map/atlas memory small
+            }
+        }
+
         return std::make_shared<VROTypefaceCollection>(typefaces);
     }
+
+    // Emoji first (SMP code points), then symbol subsets covering arrows and
+    // misc glyphs the primary UI fonts lack. NotoColorEmoji.ttf is omitted:
+    // on this pipeline it is a COLR font whose base glyphs are empty outlines,
+    // and its cmap claims would win runs yet rasterize to nothing.
+    const std::vector<std::string> kFallbackFontFiles = {
+        "/system/fonts/NotoColorEmojiLegacy.ttf",
+        "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
+        "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
+        "/system/fonts/DroidSansFallbackFull.ttf",
+        "/system/fonts/DroidSansFallback.ttf"
+    };
 
 private:
 

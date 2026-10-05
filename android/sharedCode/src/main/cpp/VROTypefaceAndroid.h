@@ -63,6 +63,10 @@ private:
     std::string _file;
     int _index;
     int _numFaces;
+    // Ratio of requested size to actual face metrics. 1.0 for scalable fonts;
+    // < 1 when a bitmap-strike font (e.g. NotoColorEmoji) reported strike
+    // pixels instead of the requested point size.
+    float _glyphPixelScale = 1.0f;
 
     std::string getFontPath(std::string fontName, std::string suffix);
 

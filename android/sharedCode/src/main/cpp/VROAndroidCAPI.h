@@ -81,10 +81,32 @@
 #define VRO_STRING_WIDE jstring
 #define VRO_IS_WIDE_STRING_EMPTY(str) \
     (str == NULL || env->GetStringLength(str) == 0)
+
+// jchar is UTF-16: join surrogate pairs into single code points so non-BMP
+// characters (emoji, mathematical symbols) reach FreeType as one glyph key.
+// wchar_t is 32-bit on Android, so decoded code points fit.
+static inline std::wstring VROUTF16ToWide(const jchar *chars, jsize length) {
+    std::wstring out;
+    out.reserve(length);
+    for (jsize i = 0; i < length; i++) {
+        jchar c = chars[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < length) {
+            jchar low = chars[i + 1];
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                out += static_cast<wchar_t>(0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00));
+                i++;
+                continue;
+            }
+        }
+        out += static_cast<wchar_t>(c);
+    }
+    return out;
+}
+
 #define VRO_STRING_GET_CHARS_WIDE(str, wide_str) \
     const jchar *text_c = env->GetStringChars(str, NULL); \
     jsize textLength = env->GetStringLength(str); \
-    wide_str.assign(text_c, text_c + textLength); \
+    wide_str = VROUTF16ToWide(text_c, textLength); \
     env->ReleaseStringChars(str, text_c)
 
 #define VRO_ARRAY(type) jobjectArray

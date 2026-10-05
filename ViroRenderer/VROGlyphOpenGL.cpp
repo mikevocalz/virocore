@@ -34,12 +34,28 @@
 #include "VROVectorizer.h"
 #include "VROContour.h"
 #include "VROGlyphAtlasOpenGL.h"
+#include "stb_image.h"
 #include "poly2tri/poly2tri.h"
 
 #if VRO_PLATFORM_WASM
 #include "ftstroke.h"
+#include "tttables.h"
 #else
 #include "freetype/ftstroke.h"
+#include "freetype/tttables.h"
+#endif
+
+#ifndef TTAG_CBLC
+#define TTAG_CBLC FT_MAKE_TAG('C', 'B', 'L', 'C')
+#endif
+#ifndef TTAG_CBDT
+#define TTAG_CBDT FT_MAKE_TAG('C', 'B', 'D', 'T')
+#endif
+#ifndef TTAG_EBLC
+#define TTAG_EBLC FT_MAKE_TAG('E', 'B', 'L', 'C')
+#endif
+#ifndef TTAG_EBDT
+#define TTAG_EBDT FT_MAKE_TAG('E', 'B', 'D', 'T')
 #endif
 
 static const int kBezierSteps = 4;
@@ -54,36 +70,36 @@ VROGlyphOpenGL::~VROGlyphOpenGL() {
 }
 
 bool VROGlyphOpenGL::loadGlyph(FT_Face face, uint32_t charCode, uint32_t variantSelector) {
-    /*
-     Load the glyph from freetype.
-     */
+    // Colour-capable fonts (e.g. NotoColorEmoji's CBDT bitmaps) only yield
+    // their embedded bitmap when FT_LOAD_COLOR is set.
+    const FT_Int32 loadFlags = FT_LOAD_DEFAULT | (FT_HAS_COLOR(face) ? FT_LOAD_COLOR : 0);
     if (variantSelector != 0) {
         FT_UInt glyphIndex = FT_Face_GetCharVariantIndex(face, charCode, variantSelector);
         if (glyphIndex == 0) {
             // Undefined character code, just attempt to load without the selector
-            if (FT_Load_Char(face, charCode, FT_LOAD_DEFAULT)) {
+            if (FT_Load_Char(face, charCode, loadFlags)) {
                 pinfo("Failed to load glyph %d (dropped variant selector %d)", charCode, variantSelector);
                 return false;
             }
         }
         else {
-            if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_DEFAULT)) {
+            if (FT_Load_Glyph(face, glyphIndex, loadFlags)) {
                 pinfo("Failed to load glyph %d with variant selector %d", charCode, variantSelector);
                 return false;
             }
         }
     }
-    else if (FT_Load_Char(face, charCode, FT_LOAD_DEFAULT)) {
+    else if (FT_Load_Char(face, charCode, loadFlags)) {
         pinfo("Failed to load glyph %d", charCode);
         return false;
     }
-    
+
     FT_GlyphSlot &glyph = face->glyph;
-    
+
     /*
-     Each advance unit is 1/64 of a pixel so divide by 64 (>> 6) to get advance in pixels.
+     Each advance unit is 1/64 of a pixel so divide by 64 to get advance in pixels.
      */
-    _advance = glyph->advance.x >> 6;
+    _advance = static_cast<long>((glyph->advance.x / 64.0f) * _pixelScale);
     return true;
 }
 
@@ -95,18 +111,37 @@ bool VROGlyphOpenGL::loadBitmap(FT_Face face, uint32_t charCode, uint32_t varian
                                 std::vector<std::shared_ptr<VROGlyphAtlas>> *glyphAtlases,
                                 std::shared_ptr<VRODriver> driver) {
     if (!loadGlyph(face, charCode, variantSelector)) {
-        return false;
+        // Embedded color-bitmap strikes (CBDT PNG) cannot be rasterized by the
+        // bundled FreeType build (no libpng); extract the strike directly.
+        return loadEmbeddedBitmap(face, charCode, glyphAtlases, driver);
     }
     FT_GlyphSlot &glyph = face->glyph;
-    
+
     if (glyphAtlases->empty()) {
         glyphAtlases->push_back(std::make_shared<VROGlyphAtlasOpenGL>(false));
     }
     std::shared_ptr<VROGlyphAtlas> atlas = glyphAtlases->back();
-    
+
     FT_Render_Glyph(glyph, FT_RENDER_MODE_LIGHT);
-    FT_Bitmap &bitmap = glyph->bitmap;
-    
+    FT_Bitmap bitmap = glyph->bitmap;
+
+    // Embedded colour bitmaps are BGRA; the atlas stores single-channel alpha
+    // so reduce them to their alpha channel (a colour-emoji monochrome
+    // silhouette — full colour needs a BGRA atlas, not a glyph change).
+    std::vector<FT_Byte> bgraToAlpha;
+    if (bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
+        bgraToAlpha.resize(static_cast<size_t>(bitmap.width) * bitmap.rows);
+        for (unsigned int j = 0; j < bitmap.rows; j++) {
+            for (unsigned int i = 0; i < bitmap.width; i++) {
+                bgraToAlpha[i + j * bitmap.width] = bitmap.buffer[i * 4 + 3 + j * bitmap.pitch];
+            }
+        }
+        bitmap.buffer = bgraToAlpha.data();
+        bitmap.pitch = bitmap.width;
+        bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
+        bitmap.num_grays = 256;
+    }
+
     VROAtlasLocation location;
     if (atlas->glyphWillFit(bitmap, &location)) {
         atlas->write(bitmap, location, driver);
@@ -114,7 +149,7 @@ bool VROGlyphOpenGL::loadBitmap(FT_Face face, uint32_t charCode, uint32_t varian
         // Did not fit in the atlas, create a new atlas
         glyphAtlases->push_back(std::make_shared<VROGlyphAtlasOpenGL>(false));
         atlas = glyphAtlases->back();
-        
+
         if (atlas->glyphWillFit(bitmap, &location)) {
             atlas->write(bitmap, location, driver);
         } else {
@@ -122,16 +157,236 @@ bool VROGlyphOpenGL::loadBitmap(FT_Face face, uint32_t charCode, uint32_t varian
             return false;
         }
     }
-    
+
     VROGlyphBitmap vBitmap;
     vBitmap.atlas = atlas;
-    vBitmap.bearing = VROVector3f(glyph->bitmap_left, glyph->bitmap_top);
-    vBitmap.size = VROVector3f(bitmap.width, bitmap.rows);
+    vBitmap.bearing = VROVector3f(glyph->bitmap_left * _pixelScale, glyph->bitmap_top * _pixelScale);
+    vBitmap.size = VROVector3f(bitmap.width * _pixelScale, bitmap.rows * _pixelScale);
     vBitmap.minU = ((float) location.minU) / (float) atlas->getSize();
     vBitmap.maxU = ((float) location.maxU) / (float) atlas->getSize();
     vBitmap.minV = ((float) location.minV) / (float) atlas->getSize();
     vBitmap.maxV = ((float) location.maxV) / (float) atlas->getSize();
-    
+
+    _bitmaps[0] = vBitmap;
+    return true;
+}
+
+static inline uint16_t readBE16(const uint8_t *p) {
+    return static_cast<uint16_t>((p[0] << 8) | p[1]);
+}
+static inline uint32_t readBE32(const uint8_t *p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
+
+static bool loadSfntTable(FT_Face face, FT_ULong tag, std::vector<FT_Byte> &out) {
+    FT_ULong len = 0;
+    if (FT_Load_Sfnt_Table(face, tag, 0, nullptr, &len) != 0 || len == 0) {
+        return false;
+    }
+    out.resize(len);
+    return FT_Load_Sfnt_Table(face, tag, 0, out.data(), &len) == 0;
+}
+
+bool VROGlyphOpenGL::loadEmbeddedBitmap(FT_Face face, uint32_t charCode,
+                                        std::vector<std::shared_ptr<VROGlyphAtlas>> *glyphAtlases,
+                                        std::shared_ptr<VRODriver> driver) {
+    FT_UInt glyphId = FT_Get_Char_Index(face, charCode);
+    if (glyphId == 0) {
+        return false;
+    }
+
+    std::vector<FT_Byte> cblc, cbdt;
+    if (!loadSfntTable(face, TTAG_CBLC, cblc) && !loadSfntTable(face, TTAG_EBLC, cblc)) {
+        return false;
+    }
+    if (!loadSfntTable(face, TTAG_CBDT, cbdt) && !loadSfntTable(face, TTAG_EBDT, cbdt)) {
+        return false;
+    }
+    if (cblc.size() < 8) {
+        return false;
+    }
+
+    // CBLC: u32 version, u32 numSizes, then 48-byte bitmapSize records.
+    const uint32_t numSizes = readBE32(cblc.data() + 4);
+    const int wantedPpem = face->size ? face->size->metrics.y_ppem : 0;
+    const uint8_t *sizeRecord = nullptr;
+    int bestPpemDiff = INT32_MAX;
+    for (uint32_t i = 0; i < numSizes; i++) {
+        const uint8_t *rec = cblc.data() + 8 + i * 48;
+        if (cblc.data() + cblc.size() < rec + 48) {
+            break;
+        }
+        const uint16_t startGlyph = readBE16(rec + 40);
+        const uint16_t endGlyph = readBE16(rec + 42);
+        if (glyphId < startGlyph || glyphId > endGlyph) {
+            continue;
+        }
+        int diff = wantedPpem > 0 ? std::abs(rec[45] - wantedPpem) : 0;
+        if (diff < bestPpemDiff) {
+            bestPpemDiff = diff;
+            sizeRecord = rec;
+        }
+    }
+    if (!sizeRecord) {
+        return false;
+    }
+
+    const uint32_t idxArrayOff = readBE32(sizeRecord);
+    const uint32_t numIdxSubTables = readBE32(sizeRecord + 8);
+
+    // Each indexSubTableArray entry: firstGlyph u16, lastGlyph u16,
+    // additionalOffsetToIndexSubtable u32 (relative to the array start).
+    const uint8_t *subTable = nullptr;
+    uint16_t firstGlyph = 0, lastGlyph = 0;
+    for (uint32_t i = 0; i < numIdxSubTables; i++) {
+        const uint8_t *entry = cblc.data() + idxArrayOff + i * 8;
+        if (cblc.data() + cblc.size() < entry + 8) {
+            break;
+        }
+        firstGlyph = readBE16(entry);
+        lastGlyph = readBE16(entry + 2);
+        if (glyphId >= firstGlyph && glyphId <= lastGlyph) {
+            const uint32_t addOff = readBE32(entry + 4);
+            if (idxArrayOff + addOff + 8 <= cblc.size()) {
+                subTable = cblc.data() + idxArrayOff + addOff;
+            }
+            break;
+        }
+    }
+    if (!subTable) {
+        return false;
+    }
+
+    const uint16_t indexFormat = readBE16(subTable);
+    const uint16_t imageFormat = readBE16(subTable + 2);
+    const uint32_t imageDataOffset = readBE32(subTable + 4);
+
+    // Resolve the glyph's image-data offset/length within CBDT.
+    uint32_t imageOff = 0, imageLen = 0;
+    const uint32_t glyphCount = static_cast<uint32_t>(lastGlyph) - firstGlyph + 1;
+    if (indexFormat == 1) {
+        // u32 offsetArray[glyphCount + 1] relative to imageDataOffset.
+        const uint8_t *arr = subTable + 8;
+        const uint32_t idx = glyphId - firstGlyph;
+        if (arr + (idx + 2) * 4 > cblc.data() + cblc.size()) {
+            return false;
+        }
+        imageOff = readBE32(arr + idx * 4);
+        imageLen = readBE32(arr + (idx + 1) * 4) - imageOff;
+    } else if (indexFormat == 3) {
+        // Array of {glyphId u16, offset u32} pairs relative to imageDataOffset.
+        const uint8_t *pairs = subTable + 8;
+        for (uint32_t i = 0; i < glyphCount; i++) {
+            const uint8_t *pair = pairs + i * 6;
+            if (pair + 6 > cblc.data() + cblc.size()) {
+                return false;
+            }
+            if (readBE16(pair) == glyphId) {
+                imageOff = readBE32(pair + 2);
+                if (i + 1 < glyphCount) {
+                    imageLen = readBE32(pair + 8) - imageOff;
+                } else {
+                    imageLen = static_cast<uint32_t>(cbdt.size()) - imageDataOffset - imageOff;
+                }
+                break;
+            }
+        }
+        if (imageLen == 0) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    const uint8_t *image = cbdt.data() + imageDataOffset + imageOff;
+    if (imageOff == 0 || imageDataOffset + imageOff + imageLen > cbdt.size()) {
+        return false;
+    }
+
+    // imageFormat 17: smallGlyphMetrics(5B) + dataLen u32 + PNG;
+    // 18: bigGlyphMetrics(8B) + dataLen u32 + PNG; 19: raw image data.
+    int bearingX = 0, bearingY = 0, advance = 0;
+    const uint8_t *png = image;
+    uint32_t pngLen = imageLen;
+    if (imageFormat == 17 && imageLen >= 9) {
+        bearingX = static_cast<int8_t>(image[2]);
+        bearingY = static_cast<int8_t>(image[3]);
+        advance = image[4];
+        pngLen = readBE32(image + 5);
+        png += 9;
+        if (pngLen > imageLen - 9) {
+            return false;
+        }
+    } else if (imageFormat == 18 && imageLen >= 12) {
+        bearingX = static_cast<int8_t>(image[2]);
+        bearingY = static_cast<int8_t>(image[3]);
+        advance = image[4];
+        pngLen = readBE32(image + 8);
+        png += 12;
+        if (pngLen > imageLen - 12) {
+            return false;
+        }
+    } else if (imageFormat != 19) {
+        return false;
+    }
+
+    int w = 0, h = 0, comp = 0;
+    stbi_uc *rgba = stbi_load_from_memory(png, static_cast<int>(pngLen), &w, &h, &comp, 4);
+    if (!rgba) {
+        return false;
+    }
+
+    // Alpha-only silhouette, same atlas format as other glyphs.
+    std::vector<FT_Byte> alpha(static_cast<size_t>(w) * h);
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            alpha[i + j * w] = rgba[(i + j * w) * 4 + 3];
+        }
+    }
+    stbi_image_free(rgba);
+
+    if (advance == 0) {
+        advance = w;
+    }
+    _advance = static_cast<long>(advance * _pixelScale);
+
+    FT_Bitmap bitmap;
+    bitmap.width = static_cast<unsigned int>(w);
+    bitmap.rows = static_cast<unsigned int>(h);
+    bitmap.pitch = w;
+    bitmap.buffer = alpha.data();
+    bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
+    bitmap.num_grays = 256;
+
+    if (glyphAtlases->empty()) {
+        glyphAtlases->push_back(std::make_shared<VROGlyphAtlasOpenGL>(false));
+    }
+    std::shared_ptr<VROGlyphAtlas> atlas = glyphAtlases->back();
+
+    VROAtlasLocation location;
+    if (atlas->glyphWillFit(bitmap, &location)) {
+        atlas->write(bitmap, location, driver);
+    } else {
+        glyphAtlases->push_back(std::make_shared<VROGlyphAtlasOpenGL>(false));
+        atlas = glyphAtlases->back();
+        if (atlas->glyphWillFit(bitmap, &location)) {
+            atlas->write(bitmap, location, driver);
+        } else {
+            pinfo("Failed to render glyph for char code %d", charCode);
+            return false;
+        }
+    }
+
+    VROGlyphBitmap vBitmap;
+    vBitmap.atlas = atlas;
+    vBitmap.bearing = VROVector3f(bearingX * _pixelScale, bearingY * _pixelScale);
+    vBitmap.size = VROVector3f(bitmap.width * _pixelScale, bitmap.rows * _pixelScale);
+    vBitmap.minU = ((float) location.minU) / (float) atlas->getSize();
+    vBitmap.maxU = ((float) location.maxU) / (float) atlas->getSize();
+    vBitmap.minV = ((float) location.minV) / (float) atlas->getSize();
+    vBitmap.maxV = ((float) location.maxV) / (float) atlas->getSize();
+
     _bitmaps[0] = vBitmap;
     return true;
 }
@@ -179,13 +434,13 @@ bool VROGlyphOpenGL::loadOutlineBitmap(FT_Library library, FT_Face face, uint32_
     
     VROGlyphBitmap vBitmap;
     vBitmap.atlas = atlas;
-    vBitmap.bearing = VROVector3f(glyphSlot->bitmap_left, glyphSlot->bitmap_top);
-    vBitmap.size = VROVector3f(bitmap.width, bitmap.rows);
+    vBitmap.bearing = VROVector3f(glyphSlot->bitmap_left * _pixelScale, glyphSlot->bitmap_top * _pixelScale);
+    vBitmap.size = VROVector3f(bitmap.width * _pixelScale, bitmap.rows * _pixelScale);
     vBitmap.minU = ((float) location.minU) / (float) atlas->getSize();
     vBitmap.maxU = ((float) location.maxU) / (float) atlas->getSize();
     vBitmap.minV = ((float) location.minV) / (float) atlas->getSize();
     vBitmap.maxV = ((float) location.maxV) / (float) atlas->getSize();
-    
+
     _bitmaps[(int) outlineWidth] = vBitmap;
     return true;
 }

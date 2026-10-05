@@ -129,7 +129,20 @@ public:
      metadata required for rendering.
      */
     const VROGlyphBitmap &getBitmap(int outlineWidth) const {
-        return _bitmaps.find(outlineWidth)->second;
+        auto it = _bitmaps.find(outlineWidth);
+        if (it == _bitmaps.end()) {
+            // Glyph failed to rasterize (e.g. an embedded-bitmap strike the
+            // FreeType build cannot decode). Returning an empty bitmap with a
+            // null atlas lets callers skip it instead of dereferencing the
+            // end() iterator's garbage.
+            static VROGlyphBitmap empty;
+            return empty;
+        }
+        return it->second;
+    }
+
+    bool hasBitmap(int outlineWidth) const {
+        return _bitmaps.find(outlineWidth) != _bitmaps.end();
     }
     
 #pragma mark - Vector Fonts
