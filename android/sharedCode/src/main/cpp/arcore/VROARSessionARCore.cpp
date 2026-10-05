@@ -1721,7 +1721,7 @@ VROEarthTrackingState VROARSessionARCore::getEarthTrackingState() const {
     arcore::TrackingState state = _session->getEarthTrackingState();
     switch (state) {
         case arcore::TrackingState::Tracking:
-            return VROEarthTrackingState::Tracking;
+            return VROEarthTrackingState::Enabled;
         case arcore::TrackingState::Paused:
             return VROEarthTrackingState::Paused;
         case arcore::TrackingState::Stopped:
