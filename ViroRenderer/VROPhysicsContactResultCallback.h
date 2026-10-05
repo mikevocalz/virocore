@@ -28,6 +28,7 @@
 
 #include <btBulletDynamicsCommon.h>
 #include "VROPhysicsBody.h"
+#include "VROPhysicsWorld.h"
 
 /*
  VROPhysicsContactResultCallback is used by Bullet to return a list of collision hit results that are

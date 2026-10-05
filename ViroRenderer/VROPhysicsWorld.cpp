@@ -207,10 +207,20 @@ void VROPhysicsWorld::computeCollisions() {
         const btCollisionObject *obA = contactManifold->getBody0();
         const btCollisionObject *obB = contactManifold->getBody1();
 
-        // Skip notification if either body doesn't have a VROPhysicsBody attached
-        // (e.g., world mesh collision bodies are raw btRigidBody without VROPhysicsBody)
-        // Note: Physics collision still happens, we just skip delegate notification
-        if (obA->getUserPointer() == nullptr || obB->getUserPointer() == nullptr) {
+        // The AR world mesh is a raw btRigidBody with no VROPhysicsBody behind it. It is still a
+        // real collider, so a body hitting it must hear about it; it just cannot be the one we
+        // notify, and its user pointer is its tag rather than a VROPhysicsBody.
+        bool isWorldMeshA = obA->getUserIndex() == kVROPhysicsUserIndexWorldMesh;
+        bool isWorldMeshB = obB->getUserIndex() == kVROPhysicsUserIndexWorldMesh;
+
+        // Anything else without a VROPhysicsBody has nothing to notify and nothing to name.
+        if ((obA->getUserPointer() == nullptr && !isWorldMeshA) ||
+            (obB->getUserPointer() == nullptr && !isWorldMeshB)) {
+            continue;
+        }
+
+        // Two world mesh bodies cannot collide meaningfully, and neither side could be notified.
+        if (isWorldMeshA && isWorldMeshB) {
             continue;
         }
 
