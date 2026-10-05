@@ -38,11 +38,13 @@ public:
             _baseUrl.clear();
             _accessToken.clear();
             _clientTag.clear();
+            _functionRegion.clear();
             return;
         }
         _baseUrl = url;
         _accessToken = accessToken;
         _clientTag = clientTag;
+        _functionRegion = functionRegion;
     }
 
     void clearSession() {
@@ -81,7 +83,9 @@ public:
     /**
      * Base URL and headers read under one lock, so a request never pairs one
      * session's URL with another's token. Leaves both untouched and returns
-     * false without a session.
+     * false without a session. For platform requests, so the headers carry
+     * x-region too; sessionHeaders() leaves it out, since the co-location
+     * relay is not an edge function.
      */
     bool getSession(std::string &baseUrl, std::map<std::string, std::string> &headers) const {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -90,6 +94,9 @@ public:
         }
         baseUrl = _baseUrl;
         headers = headersLocked();
+        if (!_functionRegion.empty()) {
+            headers["x-region"] = _functionRegion;
+        }
         return true;
     }
 
@@ -126,6 +133,7 @@ private:
     std::string _baseUrl;
     std::string _accessToken;
     std::string _clientTag;
+    std::string _functionRegion;
     std::string _projectId;
 };
 
