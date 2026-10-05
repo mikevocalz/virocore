@@ -41,6 +41,7 @@ VROAVCaptureController::VROAVCaptureController() :
     _isRecording(false),
     _photoOutput(nil),
     _movieOutput(nil),
+    _audioInput(nil),
     _recordingPath(nil),
     _lastSampleBuffer(nil) {
 }
