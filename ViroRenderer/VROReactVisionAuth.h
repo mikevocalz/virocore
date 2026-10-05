@@ -25,9 +25,14 @@ public:
         return *instance;
     }
 
-    /** An empty baseUrl or accessToken clears the session. */
+    /**
+     * An empty baseUrl or accessToken clears the session. `functionRegion` is
+     * the session project's database region, sent as x-region on platform
+     * requests so its edge functions run beside the database. Empty adds none
+     * here; ReactVisionCCA still pins the default platform URL itself.
+     */
     void setSession(const std::string &baseUrl, const std::string &accessToken,
-                    const std::string &clientTag) {
+                    const std::string &clientTag, const std::string &functionRegion = "") {
         std::string url = baseUrl;
         while (!url.empty() && url.back() == '/') {
             url.pop_back();
