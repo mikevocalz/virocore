@@ -33,7 +33,7 @@
  * Represents the Earth tracking state from the Geospatial API.
  */
 enum class VROEarthTrackingState {
-    Tracking,   // Earth is being tracked with VPS/GPS fusion
+    Enabled,    // Earth is being tracked with VPS/GPS fusion
     Paused,     // Tracking is paused (e.g., app backgrounded)
     Stopped,    // No tracking available
     // WS-D: appended, not inserted — Android's JNI bridge maps this enum to Java

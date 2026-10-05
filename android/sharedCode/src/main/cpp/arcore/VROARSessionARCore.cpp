@@ -1712,7 +1712,7 @@ VROEarthTrackingState VROARSessionARCore::getEarthTrackingState() const {
         bool accurate = _lastKnownGPSPose.isValid() &&
                         _lastKnownGPSPose.horizontalAccuracy > 0 &&
                         _lastKnownGPSPose.horizontalAccuracy < kVROGeospatialAccuracyThresholdMeters;
-        return accurate ? VROEarthTrackingState::Tracking
+        return accurate ? VROEarthTrackingState::Enabled
                         : VROEarthTrackingState::Localizing;
     }
 #endif
