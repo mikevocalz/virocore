@@ -161,10 +161,14 @@ public:
 
 /*
  * Helper functions for converting enum values to strings.
+ *
+ * None of these has a caller. They are NOT the vocabulary that reaches JS either: the bridges
+ * map the enums by hand (VRTARSceneNavigator.mm / .java) and answer "Enabled"/"Paused"/...
+ * Wiring one of these up would quietly change what apps receive.
  */
 inline std::string VROEarthTrackingStateToString(VROEarthTrackingState state) {
     switch (state) {
-        case VROEarthTrackingState::Tracking: return "TRACKING";
+        case VROEarthTrackingState::Enabled: return "ENABLED";
         case VROEarthTrackingState::Paused: return "PAUSED";
         case VROEarthTrackingState::Stopped: return "STOPPED";
         case VROEarthTrackingState::Localizing: return "LOCALIZING";
