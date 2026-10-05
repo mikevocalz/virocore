@@ -1228,6 +1228,10 @@
 		E5A001000000000000000003 /* VROEngineAccessorABI.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E5A001000000000000000001 /* VROEngineAccessorABI.cpp */; };
 		E6B400000000000000000002 /* VROEngineAccessorBackend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E6B400000000000000000001 /* VROEngineAccessorBackend.cpp */; };
 		E6B400000000000000000003 /* VROEngineAccessorBackend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E6B400000000000000000001 /* VROEngineAccessorBackend.cpp */; };
+		E5C7A10000000001B0000001 /* VROExternalSurfaceTexture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E5C7A10000000001A0000001 /* VROExternalSurfaceTexture.cpp */; };
+		E5C7A10000000001B0000002 /* VROExternalSurfaceTextureImpl.mm in Sources */ = {isa = PBXBuildFile; fileRef = E5C7A10000000001A0000002 /* VROExternalSurfaceTextureImpl.mm */; };
+		E5C7A10000000001B0000003 /* VROExternalSurfaceTexture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E5C7A10000000001A0000003 /* VROExternalSurfaceTexture.cpp */; };
+		E5C7A10000000001B0000004 /* VROExternalSurfaceTextureImpl.mm in Sources */ = {isa = PBXBuildFile; fileRef = E5C7A10000000001A0000004 /* VROExternalSurfaceTextureImpl.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -2524,6 +2528,10 @@
 		E6B200000000000000000001 /* VROEngineGeometryABI.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = VROEngineGeometryABI.cpp; path = ../ViroRenderer/extension/VROEngineGeometryABI.cpp; sourceTree = SOURCE_ROOT; };
 		E6B300000000000000000001 /* VROEngineGeometryBackend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = VROEngineGeometryBackend.cpp; path = ../ViroRenderer/extension/VROEngineGeometryBackend.cpp; sourceTree = SOURCE_ROOT; };
 		E6B400000000000000000001 /* VROEngineAccessorBackend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = VROEngineAccessorBackend.cpp; path = ../ViroRenderer/extension/VROEngineAccessorBackend.cpp; sourceTree = SOURCE_ROOT; };
+		E5C7A10000000001A0000001 /* VROExternalSurfaceTexture.cpp */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.objcpp; fileEncoding = 4; path = VROExternalSurfaceTexture.cpp; sourceTree = "<group>"; };
+		E5C7A10000000001A0000002 /* VROExternalSurfaceTextureImpl.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = VROExternalSurfaceTextureImpl.mm; sourceTree = "<group>"; };
+		E5C7A10000000001A0000003 /* VROExternalSurfaceTexture.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VROExternalSurfaceTexture.cpp; path = ../ViroRenderer/VROExternalSurfaceTexture.cpp; sourceTree = "<absolute>"; };
+		E5C7A10000000001A0000004 /* VROExternalSurfaceTextureImpl.mm */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.objcpp; name = VROExternalSurfaceTextureImpl.mm; path = ViroKit/VROExternalSurfaceTextureImpl.mm; sourceTree = "<absolute>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2778,6 +2786,7 @@
 				A597F8DF201AB3E4007EE387 /* VROPrefilterRenderPass.h */,
 				A597F8EF201ADD17007EE387 /* VROBRDFRenderPass.cpp */,
 				A597F8EE201ADD16007EE387 /* VROBRDFRenderPass.h */,
+				E5C7A10000000001A0000001 /* VROExternalSurfaceTexture.cpp */,
 			);
 			name = Renderer;
 			sourceTree = "<group>";
@@ -3109,6 +3118,7 @@
 				8B2F2A461F6B8E2D000C9924 /* VROPortalDelegateiOS.h */,
 				8F17D53E1FCE165400141042 /* VROViewRecorder.h */,
 				8F17D53F1FCE165400141042 /* VROViewRecorder.mm */,
+				E5C7A10000000001A0000002 /* VROExternalSurfaceTextureImpl.mm */,
 			);
 			name = "iOS Impl";
 			sourceTree = "<group>";
@@ -4113,6 +4123,8 @@
 				0D214C235F19ECA413A02F91 /* VROTypefaceiOS.cpp */,
 				06A64FECE816FEBDEDF90AA3 /* VROVisionOSRenderStubs.cpp */,
 				F663439D34A14DE135A2D701 /* Shaders.metal */,
+				E5C7A10000000001A0000003 /* VROExternalSurfaceTexture.cpp */,
+				E5C7A10000000001A0000004 /* VROExternalSurfaceTextureImpl.mm */,
 			);
 			name = ViroKitVisionOS;
 			sourceTree = "<group>";
@@ -5374,6 +5386,8 @@
 				8FD4DEFE1C18ED22003DC425 /* VROShapeUtils.cpp in Sources */,
 				14426EEDC8513DBFAE126A49 /* VROARSessionRecorderIOS.mm in Sources */,
 				9F2A45203A91D7E0E12C5734 /* VROARWorldMesh.cpp in Sources */,
+				E5C7A10000000001B0000001 /* VROExternalSurfaceTexture.cpp in Sources */,
+				E5C7A10000000001B0000002 /* VROExternalSurfaceTextureImpl.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -5519,6 +5533,8 @@
 				F37BD38C08DCB17A6F88A971 /* VROTypefaceiOS.cpp in Sources */,
 				7CEFDAE56318349A3E81E25D /* VROVisionOSRenderStubs.cpp in Sources */,
 				03B7FE975986133ED1AA3814 /* Shaders.metal in Sources */,
+				E5C7A10000000001B0000003 /* VROExternalSurfaceTexture.cpp in Sources */,
+				E5C7A10000000001B0000004 /* VROExternalSurfaceTextureImpl.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

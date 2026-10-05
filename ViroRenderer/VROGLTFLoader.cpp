@@ -2962,8 +2962,19 @@ std::shared_ptr<VROMaterial> VROGLTFLoader::getMaterial(const tinygltf::Model &g
         mode = gAdditionalMap["alphaMode"].string_value;
     }
 
+    /*
+      The transparency mode alone does not decide whether the GPU blends.
+      VROMaterial defaults _blendMode to Alpha, and bindProperties pushes that
+      straight to the driver, so a material that never sets it is blended no
+      matter what glTF declared. That default turns OPAQUE texels with a low
+      alpha channel into holes, and gives a MASK material alpha testing AND
+      alpha blending at once — order-dependent cards that drop in and out with
+      view angle. glTF's alphaMode is the authority for both properties, so
+      set them together and never leave the blend mode implicit.
+    */
     if (VROStringUtil::strcmpinsensitive(mode, "OPAQUE")) {
-        vroMat->setTransparencyMode(VROTransparencyMode::RGBZero);
+        vroMat->setTransparencyMode(VROTransparencyMode::AOne);
+        vroMat->setBlendMode(VROBlendMode::None);
     } else if (VROStringUtil::strcmpinsensitive(mode, "MASK")) {
         vroMat->setTransparencyMode(VROTransparencyMode::Mask);
         // Parse alphaCutoff, default is 0.5 per glTF spec
@@ -2972,8 +2983,12 @@ std::shared_ptr<VROMaterial> VROGLTFLoader::getMaterial(const tinygltf::Model &g
             alphaCutoff = (float)gAdditionalMap["alphaCutoff"].Factor();
         }
         vroMat->setAlphaCutoff(alphaCutoff);
+        /* A cutout is resolved by the discard, not by blending: keeping blend
+           on is what makes hair strands sort against themselves. */
+        vroMat->setBlendMode(VROBlendMode::None);
     } else if (VROStringUtil::strcmpinsensitive(mode, "BLEND")) {
         vroMat->setTransparencyMode(VROTransparencyMode::AOne);
+        vroMat->setBlendMode(VROBlendMode::Alpha);
     }
 
     // Process emissive material properties
