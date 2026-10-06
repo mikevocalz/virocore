@@ -121,6 +121,7 @@ private:
      Movie file output — added during startRecording, removed after stopRecording.
      */
     AVCaptureMovieFileOutput *_movieOutput;
+    AVCaptureDeviceInput *_audioInput;
 
     /*
      The microphone input, added only while recording. The session carries a video input alone the
