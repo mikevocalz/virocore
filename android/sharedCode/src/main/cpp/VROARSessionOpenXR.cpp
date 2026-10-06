@@ -441,6 +441,20 @@ std::vector<VROVector3f> VROARSessionOpenXR::queryPolygon(uint64_t planeId) {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Anchor lifecycle — mirrors VROARSessionARCore (delegate fan-out)
+
+void VROARSessionOpenXR::setDelegate(std::shared_ptr<VROARSessionDelegate> delegate) {
+    VROARSession::setDelegate(delegate);
+    // Replay already-discovered room planes to a scene attached after discovery.
+    if (delegate) {
+        for (const auto &entry : _planes) {
+            delegate->anchorWasDetected(entry.second);
+        }
+        for (const auto &entry : _scenePlanes) {
+            delegate->anchorWasDetected(entry.second);
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 void VROARSessionOpenXR::addAnchor(std::shared_ptr<VROARAnchor> anchor) {
