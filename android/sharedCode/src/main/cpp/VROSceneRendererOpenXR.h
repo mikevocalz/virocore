@@ -288,6 +288,19 @@ private:
     PFN_xrPassthroughLayerPauseFB   _pfnPassthroughLayerPause   = nullptr;
     PFN_xrPassthroughLayerSetStyleFB _pfnPassthroughLayerSetStyle = nullptr;
 
+    // Boundary visibility (XR_META_boundary_visibility) — suppresses the Quest
+    // guardian boundary while passthrough frames are submitted. Availability is
+    // probed in initOpenXR(); _pfnRequestBoundaryVisibility is loaded in
+    // initBoundaryVisibility() and stays null when the extension is absent.
+    bool _boundaryVisibilityAvailable = false;
+    PFN_xrRequestBoundaryVisibilityMETA _pfnRequestBoundaryVisibility = nullptr;
+    XrBoundaryVisibilityMETA _boundaryVisibility = XR_BOUNDARY_VISIBILITY_NOT_SUPPRESSED_META;
+    // Frame countdown before another xrRequestBoundaryVisibilityMETA call is
+    // attempted; runtimes can reject requests with
+    // XR_BOUNDARY_VISIBILITY_SUPPRESSION_NOT_ALLOWED_META until the prior
+    // request settles, so retries are spread across frames.
+    int _boundaryRequestCooldown = 0;
+
     // ── EGL ──────────────────────────────────────────────────────────────────
     EGLDisplay  _eglDisplay  = EGL_NO_DISPLAY;
     EGLConfig   _eglConfig   = nullptr;
