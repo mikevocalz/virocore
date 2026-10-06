@@ -58,6 +58,7 @@
 #include "VRONodeCamera.h"
 #include "VROLight.h"
 #include <algorithm>
+#include <set>
 
 static std::string kVROGLTFInputSamplerKey = "timeInput";
 std::map<std::string, std::shared_ptr<VROVertexBuffer>> VROGLTFLoader::_dataCache;
@@ -707,7 +708,76 @@ bool VROGLTFLoader::processSkinner(const tinygltf::Model &model) {
                 skinIndexToJointParentJoint[skinIndex][subJointIndex] = jointIndex;
             }
         }
-        
+
+        /*
+         A joint whose node parent is not itself a joint never lands in
+         skinIndexToJointParentJoint — Rigify-style exports hang DEF joints
+         under ORG-/MCH- control nodes — and the construction loop below reads
+         the map with operator[], which silently parents every such joint to
+         joint 0. That orphans real hierarchies (eyes, shoulders, finger
+         roots…) onto an arbitrary bone, so recursive bone writes carry the
+         wrong children.
+         Recover the true parent two ways: the nearest node ancestor that is
+         itself a joint, else the first ORG-/MCH- ancestor whose DEF- twin is
+         a joint (an eye reaches the head through ORG-spine.006). Anything
+         left is rootless.
+        */
+        std::map<std::string, int> jointNameToIndex;
+        for (int jointIndex = 0; jointIndex < skin.joints.size(); jointIndex++) {
+            jointNameToIndex[model.nodes[skin.joints[jointIndex]].name] = jointIndex;
+        }
+        for (int jointIndex = 0; jointIndex < skin.joints.size(); jointIndex++) {
+            if (skinIndexToJointParentJoint[skinIndex].count(jointIndex) != 0) {
+                continue;
+            }
+            int resolvedParent = -1;
+            int cursor = _skinIndexToJointNodeIndex[skinIndex][jointIndex];
+            while (_nodeParentMap.count(cursor) && resolvedParent < 0) {
+                cursor = _nodeParentMap[cursor];
+                auto direct = skinIndexToNodeJointIndexes[skinIndex].find(cursor);
+                if (direct != skinIndexToNodeJointIndexes[skinIndex].end()) {
+                    resolvedParent = direct->second;
+                    break;
+                }
+                const std::string &ancestorName = model.nodes[cursor].name;
+                for (const std::string &prefix : {std::string("ORG-"), std::string("MCH-")}) {
+                    if (ancestorName.compare(0, prefix.size(), prefix) != 0) {
+                        continue;
+                    }
+                    auto twin = jointNameToIndex.find("DEF-" + ancestorName.substr(prefix.size()));
+                    if (twin != jointNameToIndex.end() && twin->second != jointIndex) {
+                        resolvedParent = twin->second;
+                        break;
+                    }
+                }
+            }
+            if (resolvedParent >= 0) {
+                skinIndexToJointParentJoint[skinIndex][jointIndex] = resolvedParent;
+            }
+        }
+
+        /*
+         A recovered parent chain could theoretically form a cycle across
+         joints (DEF-A resolving to DEF-B through ORG-B while DEF-B resolves
+         to DEF-A). Recursive bone writes walk getParentIndex() and would
+         never terminate, so break any cycle at its closing edge.
+        */
+        for (int jointIndex = 0; jointIndex < skin.joints.size(); jointIndex++) {
+            std::set<int> seen;
+            int cursor = jointIndex;
+            while (seen.insert(cursor).second) {
+                auto parentEntry = skinIndexToJointParentJoint[skinIndex].find(cursor);
+                if (parentEntry == skinIndexToJointParentJoint[skinIndex].end()) {
+                    break;
+                }
+                if (parentEntry->second == jointIndex) {
+                    skinIndexToJointParentJoint[skinIndex].erase(cursor);
+                    break;
+                }
+                cursor = parentEntry->second;
+            }
+        }
+
         // Save a reference to the root
         int nodeIndexOfSkeleton = skin.skeleton;
         if (nodeIndexOfSkeleton >= 0) {
@@ -734,8 +804,12 @@ bool VROGLTFLoader::processSkinner(const tinygltf::Model &model) {
         
         // Create a vec hiearachy of bones, starting at the root bone.
         for (int jointIndex = 0; jointIndex < skin.joints.size(); jointIndex++) {
-            int parentJointIndex = skinIndexToJointParentJoint[skinIndex][jointIndex];
-            if (jointIndex == rootJoint) {
+            // find(), not operator[]: a joint with no recovered parent is
+            // rootless (-1), not a child of joint 0.
+            auto parentEntry = skinIndexToJointParentJoint[skinIndex].find(jointIndex);
+            int parentJointIndex = parentEntry != skinIndexToJointParentJoint[skinIndex].end()
+                ? parentEntry->second : -1;
+            if (jointIndex == rootJoint && skin.skeleton >= 0) {
                 parentJointIndex = -1;
             }
 
