@@ -308,6 +308,13 @@ public:
     void setControllerMeshEnabled(bool enabled) { _controllerMeshEnabled = enabled; }
 private:
     bool _controllerMeshEnabled = true;
+    /*
+     Wall-clock of the last camera-transform event handed to JS. The pose is
+     consumed as a placement latch and a "pose alive" heartbeat — both work at
+     10 Hz — while the event itself crosses JNI and the React bridge, so
+     emitting it at display rate (72–90 Hz) was pure per-frame bridge churn.
+     */
+    double _lastCameraNotifyMs = -1.0;
 };
 
 #endif  // ANDROID_VROINPUTCONTROLLEROPENXR_H

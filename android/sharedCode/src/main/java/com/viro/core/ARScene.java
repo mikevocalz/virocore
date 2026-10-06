@@ -653,6 +653,8 @@ public class ARScene extends Scene {
         }
     }
 
+
+
     /**
      * Reset the point cloud surface to the default values. The point cloud surface is the
      * {@link Surface} that will be used to render each point in the point cloud.

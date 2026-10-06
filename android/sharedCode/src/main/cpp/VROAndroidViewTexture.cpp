@@ -23,6 +23,7 @@
 //  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+#include <algorithm>
 #include <capi/ViroContext_JNI.h>
 #include "VROAndroidViewTexture.h"
 #include "VROTextureSubstrateOpenGL.h"
@@ -86,10 +87,24 @@ void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
     // Generate the GL Texture on which to render Android Views.
     glGenTextures(1, &_textureId);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, _textureId);
-    glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    // GL_NEAREST minification made text panels shimmer and drop texels as soon
+    // as the quad was viewed off-axis or at distance — a 2560×1600 source
+    // minified to hundreds of pixels must filter, not pick. OES external
+    // textures accept LINEAR (mipmaps are unsupported by the spec), and
+    // anisotropic filtering sharpens the grazing angles XR panels live at.
+    glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Aniso where the driver offers it (EXT_texture_filter_anisotropic is near-
+    // universal on GLES3 XR runtimes); the query leaves maxAniso=0 on drivers
+    // without the extension, so this is safe unconditionally.
+    GLfloat maxAniso = 0.0f;
+    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+    if (maxAniso > 1.0f) {
+        glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                        std::min(maxAniso, 4.0f));
+    }
 
     // Associated the substrate with the generated Texture
     std::unique_ptr<VROTextureSubstrate> substrate = std::unique_ptr<VROTextureSubstrateOpenGL>(

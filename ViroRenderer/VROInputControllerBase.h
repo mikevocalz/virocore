@@ -146,6 +146,11 @@ public:
     // Tracking loss releases capture without synthesizing a Clicked activation.
     void cancelSource(int source);
     std::map<int, VROVector3f> _canvasHoverPositions;
+    // Last wall-clock dispatch per source, paired with _canvasHoverPositions:
+    // the same-node hover path fires at most kCanvasHoverMinIntervalMillis, so
+    // a resting or slowly-drifting ray cannot flood the JS bridge at refresh
+    // rate (90 Hz on OpenXR).
+    std::map<int, double> _canvasHoverDispatchMillis;
     void onTouchpadEvent(int source, VROEventDelegate::TouchState touchAction, float lastKnownX, float lastKnownY);
     
     /*
@@ -403,6 +408,14 @@ private:
      to click" symptom even though the underlying ray-cast still oscillates.
      */
     static constexpr double kHoverHysteresisMillis = 75.0;
+    /*
+     Same-node canvas hover: the ray must move at least 2 mm across the hit
+     plane (a resting handheld ray jitters well under 1 mm) AND at least 33 ms
+     must have passed since the last dispatch — pointer-move fidelity the
+     panels need without a per-frame JNI/JS event flood.
+     */
+    static constexpr float kCanvasHoverMinDistance = 0.002f;
+    static constexpr double kCanvasHoverMinIntervalMillis = 33.0;
     struct HoverPending {
         std::shared_ptr<VRONode> candidateNode;   // node the hit currently resolves to
         VROVector3f candidatePos;                 // hit location at the moment of pending start

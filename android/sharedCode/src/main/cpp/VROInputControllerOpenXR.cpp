@@ -12,6 +12,7 @@
 #include "VROInputPresenterOpenXR.h"
 #include "VROVector3f.h"
 #include "VROCamera.h"
+#include "VROTime.h"
 #include "VROInputType.h"
 
 #undef  LOG_TAG
@@ -372,12 +373,18 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     syncInfo.countActiveActionSets = 1;
     xrSyncActions(session, &syncInfo);
 
-    // The head pose, to JS. Every other input controller (AR, Cardboard,
-    // Daydream, OVR) calls this from its own onProcess and OpenXR never did —
-    // so `ViroARScene.onCameraTransformUpdate` was silent on a headset, which
-    // is the one platform whose content has to be placed relative to a head.
-    // Without it a floor-referenced runtime puts every scene at the user's feet.
-    notifyCameraTransform(camera);
+    // The head pose, to JS — throttled to 10 Hz. Every other input controller
+    // (AR, Cardboard, Daydream, OVR) calls this from its own onProcess and
+    // OpenXR never did — so `ViroARScene.onCameraTransformUpdate` was silent on
+    // a headset, which is the one platform whose content has to be placed
+    // relative to a head. But the event crosses JNI and the React bridge on
+    // every emit: at display rate that is 72–90 bridge crossings a second for
+    // data JS only ever uses as a first-pose latch and a liveness heartbeat.
+    const double cameraNowMs = VROTimeCurrentMillis();
+    if (cameraNowMs - _lastCameraNotifyMs >= 100.0) {
+        _lastCameraNotifyMs = cameraNowMs;
+        notifyCameraTransform(camera);
+    }
 
     // ── Capture poses for both hands (no dispatch yet) ───────────────────────
     // Each hand can be supplied by either a held controller or by tracked

@@ -729,8 +729,15 @@ void VROInputControllerBase::processGazeEvent(int source) {
             newNode->getEventDelegate() && !hit->isBackgroundHit()) {
             const VROVector3f position = hit->getLocation();
             auto previous = _canvasHoverPositions.find(source);
-            if (previous == _canvasHoverPositions.end() || position.distance(previous->second) > 0.0001f) {
+            const double now = VROTimeCurrentMillis();
+            auto lastDispatch = _canvasHoverDispatchMillis.find(source);
+            const bool moved = previous == _canvasHoverPositions.end() ||
+                position.distance(previous->second) > kCanvasHoverMinDistance;
+            const bool due = lastDispatch == _canvasHoverDispatchMillis.end() ||
+                now - lastDispatch->second >= kCanvasHoverMinIntervalMillis;
+            if (moved && due) {
                 _canvasHoverPositions[source] = position;
+                _canvasHoverDispatchMillis[source] = now;
                 newNode->getEventDelegate()->onHover(source, newNode, true,
                                                      {position.x, position.y, position.z});
             }
@@ -738,6 +745,7 @@ void VROInputControllerBase::processGazeEvent(int source) {
         return;
     }
     _canvasHoverPositions.erase(source);
+    _canvasHoverDispatchMillis.erase(source);
 
     VROVector3f hitLoc = hit->getLocation();
     std::vector<float> pos = {hitLoc.x, hitLoc.y, hitLoc.z};
