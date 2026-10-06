@@ -73,6 +73,7 @@ static const char *const kOptionalExtensions[] = {
     "XR_META_foveation_eye_tracked",                  // gaze-driven foveation (perm-gated; flagged only)
     XR_FB_SPACE_WARP_EXTENSION_NAME,                  // ASW motion-vector reprojection (flagged; loop TODO)
     XR_EXT_LOCAL_FLOOR_EXTENSION_NAME,                // floor-level reference space (PICO 4 Ultra; OpenXR 1.1 core)
+    "XR_EXT_hand_interaction",                        // Android XR pinch/poke/aim/grasp input (glasses & hand-first headsets)
 };
 
 // PICO (ByteDance) controller-interaction extensions. These gate the
@@ -181,7 +182,8 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
     _openxrDriver = std::make_shared<VRODriverOpenGLAndroidOpenXR>(gvrAudio);
     _driver = _openxrDriver;  // base class std::shared_ptr<VRODriverOpenGLAndroid>
     _inputController = std::make_shared<VROInputControllerOpenXR>(_openxrDriver);
-    _inputController->createActionSet(_instance, _session, _eyeGazeSupported);
+    _inputController->createActionSet(_instance, _session, _eyeGazeSupported,
+                                      _handInteractionAvailable);
     initHandTracking();  // no-op if XR_EXT_hand_tracking not available on this device
 
     // Wire the B/Menu button back to Android's back-press so React Native's
@@ -344,6 +346,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                     _swapchainUpdateStateAvailable = true;
                 if (strcmp(optExt, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME) == 0)
                     _localFloorAvailable = true;
+                if (strcmp(optExt, "XR_EXT_hand_interaction") == 0)
+                    _handInteractionAvailable = true;
                 break;
             }
         }
@@ -846,6 +850,30 @@ bool VROSceneRendererOpenXR::createSwapchains() {
                                        XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
                                        viewCount, &viewCount, viewConfigs.data());
 
+    // Enumerate environment blend modes. Runtimes without XR_FB_passthrough
+    // (Android XR, Snapdragon Spaces glasses) composite the real world behind
+    // the projection layer when ALPHA_BLEND is submitted — the passthrough
+    // "layer" is implicit. OPAQUE is always supported per spec.
+    {
+        uint32_t blendCount = 0;
+        xrEnumerateEnvironmentBlendModes(_instance, _systemId,
+                                         XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                         0, &blendCount, nullptr);
+        if (blendCount > 0) {
+            std::vector<XrEnvironmentBlendMode> modes(blendCount);
+            xrEnumerateEnvironmentBlendModes(_instance, _systemId,
+                                             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                             blendCount, &blendCount, modes.data());
+            for (auto mode : modes) {
+                if (mode == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) {
+                    _alphaBlendAvailable = true;
+                }
+            }
+        }
+        ALOGV("Environment blend modes enumerated: alpha_blend=%s",
+              _alphaBlendAvailable ? "yes" : "no");
+    }
+
     // Choose swapchain format: prefer sRGB, fall back to RGBA8
     uint32_t fmtCount = 0;
     xrEnumerateSwapchainFormats(_session, 0, &fmtCount, nullptr);
@@ -1154,7 +1182,24 @@ bool VROSceneRendererOpenXR::initPassthrough() {
 
 void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
     if (_passthrough == XR_NULL_HANDLE || _passthroughLayer == XR_NULL_HANDLE) {
-        ALOGW("setPassthroughEnabled(%s): XR_FB_passthrough not available on this device",
+        // No XR_FB_passthrough on this runtime. Android XR / Snapdragon Spaces
+        // glasses instead composite the real world behind the projection layer
+        // when the frame's environment blend mode is ALPHA_BLEND — the flag is
+        // enough; xrEndFrame reads _passthroughEnabled + _alphaBlendAvailable.
+        if (_alphaBlendAvailable) {
+            _passthroughEnabled = enabled;
+            if (_inputController) {
+                _inputController->setControllerMeshEnabled(!enabled);
+            }
+            if (_openxrDriver) {
+                auto display = _openxrDriver->getOpenXRDisplay();
+                if (display) display->setClearAlpha(enabled ? 0.0f : 1.0f);
+            }
+            ALOGV("setPassthroughEnabled: %s (ALPHA_BLEND path)",
+                  enabled ? "true" : "false");
+            return;
+        }
+        ALOGW("setPassthroughEnabled(%s): no passthrough path on this device",
               enabled ? "true" : "false");
         _passthroughEnabled = false;
         return;
@@ -1897,11 +1942,16 @@ void VROSceneRendererOpenXR::renderFrame() {
 
     XrFrameEndInfo endInfo = { XR_TYPE_FRAME_END_INFO };
     endInfo.displayTime          = frameState.predictedDisplayTime;
-    // Passthrough is supplied as a composition layer (underlay) beneath the
-    // projection layer, so the environment blend mode stays OPAQUE. The projection
-    // layer's SOURCE_ALPHA bit + the display's transparent clear (alpha 0 in empty
-    // regions) let the passthrough layer show through where there's no geometry.
-    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    // Passthrough blend: on Meta/PICO the FB passthrough layer is an underlay,
+    // so the blend mode stays OPAQUE. On runtimes without that extension
+    // (Android XR, Snapdragon Spaces glasses) the real world is composited
+    // behind the projection layer via ALPHA_BLEND — requested only when the
+    // view config actually enumerated it.
+    endInfo.environmentBlendMode =
+        (_passthroughEnabled && _passthroughLayer == XR_NULL_HANDLE &&
+         _alphaBlendAvailable)
+            ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND
+            : XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     endInfo.layerCount  = (uint32_t)layers.size();
     // OpenXR spec: layers must be NULL when layerCount==0
     endInfo.layers      = layers.empty() ? nullptr : layers.data();

@@ -230,6 +230,8 @@ private:
     bool            _fbSpatialQueryAvailable  = false;  // XR_FB_spatial_entity_query present
     bool            _eyeGazeAvailable         = false;  // XR_EXT_eye_gaze_interaction present
     bool            _eyeGazeSupported         = false;  // system actually has eye tracking (Quest Pro)
+    bool            _handInteractionAvailable = false;  // XR_EXT_hand_interaction present (Android XR)
+    bool            _alphaBlendAvailable      = false;  // view config supports ALPHA_BLEND env blend
 
     // Per-eye swapchains (index 0 = left, 1 = right)
     VROOpenXRSwapchain _swapchains[2];

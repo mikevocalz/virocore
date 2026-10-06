@@ -47,7 +47,9 @@ public:
      * xrAttachSessionActionSets. Must be called before the session enters
      * XR_SESSION_STATE_READY.
      */
-    bool createActionSet(XrInstance instance, XrSession session, bool eyeGazeSupported = false);
+    bool createActionSet(XrInstance instance, XrSession session,
+                         bool eyeGazeSupported = false,
+                         bool handInteractionSupported = false);
 
     /*
      * Destroy controller action spaces. Call before xrDestroySession.
@@ -184,6 +186,16 @@ private:
     XrAction _eyeGazePoseAction = XR_NULL_HANDLE;
     XrSpace  _eyeGazeSpace      = XR_NULL_HANDLE;
     bool     _eyeGazeEnabled    = false;
+
+    // ── Hand interaction (XR_EXT_hand_interaction; Android XR) ────────────────
+    // pinch_ext/value is BOOLEAN so it cannot share the float trigger action.
+    // Its edge state is also separate from the skeletal-tracking pinch flags —
+    // two writers on one flag would corrupt updateInputButton edge detection.
+    XrAction _leftPinchAction      = XR_NULL_HANDLE;
+    XrAction _rightPinchAction     = XR_NULL_HANDLE;
+    bool     _handInteractionEnabled = false;
+    bool     _prevHandPinchLeft    = false;
+    bool     _prevHandPinchRight   = false;
 
     // ── Back button callback ──────────────────────────────────────────────────
     std::function<void()> _backButtonCallback;
