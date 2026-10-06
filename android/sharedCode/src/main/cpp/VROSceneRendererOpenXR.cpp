@@ -67,6 +67,7 @@ static constexpr const char *const kOptionalExtensions[] = {
     XR_FB_SPATIAL_ENTITY_EXTENSION_NAME,        // M5: spatial entity components
     XR_FB_SPATIAL_ENTITY_QUERY_EXTENSION_NAME,  // M5: query stored room entities
     XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME, // eye-gaze ray as an onHover source (Quest Pro only)
+    "XR_META_boundary_visibility",               // hide Quest boundary while passthrough is active
     XR_FB_FOVEATION_EXTENSION_NAME,                   // foveated rendering (fill-rate win on high-PPD)
     XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME,     // foveation level / area / dynamic config
     XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME,      // apply foveation profile to live swapchain
@@ -506,6 +507,13 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     // hardware (only Quest Pro does). Query the system properties and gate the
     // eye-gaze input source on supportsEyeGazeInteraction, so it stays a no-op
     // on Quest 2 / 3 / 3S.
+    for (auto &ext : availableExts) {
+        if (strcmp(ext.extensionName, "XR_META_boundary_visibility") == 0) {
+            _boundaryVisibilityAvailable = true;
+            break;
+        }
+    }
+
     if (_eyeGazeAvailable) {
         XrSystemEyeGazeInteractionPropertiesEXT eyeGazeProps = {
             XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT
@@ -519,6 +527,14 @@ bool VROSceneRendererOpenXR::initOpenXR() {
               (int)_eyeGazeAvailable, (int)_eyeGazeSupported);
     }
     _runtimeInfo.eyeGazeSupported = _eyeGazeSupported;
+
+    if (_boundaryVisibilityAvailable) {
+        XrSystemBoundaryVisibilityPropertiesMETA boundaryProps = { XR_TYPE_SYSTEM_BOUNDARY_VISIBILITY_PROPERTIES_META };
+        XrSystemProperties systemProps = { XR_TYPE_SYSTEM_PROPERTIES };
+        systemProps.next = &boundaryProps;
+        _boundaryVisibilityAvailable = XR_SUCCEEDED(xrGetSystemProperties(_instance, _systemId, &systemProps)) && boundaryProps.supportsBoundaryVisibility == XR_TRUE;
+    }
+    ALOGV("Boundary visibility: supported=%d", (int)_boundaryVisibilityAvailable);
 
     return true;
 }
@@ -652,6 +668,7 @@ bool VROSceneRendererOpenXR::createSession() {
 
     // Try to enable passthrough (optional — graceful degradation if unavailable)
     initPassthrough();
+    initBoundaryVisibility();
 
     // Create the Quest MR (AR) session if a plane source is available. Two
     // sources are tried; planes are reported in _appSpace so anchors land in
@@ -1147,6 +1164,34 @@ bool VROSceneRendererOpenXR::setFoveationLevel(VROFoveationLevel level, bool dyn
 }
 
 // ── Passthrough (XR_FB_passthrough) ───────────────────────────────────────────
+void VROSceneRendererOpenXR::initBoundaryVisibility() {
+    if (!_boundaryVisibilityAvailable) return;
+    XrResult r = xrGetInstanceProcAddr(_instance, "xrRequestBoundaryVisibilityMETA",
+                                       (PFN_xrVoidFunction *)&_pfnRequestBoundaryVisibility);
+    if (XR_FAILED(r)) {
+        ALOGW("xrGetInstanceProcAddr('xrRequestBoundaryVisibilityMETA') failed: %d", (int)r);
+        _pfnRequestBoundaryVisibility = nullptr;
+    }
+}
+
+void VROSceneRendererOpenXR::updateBoundaryVisibility(bool passthroughSubmitted) {
+    if (!_pfnRequestBoundaryVisibility) return;
+    XrBoundaryVisibilityMETA wanted = passthroughSubmitted ? XR_BOUNDARY_VISIBILITY_SUPPRESSED_META
+                                                           : XR_BOUNDARY_VISIBILITY_NOT_SUPPRESSED_META;
+    if (wanted == _boundaryVisibility) return;
+    if (_boundaryRequestCooldown > 0) { --_boundaryRequestCooldown; return; }
+    _boundaryRequestCooldown = 45;
+    XrResult r = _pfnRequestBoundaryVisibility(_session, wanted);
+    if (r == XR_SUCCESS) {
+        _boundaryVisibility = wanted;
+        ALOGV("Boundary %s", wanted == XR_BOUNDARY_VISIBILITY_SUPPRESSED_META ? "suppressed" : "shown");
+    } else if (r == XR_BOUNDARY_VISIBILITY_SUPPRESSION_NOT_ALLOWED_META) {
+        ALOGV("Boundary suppression not allowed yet; will retry");
+    } else {
+        ALOGW("xrRequestBoundaryVisibilityMETA(%d) failed: %d", (int)wanted, (int)r);
+    }
+}
+
 bool VROSceneRendererOpenXR::initPassthrough() {
     // Extension functions are NOT direct API calls — they must be loaded via
     // xrGetInstanceProcAddr. The extension guard (XR_FB_passthrough) was already
@@ -1653,6 +1698,12 @@ void VROSceneRendererOpenXR::pollEvents() {
                     ALOGV("Reference space change pending (type %d) — ignored",
                           (int)changeEvent->referenceSpaceType);
                 }
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_BOUNDARY_VISIBILITY_CHANGED_META: {
+                auto *boundaryEvent = reinterpret_cast<XrEventDataBoundaryVisibilityChangedMETA *>(&event);
+                _boundaryVisibility = boundaryEvent->boundaryVisibility;
+                ALOGV("Boundary visibility changed: %d", (int)_boundaryVisibility);
                 break;
             }
             case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
