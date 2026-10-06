@@ -87,14 +87,61 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
     // single-pointer backends.
     int ray = rayForSource(source);
     auto hit = getHitResultForSource(ray);
-    if (hit == nullptr) {
-        return;
-    }
     bool sourceAware = _hitResultsBySource.count(ray) > 0;
     // Click completion stays per button; hover state belongs to the ray.
     std::shared_ptr<VRONode> &lastClicked = sourceAware
         ? _lastClickedNodesBySource[source]
         : _lastClickedNode;
+
+    // Click capture is keyed by BUTTON source, but OpenXR splits one hand into
+    // several — a pinch press on `Controller` released as a fist relax fires
+    // its ClickUp on `RightGrip`, which owns no pending click. Without the
+    // fallback the up resolves against whatever the ray happens to hit, the
+    // capturing quad never sees its release, and the panel's pointer capture
+    // stays claimed for the rest of the session. A release therefore also
+    // closes any press a sibling source opened on the SAME ray.
+    if (clickState == VROEventDelegate::ClickUp && lastClicked == nullptr && sourceAware) {
+        for (auto &entry : _lastClickedNodesBySource) {
+            if (entry.first != source && rayForSource(entry.first) == ray &&
+                entry.second != nullptr) {
+                std::vector<float> emptyPos;
+                for (std::shared_ptr<VROEventDelegate> delegate : _delegates) {
+                    delegate->onClick(entry.first, entry.second, clickState, emptyPos);
+                }
+                if (entry.second->getEventDelegate()) {
+                    entry.second->getEventDelegate()->onClick(entry.first, entry.second,
+                                                              clickState, emptyPos);
+                }
+                entry.second = nullptr;
+            }
+        }
+    }
+
+    // A release whose ray missed everything must still close out the press it
+    // opened. Returning early here orphaned lastClicked: the node that took
+    // ClickDown never saw ClickUp, so Clicked never fired — and on grab-based
+    // panels the stuck capture kept their input gate shut for the rest of the
+    // session. Deliver the up to lastClicked (empty position, like a
+    // background hit), clear it, and end any drag this ray owns.
+    if (hit == nullptr) {
+        if (clickState == VROEventDelegate::ClickUp && lastClicked != nullptr) {
+            std::vector<float> emptyPos;
+            for (std::shared_ptr<VROEventDelegate> delegate : _delegates) {
+                delegate->onClick(source, lastClicked, clickState, emptyPos);
+            }
+            if (lastClicked->getEventDelegate()) {
+                lastClicked->getEventDelegate()->onClick(source, lastClicked, clickState, emptyPos);
+            }
+            lastClicked = nullptr;
+        }
+        if (clickState == VROEventDelegate::ClickUp && _lastDraggedNode != nullptr &&
+            (_lastDraggedNode->_source == kUnownedSource || _lastDraggedNode->_source == ray)) {
+            _lastDraggedNode->_dragState = VROEventDelegate::DragState::End;
+            _lastDraggedNode->_draggedNode->setIsBeingDragged(false);
+            _lastDraggedNode = nullptr;
+        }
+        return;
+    }
     std::shared_ptr<VRONode> &lastHovered = sourceAware
         ? _lastHoveredNodesBySource[ray]
         : _lastHoveredNode;
@@ -188,6 +235,18 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
         
         if (draggableNode == nullptr){
             return;
+        }
+
+        // A press on a clickable node inside a draggable one (a button on a
+        // panel) is a click, not a drag: moving the panel under the ray made
+        // the release miss the button, so Clicked never fired.
+        if (focusedNode != nullptr && focusedNode != draggableNode) {
+            for (std::shared_ptr<VRONode> n = focusedNode->getParentNode(); n != nullptr;
+                 n = n->getParentNode()) {
+                if (n == draggableNode) {
+                    return;
+                }
+            }
         }
 
         /*

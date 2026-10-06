@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include "VROOpenGL.h"
@@ -35,7 +36,6 @@ public:
     VRODisplayOpenGLOpenXR(std::shared_ptr<VRODriverOpenGL> driver)
         : VRODisplayOpenGL(0, driver),
           _fbo(0),
-          _depthRbo(0),
           _colorTex(0) {
     }
 
@@ -47,16 +47,26 @@ public:
      * Called once per frame, after xrAcquireSwapchainImage. Sets the GL
      * texture (from XrSwapchainImageOpenGLESKHR.image) and recreates the
      * FBO if the texture has changed.
+     *
+     * One display object serves BOTH eyes (VRODriverOpenGLAndroidOpenXR
+     * returns a singleton), so _colorTex changes on every call and a
+     * single-slot FBO would be destroyed and recreated twice per frame —
+     * ~180 gen/alloc pairs a second, which stalls the GL pipeline and
+     * presents as panel jitter even at full frame rate. Cache an
+     * FBO+depth-RBO pair per swapchain texture instead: the pool is bounded
+     * (3 images × 2 eyes) and each entry is created once per session.
      */
     void setSwapchainImage(GLuint colorTex, GLsizei width, GLsizei height) {
-        if (_colorTex == colorTex && _fbo != 0) {
-            return;  // same image, FBO still valid
+        auto it = _fbos.find(colorTex);
+        if (it != _fbos.end()) {
+            _fbo = it->second.fbo;
+            _colorTex = colorTex;
+            return;
         }
-        destroyFramebuffer();
-        _colorTex = colorTex;
 
-        glGenFramebuffers(1, &_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+        GLuint fbo = 0, depthRbo = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
         // Try GL_TEXTURE_2D first; Quest may use GL_TEXTURE_2D_ARRAY even for arraySize=1
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -71,18 +81,27 @@ public:
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, colorTex, 0, 0);
         }
 
-        glGenRenderbuffers(1, &_depthRbo);
-        glBindRenderbuffer(GL_RENDERBUFFER, _depthRbo);
+        glGenRenderbuffers(1, &depthRbo);
+        glBindRenderbuffer(GL_RENDERBUFFER, depthRbo);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                                  GL_RENDERBUFFER, _depthRbo);
+                                  GL_RENDERBUFFER, depthRbo);
 
         status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             XRELOG("OpenXR: FBO still incomplete after retry, status=0x%x  tex=%u  %dx%d",
                    status, colorTex, (int)width, (int)height);
-            // Do NOT abort — log and continue so we can see the status code on device
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteRenderbuffers(1, &depthRbo);
+            glDeleteFramebuffers(1, &fbo);
+            _fbo = 0;
+            _colorTex = 0;
+            return;  // leave no entry — retry cleanly next frame
         }
+
+        _fbos[colorTex] = { fbo, depthRbo };
+        _fbo = fbo;
+        _colorTex = colorTex;
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -107,20 +126,25 @@ public:
 
 private:
 
-    GLuint _fbo;
-    GLuint _depthRbo;
-    GLuint _colorTex;
+    struct FboEntry {
+        GLuint fbo;
+        GLuint depthRbo;
+    };
+
+    // FBO + depth RBO per swapchain texture, created once and reused for the
+    // session — see setSwapchainImage for why a single slot is not enough.
+    std::unordered_map<GLuint, FboEntry> _fbos;
+    GLuint _fbo;       // currently active entry (set by setSwapchainImage)
+    GLuint _colorTex;  // texture the active entry is bound to
     float  _clearAlpha = 1.0f;  // 0 for MR/passthrough, 1 for opaque VR
 
     void destroyFramebuffer() {
-        if (_fbo) {
-            glDeleteFramebuffers(1, &_fbo);
-            _fbo = 0;
+        for (auto &kv : _fbos) {
+            glDeleteFramebuffers(1, &kv.second.fbo);
+            glDeleteRenderbuffers(1, &kv.second.depthRbo);
         }
-        if (_depthRbo) {
-            glDeleteRenderbuffers(1, &_depthRbo);
-            _depthRbo = 0;
-        }
+        _fbos.clear();
+        _fbo = 0;
         _colorTex = 0;
     }
 };

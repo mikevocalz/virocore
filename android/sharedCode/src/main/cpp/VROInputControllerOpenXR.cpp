@@ -803,7 +803,27 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         locateInfo.time      = time;
 
         XrResult r = _pfnLocateHandJoints(tracker, &locateInfo, &locations);
-        if (!XR_SUCCEEDED(r) || !locations.isActive) continue;
+        if (!XR_SUCCEEDED(r) || !locations.isActive) {
+            // Tracking dropped mid-gesture: the pinch/grab edge detection below
+            // only queues ClickUp when it can see the release — which never
+            // happens once joints go inactive — so the press stays open, the
+            // click capture is never released, and an in-progress drag pins
+            // the panel to a dead ray for the rest of the session. Emit the
+            // release edges ourselves before skipping the hand.
+            int  lostSource     = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
+            int  lostGripSource = (hand == 0) ? ViroOculus::LeftGrip       : ViroOculus::RightGrip;
+            bool &lostPinch = (hand == 0) ? _prevPinchLeft : _prevPinchRight;
+            bool &lostGrab  = (hand == 0) ? _prevGrabLeft  : _prevGrabRight;
+            if (lostPinch) {
+                queueButtonEvent(lostSource, VROEventDelegate::ClickState::ClickUp);
+                lostPinch = false;
+            }
+            if (lostGrab) {
+                queueButtonEvent(lostGripSource, VROEventDelegate::ClickState::ClickUp);
+                lostGrab = false;
+            }
+            continue;
+        }
 
         // ── Source IDs for this hand ──────────────────────────────────────────
         int  source     = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
@@ -979,7 +999,8 @@ void VROInputControllerOpenXR::updateControllerMeshViz(int source, XrSession ses
     auto presenter = std::dynamic_pointer_cast<VROInputPresenterOpenXR>(getPresenter());
     if (!presenter) return;
 
-    if (gripSpace == XR_NULL_HANDLE || gripPoseAction == XR_NULL_HANDLE) {
+    if (!_controllerMeshEnabled ||
+        gripSpace == XR_NULL_HANDLE || gripPoseAction == XR_NULL_HANDLE) {
         presenter->updateControllerMesh(source, {}, {}, false);
         return;
     }

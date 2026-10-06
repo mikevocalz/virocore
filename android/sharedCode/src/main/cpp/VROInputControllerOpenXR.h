@@ -301,6 +301,13 @@ private:
 public:
     /** Enable or disable hand tracking gesture processing. Thread-safe (atomic store). */
     void setHandTrackingEnabled(bool enabled) { _handTrackingEnabled = enabled; }
+    /*
+     Whether the virtual controller model is drawn. Off in passthrough: the
+     user already sees their real controllers, and the model covers them.
+     */
+    void setControllerMeshEnabled(bool enabled) { _controllerMeshEnabled = enabled; }
+private:
+    bool _controllerMeshEnabled = true;
 };
 
 #endif  // ANDROID_VROINPUTCONTROLLEROPENXR_H

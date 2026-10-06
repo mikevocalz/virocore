@@ -45,6 +45,7 @@ class VRODriverOpenGLAndroidOpenXR;
 class VROInputControllerOpenXR;
 class VRODisplayOpenGLOpenXR;
 class VROARSessionOpenXR;
+class VROARScene;
 class VROSceneController;
 class VRONode;
 
@@ -274,6 +275,11 @@ private:
     // detection is unavailable on the device. Driven once per renderFrame().
     std::shared_ptr<VROARSessionOpenXR>           _arSession;
 
+    // The attached AR scene, kept so OpenXR session-state changes can be
+    // published as VROARTrackingState — the ARCore renderer does this from
+    // its camera; here the session state machine is the honest source.
+    std::weak_ptr<VROARScene>                     _arScene;
+
     // ── Java callback (onDrawFrame) ───────────────────────────────────────────
     JavaVM  *_jvm      = nullptr;
     jobject  _jview    = nullptr;  // global ref to ViroViewOpenXR instance
@@ -303,6 +309,7 @@ private:
     void renderLoop();
     void pollEvents();
     void handleSessionStateChange(XrEventDataSessionStateChanged *event);
+    void pushARTrackingState();
     void renderFrame();
 
     // ── Per-eye render ────────────────────────────────────────────────────────

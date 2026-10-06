@@ -1171,6 +1171,9 @@ void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
     }
 
     _passthroughEnabled = enabled;
+    if (_inputController) {
+        _inputController->setControllerMeshEnabled(!enabled);
+    }
 
     // The OpenXR display clears the swapchain opaque (alpha 1) for VR; for
     // passthrough it must clear TRANSPARENT (alpha 0) so empty regions reveal the
@@ -1254,6 +1257,8 @@ void VROSceneRendererOpenXR::attachARSceneIfNeeded(
     }
 
     arScene->setDriver(_driver);
+    _arScene = arScene;
+    pushARTrackingState();
 
     // Wire the OpenXR AR session to the scene's anchor delegate so onAnchorFound /
     // anchorUpdated / anchorRemoved (and ViroARPlane) fire — mirrors
@@ -1267,6 +1272,30 @@ void VROSceneRendererOpenXR::attachARSceneIfNeeded(
     } else {
         ALOGV("AR scene attached to OpenXR — passthrough active "
               "(XR_EXT_plane_detection unavailable; no plane anchors)");
+    }
+}
+
+void VROSceneRendererOpenXR::pushARTrackingState() {
+    std::shared_ptr<VROARScene> arScene = _arScene.lock();
+    if (!arScene) {
+        return;
+    }
+    // OpenXR has no ARCore-style tracking enum — the session state machine is
+    // the verdict. SYNCHRONIZED and up mean xrLocateViews is returning real
+    // poses; anything earlier (or on the way out) is not tracked. Without this
+    // the scene sits at its default Unavailable forever: onTrackingUpdated
+    // fires once with a loss and JS never hears the recovery.
+    switch (_sessionState) {
+        case XR_SESSION_STATE_SYNCHRONIZED:
+        case XR_SESSION_STATE_VISIBLE:
+        case XR_SESSION_STATE_FOCUSED:
+            arScene->setTrackingState(VROARTrackingState::Normal,
+                                      VROARTrackingStateReason::None, false);
+            break;
+        default:
+            arScene->setTrackingState(VROARTrackingState::Unavailable,
+                                      VROARTrackingStateReason::None, false);
+            break;
     }
 }
 
@@ -1612,6 +1641,7 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
 
     _sessionState = event->state;
     ALOGV("Session state → %d", (int)_sessionState);
+    pushARTrackingState();
 
     switch (_sessionState) {
         case XR_SESSION_STATE_READY: {
@@ -1705,6 +1735,17 @@ void VROSceneRendererOpenXR::renderFrame() {
     uint32_t    viewCount = 2;
     XrView      views[2]  = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
     XR_CHECK(xrLocateViews(_session, &locateInfo, &viewState, 2, &viewCount, views));
+
+    // PICO runtimes have been observed returning viewCount < 2 while still
+    // marking the pose valid — the unfilled XrView then renders a blank eye.
+    static uint32_t sLocateLog = 0;
+    if (++sLocateLog % 90 == 1 || viewCount != 2) {
+        ALOGI("[XR-EYE] xrLocateViews viewCount=%u posValid=%d oriValid=%d posTracked=%d",
+              viewCount,
+              !!(viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT),
+              !!(viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT),
+              !!(viewState.viewStateFlags & XR_VIEW_STATE_POSITION_TRACKED_BIT));
+    }
 
     // Floor diagnostic: the eye Y above the app-space origin. With a true floor
     // origin this is standing eye height (~1.3–1.8 m); if it reads ~0 the
@@ -1884,13 +1925,29 @@ void VROSceneRendererOpenXR::renderEye(int eyeIndex,
                                         const XrView &view,
                                         VROOpenXRSwapchain &swapchain) {
     // ── Acquire swapchain image ───────────────────────────────────────────────
+    // Failure must bail, not fall through: continuing with a stale imageIndex
+    // renders into an image the compositor may still own, and the submitted
+    // eye view then shows whatever that buffer last held — on this runtime,
+    // transparent → that eye displays raw passthrough while the other eye is
+    // fine. Whichever eye's acquire fails varies frame to frame, so the blank
+    // eye alternates between sessions.
     XrSwapchainImageAcquireInfo acquireInfo = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
     uint32_t imageIndex = 0;
-    XR_CHECK(xrAcquireSwapchainImage(swapchain.handle, &acquireInfo, &imageIndex));
+    if (XR_FAILED(xrAcquireSwapchainImage(swapchain.handle, &acquireInfo, &imageIndex))) {
+        ALOGE("OpenXR: eye %d swapchain acquire failed — skipping eye render", eyeIndex);
+        return;
+    }
 
     XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
     waitInfo.timeout = XR_INFINITE_DURATION;
-    XR_CHECK(xrWaitSwapchainImage(swapchain.handle, &waitInfo));
+    if (XR_FAILED(xrWaitSwapchainImage(swapchain.handle, &waitInfo))) {
+        // Acquire already succeeded — the image is ours; release it or the
+        // swapchain pool drains by one each failure and eventually starves.
+        ALOGE("OpenXR: eye %d swapchain wait failed — releasing image %u", eyeIndex, imageIndex);
+        XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        xrReleaseSwapchainImage(swapchain.handle, &releaseInfo);
+        return;
+    }
 
     // ── Bind the FBO for this eye ─────────────────────────────────────────────
     GLuint colorTex = swapchain.images[imageIndex].image;
@@ -1917,6 +1974,22 @@ void VROSceneRendererOpenXR::renderEye(int eyeIndex,
     // viewMatrix = inverted pose (world→eye transform for rendering)
     VROMatrix4f viewMatrix = xrPoseToMatrix(view.pose).invert();
     VROMatrix4f projMatrix = xrFovToProjection(view.fov);
+
+    // Per-eye diagnostic: pose X should differ by ~IPD (~0.06m), FOV should be
+    // non-degenerate, and the FBO must be complete after bind. A blank eye on
+    // PICO means one of these is wrong — pose/FOV zeroed, image index out of
+    // range, or the attachment silently incomplete.
+    static uint32_t sEyeLog = 0;
+    if (++sEyeLog % 90 == 1) {
+        GLenum fboStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        ALOGI("[XR-EYE] eye=%d img=%u tex=%u fbo=0x%x pose=(%.3f,%.3f,%.3f) "
+              "fov(L=%.3f,R=%.3f,U=%.3f,D=%.3f) vp=%dx%d",
+              eyeIndex, imageIndex, colorTex, fboStatus,
+              view.pose.position.x, view.pose.position.y, view.pose.position.z,
+              view.fov.angleLeft, view.fov.angleRight,
+              view.fov.angleUp, view.fov.angleDown,
+              (int)swapchain.width, (int)swapchain.height);
+    }
 
     // ── Render the Viro scene for this eye ───────────────────────────────────
     if (_renderer && _renderer->hasRenderContext()) {

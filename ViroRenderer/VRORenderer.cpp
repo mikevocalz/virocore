@@ -733,13 +733,18 @@ void VRORenderer::updateSceneEffects(std::shared_ptr<VRODriver> driver, std::sha
     
     if (driver->getColorRenderingMode() != VROColorRenderingMode::NonLinear && scene->isToneMappingUpdated()) {
         std::shared_ptr<VROToneMappingRenderPass> toneMapping = _choreographer->getToneMapping();
-        if (scene->isToneMappingEnabled()) {
-            toneMapping->setMethod(scene->getToneMappingMethod());
-            toneMapping->setExposure(scene->getToneMappingExposure());
-            toneMapping->setWhitePoint(scene->getToneMappingWhitePoint());
-        }
-        else {
-            toneMapping->setMethod(VROToneMappingMethod::Disabled);
+        // The tone mapping pass only exists when HDR rendering is enabled; on drivers where
+        // it is off (e.g. OpenXR) the scene may still report tone mapping updates, so guard
+        // against a null pass rather than crashing the render thread.
+        if (toneMapping) {
+            if (scene->isToneMappingEnabled()) {
+                toneMapping->setMethod(scene->getToneMappingMethod());
+                toneMapping->setExposure(scene->getToneMappingExposure());
+                toneMapping->setWhitePoint(scene->getToneMappingWhitePoint());
+            }
+            else {
+                toneMapping->setMethod(VROToneMappingMethod::Disabled);
+            }
         }
         scene->setToneMappingUpdated(false);
     }
