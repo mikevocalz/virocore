@@ -42,7 +42,6 @@ VROAVCaptureController::VROAVCaptureController() :
     _photoOutput(nil),
     _movieOutput(nil),
     _audioInput(nil),
-    _audioInput(nil),
     _recordingPath(nil),
     _lastSampleBuffer(nil) {
 }
@@ -306,10 +305,6 @@ void VROAVCaptureController::stopRecording(std::function<void(bool, NSString *, 
     dispatch_async(dispatch_get_main_queue(), ^{
         [controller->_captureSession beginConfiguration];
         [controller->_captureSession removeOutput:controller->_movieOutput];
-        if (controller->_audioInput) {
-            [controller->_captureSession removeInput:controller->_audioInput];
-            controller->_audioInput = nil;
-        }
         if (controller->_audioInput) {
             [controller->_captureSession removeInput:controller->_audioInput];
             controller->_audioInput = nil;
