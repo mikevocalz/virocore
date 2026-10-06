@@ -40,6 +40,7 @@
 #include <GLES3/gl3.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+#include "VROOpenXRBoundaryVisibility.h"
 
 class VRORendererConfiguration;
 class VRODriverOpenGLAndroidOpenXR;
@@ -326,6 +327,7 @@ private:
     // state change. Called once after createSwapchains() succeeds.
     void logRuntimeDiagnostics();
     bool initPassthrough();
+    void initBoundaryVisibility();
     bool initHandTracking();     // XR_EXT_hand_tracking — no-op if extension unavailable
     void destroySwapchains();
     void destroySession();
@@ -342,6 +344,7 @@ private:
     void pollEvents();
     void handleSessionStateChange(XrEventDataSessionStateChanged *event);
     void renderFrame();
+    void updateBoundaryVisibility(bool passthroughSubmitted);
 
     // ── Per-eye render ────────────────────────────────────────────────────────
     void renderEye(int eyeIndex,
