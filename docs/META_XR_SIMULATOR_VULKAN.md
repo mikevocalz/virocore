@@ -22,6 +22,8 @@ A live simulator probe exercised the intended Vulkan path with `XR_KHR_vulkan_en
 
 So the Vulkan host path is necessary **and** sufficient for this simulator — provided view poses are located, not fabricated.
 
+Follow-up verification: with located views, the probe now draws a real triangle through a `VkPipeline` (clear + `vkCmdDraw`, not just `vkCmdClearColorImage`) and the composited capture shows the rendered gradient — Gate A verified through the graphics pipeline, Gate C verified end-to-end on both backends. The probe also subscribes to `XR_EXT_hand_tracking` (`xrCreateHandTrackerEXT`/`xrLocateHandJointsEXT`), which is required before the operator layer's synthetic-input tools report delivery: `openxr_hand_gesture`/`openxr_gaze_and_pinch` previously failed with "the application never observed it" and now return `success: true` with `hand R active=1` observed by the app. `XR_EXT_eye_gaze_interaction` is present on this runtime.
+
 ## Required architecture
 
 Keep the existing Android Quest path unchanged:
@@ -30,7 +32,7 @@ Keep the existing Android Quest path unchanged:
 
 Add a host simulator path:
 
-- Meta XR Simulator / Windows or macOS -> OpenXR + Vulkan backend.
+- Meta XR Simulator / Windows or macOS -> OpenXR + Vulkan backend; on macOS `XR_KHR_metal_enable` is an equally valid and substantially cheaper target because the repo already ships a Metal substrate (visionOS), whereas no Vulkan substrate exists yet — Vulkan remains the right choice for Windows parity.
 - Eskiu/XR backend selection must choose by host/runtime graphics capability, not by the simulated device marketing name.
 - Never request `XR_KHR_opengl_es_enable` from the standalone simulator.
 - Request `XR_KHR_vulkan_enable2` when exposed; fall back to `XR_KHR_vulkan_enable` only when necessary.
