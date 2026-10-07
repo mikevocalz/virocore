@@ -78,6 +78,7 @@ public:
     // camera background are injected from JS (slam-wasm). The scene graph is
     // reused; drawFrame() then drives the camera from the AR pose.
     void initAR();
+    void setFloorVisible(bool visible);
     std::shared_ptr<VROARSessionWeb> getARSession();
 
     // Build a hardcoded spinning cube demo (smoke test; not used by the bridge).
@@ -117,6 +118,8 @@ private:
 
     // Demo-only: the cube node spun each frame by buildCubeScene().
     std::shared_ptr<VRONode> _boxNode;
+    // Demo floor — hidden in AR (camera passthrough) so the feed shows through.
+    std::shared_ptr<VRONode> _floorNode;
     // Retained because VRONode holds the event delegate only weakly.
     std::shared_ptr<VROEventDelegate> _cubeDelegate;
 
