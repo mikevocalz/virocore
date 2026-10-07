@@ -63,10 +63,12 @@ public:
     
     /*
      Create a new Metal texture out of the given format, with the given width, and height.
+     When sRGB is true, RGBA8/RGB8 data is stored in an *_sRGB pixel format so
+     sampling returns linear values, matching GL_SRGB8_ALPHA8 on the GL path.
      */
     VROTextureSubstrateMetal(VROTextureType type, VROTextureFormat format,
                              std::shared_ptr<VROData> data, int width, int height,
-                             std::shared_ptr<VRODriver> &driver);
+                             std::shared_ptr<VRODriver> &driver, bool sRGB = false);
     virtual ~VROTextureSubstrateMetal();
     
     id <MTLTexture> getTexture() const {

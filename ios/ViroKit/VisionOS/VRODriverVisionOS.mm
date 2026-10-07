@@ -247,8 +247,13 @@ VROTextureSubstrate *VRODriverVisionOS::newTextureSubstrate(
     // bytes to a Metal texture with the specified dimensions.
     // shared_from_this() returns shared_ptr<VRODriverVisionOS>; upcast to VRODriver
     // before passing so the lvalue reference binds correctly.
+    //
+    // sRGB is passed through: this driver shades in linear space (see
+    // getColorRenderingMode) into a *_sRGB drawable that encodes on write, so an
+    // sRGB colour texture has to decode on sample. Without it the texture's
+    // already-encoded values were encoded a second time and came out washed out.
     std::shared_ptr<VRODriver> driverPtr = std::static_pointer_cast<VRODriver>(shared_from_this());
-    return new VROTextureSubstrateMetal(type, format, data[0], width, height, driverPtr);
+    return new VROTextureSubstrateMetal(type, format, data[0], width, height, driverPtr, sRGB);
 }
 
 // ── Typeface ──────────────────────────────────────────────────────────────────

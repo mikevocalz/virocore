@@ -115,7 +115,7 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type, std::vec
 
 VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type, VROTextureFormat format,
                                                    std::shared_ptr<VROData> data, int width, int height,
-                                                   std::shared_ptr<VRODriver> &driver) {
+                                                   std::shared_ptr<VRODriver> &driver, bool sRGB) {
     
     if (format == VROTextureFormat::ETC2_RGBA8_EAC) {
         VRODriverMetal &metal = (VRODriverMetal &)(*driver);
@@ -161,7 +161,8 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type, VROTextu
         id <MTLDevice> device = ((VRODriverMetal &)(*driver)).getDevice();
 
         int bytesPerPixel = 4;
-        MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        MTLPixelFormat pixelFormat = sRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
+        MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixelFormat
                                                                                               width:width
                                                                                              height:height
                                                                                           mipmapped:NO];

@@ -78,6 +78,13 @@ glPopGroupMarkerEXT(); \
 #define GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR 0xdecafbad
 #define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS 0xdecafbad
 
+#if VRO_METAL
+// A Metal build on macOS (the desktop OpenXR host) has no GL context, and
+// glPushGroupMarkerEXT crashes in libGL without one. The markers only label
+// GPU captures.
+#define pglpush(message,...) ((void)0)
+#define pglpop() ((void)0)
+#else
 #define pglpush(message,...) \
 do { \
 char str[1024]; \
@@ -89,6 +96,7 @@ glPushGroupMarkerEXT(0, str); \
 do { \
 glPopGroupMarkerEXT(); \
 } while (0)
+#endif // VRO_METAL
 
 #elif VRO_PLATFORM_WASM
 

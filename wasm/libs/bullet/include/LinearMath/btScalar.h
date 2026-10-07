@@ -180,7 +180,10 @@ inline int	btGetVersion()
                 #include <emmintrin.h>
             #endif
         #endif //BT_USE_SSE
-    #elif defined( __ARM_NEON__ )
+    #elif defined( __ARM_NEON__ ) && !defined(__aarch64__)
+		// aarch64: the NEON paths in this vendored tree use ARMv7 inline
+		// asm (btVector3.cpp _maxdot_large_v0/v1) that clang rejects on
+		// arm64 — fall back to the portable scalar implementation.
         #ifdef __clang__
             #define BT_USE_NEON 1
 			#define BT_USE_SIMD_VECTOR3
