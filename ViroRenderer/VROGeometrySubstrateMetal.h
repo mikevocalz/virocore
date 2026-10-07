@@ -23,6 +23,7 @@
 //  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 //  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
 
 #ifndef VROGeometrySubstrateMetal_h
 #define VROGeometrySubstrateMetal_h
@@ -31,13 +32,12 @@
 #if VRO_METAL
 
 #include "VROGeometrySubstrate.h"
-#include "VROGeometrySource.h"
 #include "VROGeometryElement.h"
-#include <vector>
-#include <memory>
-#include <map>
+#include "VROMatrix4f.h"
 #include <Metal/Metal.h>
-#include <MetalKit/MetalKit.h>
+#include <vector>
+#include <map>
+#include <memory>
 
 class VROGeometry;
 class VROMaterial;
@@ -47,10 +47,28 @@ class VRORenderContext;
 class VRODriver;
 class VRODriverMetal;
 class VROMaterialSubstrateMetal;
-class VROConcurrentBuffer;
 
-struct VROVertexArrayMetal {
+/*
+ A Metal vertex attribute pulled from a VROGeometrySource: the attribute
+ index is the shader attribute slot (VROGeometryUtilParseAttributeIndex),
+ the offset/stride describe the source's layout within its shared buffer.
+ */
+struct VROVertexAttributeMetal {
+    int attributeIndex;
+    int offset;
+    MTLVertexFormat format;
+};
+
+/*
+ All VROGeometrySources that share one underlying data buffer become a
+ single MTLBuffer plus a list of attributes; the buffer is bound to the
+ render encoder at bufferIndex.
+ */
+struct VROVertexDescriptorMetal {
     id <MTLBuffer> buffer;
+    int bufferIndex;
+    int stride;
+    std::vector<VROVertexAttributeMetal> attributes;
 };
 
 struct VROGeometryElementMetal {
@@ -62,110 +80,96 @@ struct VROGeometryElementMetal {
 };
 
 /*
- Metal representation of a VROGeometry. 
- 
- Each set of VROGeometrySources that share the same underlying data buffer are combined
- together into a single VROGeometrySourceMetal, which contains a single MTLBuffer,
- and single MTLVertexDescriptor that describes the interleaved data between the geometry
- sources. At rendering time, all of these vertex buffers are attached to the render encoder
- in successive indexes, starting at 0, via [renderEncoder setVertexBuffer:offset:atIndex:].
- 
- For each VROGeometryElement, we create a VROGeometryElementMetal, which contains all the
- information necessary for [renderEncoder drawIndexedPrimitives] using the attached 
- vertex buffers.
+ Metal representation of a VROGeometry (minimal milestone implementation).
+
+ Vertex/index data is uploaded once into MTLBuffers. At render time we bake
+ an MTLRenderPipelineState from (a) the material's shader functions, (b) the
+ geometry's vertex layout, (c) the driver's current blend mode and pixel
+ formats; and an MTLDepthStencilState from the driver's depth flags. Both
+ are cached per element.
+
+ Not yet supported (logged, not silently skipped): skinning/bones, morph
+ targets, instancing, vertex buffers owned by VROVertexBuffer objects,
+ texture binding.
  */
 class VROGeometrySubstrateMetal : public VROGeometrySubstrate {
-    
+
 public:
-    
+
     VROGeometrySubstrateMetal(const VROGeometry &geometry,
                               VRODriverMetal &driver);
     virtual ~VROGeometrySubstrateMetal();
-    
+
+    void update(const VROGeometry &geometry,
+                std::shared_ptr<VRODriver> &driver) override;
+
     void render(const VROGeometry &geometry,
                 int elementIndex,
                 VROMatrix4f transform,
                 VROMatrix4f normalMatrix,
                 float opacity,
-                std::shared_ptr<VROMaterial> &material,
+                const std::shared_ptr<VROMaterial> &material,
                 const VRORenderContext &context,
-                std::shared_ptr<VRODriver> &driver);
-    
+                std::shared_ptr<VRODriver> &driver) override;
+
+    void renderSilhouette(const VROGeometry &geometry,
+                          VROMatrix4f transform,
+                          std::shared_ptr<VROMaterial> &material,
+                          const VRORenderContext &context,
+                          std::shared_ptr<VRODriver> &driver) override;
+
+    void renderSilhouetteTextured(const VROGeometry &geometry,
+                                  int element,
+                                  VROMatrix4f transform,
+                                  std::shared_ptr<VROMaterial> &material,
+                                  const VRORenderContext &context,
+                                  std::shared_ptr<VRODriver> &driver) override;
+
 private:
-    
-    MTLVertexDescriptor *_vertexDescriptor;
-    VROVertexArrayMetal _var;
+
+    std::vector<VROVertexDescriptorMetal> _vertexDescriptors;
     std::vector<VROGeometryElementMetal> _elements;
-    
-    /*
-     Pipeline and depth states for each geometry element. Note that pipeline 
-     state is determined by both the geometry (by way of the _vertexDescriptor) 
-     and the material; this is why it's not a member of the VROMaterialSubstrate.
-     */
-    std::vector<id <MTLRenderPipelineState>> _elementPipelineStates;
-    std::vector<id <MTLDepthStencilState>> _elementDepthStates;
-    
-    /*
-     Uniforms for the view.
-     */
-    VROConcurrentBuffer *_viewUniformsBuffer;
-    
-    /*
-     Parse the given geometry elements and populate the _elements vector with the
-     results.
-     */
+    std::map<int, std::vector<int>> _elementToDescriptorsMap;
+
+    // Pipeline and depth-stencil state caches, keyed by a small composite
+    // (element index, shader variant, blend mode, depth flags).
+    std::map<uint32_t, id <MTLRenderPipelineState>> _pipelineStates;
+    std::map<uint32_t, id <MTLDepthStencilState>> _depthStates;
+
     void readGeometryElements(id <MTLDevice> device,
                               const std::vector<std::shared_ptr<VROGeometryElement>> &elements);
-    
-    /*
-     Parse the given geometry sources and populate the _vars vector with the
-     results.
-     */
     void readGeometrySources(id <MTLDevice> device,
                              const std::vector<std::shared_ptr<VROGeometrySource>> &sources);
-    
-    /*
-     Update the render pipeline state and depth-stencil pipeline state in response to materials
-     changing.
-     */
-    void updatePipelineStates(const VROGeometry &geometry,
-                              VRODriverMetal &driver);
-    
-    /*
-     Create a pipeline state from the given material, using the current _vertexDescriptor.
-     */
-    id <MTLRenderPipelineState> createRenderPipelineState(const std::shared_ptr<VROMaterial> &material,
-                                                          VRODriverMetal &driver);
-    
-    /*
-     Create a depth/stencil state from the given material.
-     */
-    id <MTLDepthStencilState> createDepthStencilState(const std::shared_ptr<VROMaterial> &material,
-                                                      id <MTLDevice> device);
-    
-    /*
-     Parse an MTLVertexFormat from the given geometry source.
-     */
+
+    // True if the descriptors for the given element include both Normal and
+    // Texcoord attributes (selects the 'full' vertex shader variant).
+    bool hasFullVertexLayout(int elementIndex) const;
+
+    std::vector<const VROVertexDescriptorMetal *> descriptorsForElement(int elementIndex) const;
+
+    id <MTLRenderPipelineState> getPipelineState(int elementIndex,
+                                                 VROMaterialSubstrateMetal *material,
+                                                 VRODriverMetal &driver);
+    id <MTLDepthStencilState> getDepthStencilState(VRODriverMetal &driver);
+
+    void renderElement(const VROGeometry &geometry,
+                       int elementIndex,
+                       VROMatrix4f transform,
+                       VROMatrix4f normalMatrix,
+                       float opacity,
+                       std::shared_ptr<VROMaterial> &material,
+                       const VRORenderContext &context,
+                       std::shared_ptr<VRODriver> &driver);
+
     MTLVertexFormat parseVertexFormat(std::shared_ptr<VROGeometrySource> &source);
-    
-    /*
-     Parse an MTLPrimitiveType from the given geometry VROGeometryPrimitiveType.
-     */
     MTLPrimitiveType parsePrimitiveType(VROGeometryPrimitiveType primitive);
-    
-    /*
-     Rendering helper function.
-     */
-    void renderMaterial(VROMaterialSubstrateMetal *material,
-                        VROGeometryElementMetal &element,
-                        id <MTLRenderPipelineState> pipelineState,
-                        id <MTLDepthStencilState> depthStencilState,
-                        id <MTLRenderCommandEncoder> renderEncoder,
-                        float opacity,
-                        const VRORenderContext &renderContext,
-                        std::shared_ptr<VRODriver> &driver);
-    
+
+    bool _warnedVBO;
+    bool _warnedEncoder;
+    bool _warnedSkinner;
+    bool _warnedSources;
+
 };
 
-#endif
+#endif // VRO_METAL
 #endif /* VROGeometrySubstrateMetal_h */

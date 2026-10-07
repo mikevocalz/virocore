@@ -60,7 +60,12 @@
 #endif
 #endif // !__OBJC __
 
+// VRO_METAL defaults to 0 but may be overridden by the build system
+// (e.g. -DVRO_METAL=1) so the Metal substrate path can be compiled for
+// targets that support it (visionOS, desktop Metal).
+#ifndef VRO_METAL
 #define VRO_METAL 0
+#endif
 
 // True if building for Posemoji
 #define VRO_POSEMOJI 1

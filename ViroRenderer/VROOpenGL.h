@@ -78,6 +78,12 @@ glPopGroupMarkerEXT(); \
 #define GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR 0xdecafbad
 #define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS 0xdecafbad
 
+#if VRO_METAL
+// Metal builds have no GL context: glPushGroupMarkerEXT crashes in libGL
+// (no current context). These markers exist only for GPU debugging.
+#define pglpush(message,...) ((void)0)
+#define pglpop() ((void)0)
+#else
 #define pglpush(message,...) \
 do { \
 char str[1024]; \
@@ -89,6 +95,7 @@ glPushGroupMarkerEXT(0, str); \
 do { \
 glPopGroupMarkerEXT(); \
 } while (0)
+#endif // VRO_METAL
 
 #elif VRO_PLATFORM_WASM
 
