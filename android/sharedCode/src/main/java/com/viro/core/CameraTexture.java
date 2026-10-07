@@ -260,21 +260,34 @@ public class CameraTexture extends Texture {
         }
         if (outputPath == null) outputPath = defaultVideoPath();
 
-        // 1. Prepare MediaRecorder before adding its surface to the session.
-        mMediaRecorder = new MediaRecorder();
-        mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-        mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-        mMediaRecorder.setOutputFile(outputPath);
-        mMediaRecorder.setVideoEncodingBitRate(10_000_000);
-        mMediaRecorder.setVideoFrameRate(30);
-        mMediaRecorder.setVideoSize(1280, 720);
-        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        // setAudioSource(MIC) throws SecurityException without RECORD_AUDIO, and it used to throw
+        // from outside the try below, where only IOException was caught. The exception escaped
+        // startRecording, the callback never ran, and the JS promise never settled. Check first,
+        // and fail through the callback like every other error here.
+        Context ctx = mAppContext;
+        if (ctx == null
+                || ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+                        != PackageManager.PERMISSION_GRANTED) {
+            callback.onError("RECORD_AUDIO permission not granted — required to record video");
+            return;
+        }
 
+        // 1. Prepare MediaRecorder before adding its surface to the session.
+        // Every configure call is inside the try: MediaRecorder signals misuse with unchecked
+        // RuntimeExceptions, and any of them escaping would hang the caller's promise.
+        mMediaRecorder = new MediaRecorder();
         try {
+            mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+            mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            mMediaRecorder.setOutputFile(outputPath);
+            mMediaRecorder.setVideoEncodingBitRate(10_000_000);
+            mMediaRecorder.setVideoFrameRate(30);
+            mMediaRecorder.setVideoSize(1280, 720);
+            mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+            mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             mMediaRecorder.prepare();
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             mMediaRecorder.release();
             mMediaRecorder = null;
             callback.onError("MediaRecorder prepare failed: " + e.getMessage());

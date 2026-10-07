@@ -200,7 +200,9 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
             }
         }
         lastClicked = nullptr;
-        // Only the owning ray ends its drag; the other hand stays captured.
+        // Only the owning ray ends a drag (grip-start / trigger-release on the
+        // same hand still counts); the other hand's release must not drop it,
+        // and ends only its own drag, if it has one.
         std::shared_ptr<VRODraggedObject> drag = getDraggedObject(ray);
         if (drag != nullptr) {
             endDrag(drag->_source);
@@ -371,6 +373,8 @@ VROInputControllerBase::getDraggedObject(int ray) const {
     if (it != _draggedObjects.end()) {
         return it->second;
     }
+    // Copied to a local: find() binds a reference, which would odr-use the
+    // static constexpr member, and under C++14 it has no out-of-line definition.
     const int unowned = kUnownedSource;
     it = _draggedObjects.find(unowned);
     if (it != _draggedObjects.end()) {
@@ -661,6 +665,10 @@ void VROInputControllerBase::updateHitNode(int source, const VROCamera &camera,
     }
     auto hit = std::make_shared<VROHitTestResult>(hitTest(camera, origin, ray, true));
     _hitResultsBySource[source] = hit;
+    // Mirror to the legacy single-source slot so subsystems that don't carry
+    // a source ID (fuse, pinch, rotate) keep functioning. A passive source that
+    // runs every frame (head gaze) opts out, or it would take that slot from
+    // the pointer the user is actually aiming.
     if (mirrorToLegacy) {
         _hitResult = hit;
     }

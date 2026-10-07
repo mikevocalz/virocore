@@ -73,6 +73,7 @@ static constexpr const char *const kOptionalExtensions[] = {
     "XR_META_foveation_eye_tracked",                  // gaze-driven foveation (perm-gated; flagged only)
     XR_FB_SPACE_WARP_EXTENSION_NAME,                  // ASW motion-vector reprojection (flagged; loop TODO)
     XR_EXT_LOCAL_FLOOR_EXTENSION_NAME,                // floor-level reference space (PICO 4 Ultra; OpenXR 1.1 core)
+    XR_META_BOUNDARY_VISIBILITY_EXTENSION_NAME, // hide the boundary while passthrough shows the room
 
     // CL-H: co-location. All three are needed and none of them is optional to
     // each other — an anchor has to be STORABLE before it can be SHARABLE, and
@@ -395,6 +396,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                     _swapchainUpdateStateAvailable = true;
                 if (strcmp(optExt, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME) == 0)
                     _localFloorAvailable = true;
+                if (strcmp(optExt, XR_META_BOUNDARY_VISIBILITY_EXTENSION_NAME) == 0)
+                    _boundaryVisibilityAvailable = true;
                 break;
             }
         }
@@ -519,6 +522,18 @@ bool VROSceneRendererOpenXR::initOpenXR() {
               (int)_eyeGazeAvailable, (int)_eyeGazeSupported);
     }
     _runtimeInfo.eyeGazeSupported = _eyeGazeSupported;
+
+    if (_boundaryVisibilityAvailable) {
+        XrSystemBoundaryVisibilityPropertiesMETA boundaryProps = {
+            XR_TYPE_SYSTEM_BOUNDARY_VISIBILITY_PROPERTIES_META
+        };
+        XrSystemProperties systemProps = { XR_TYPE_SYSTEM_PROPERTIES };
+        systemProps.next = &boundaryProps;
+        _boundaryVisibilityAvailable =
+            XR_SUCCEEDED(xrGetSystemProperties(_instance, _systemId, &systemProps)) &&
+            boundaryProps.supportsBoundaryVisibility == XR_TRUE;
+    }
+    ALOGV("Boundary visibility: supported=%d", (int)_boundaryVisibilityAvailable);
 
     return true;
 }
@@ -652,6 +667,7 @@ bool VROSceneRendererOpenXR::createSession() {
 
     // Try to enable passthrough (optional — graceful degradation if unavailable)
     initPassthrough();
+    initBoundaryVisibility();
 
     // Create the Quest MR (AR) session if a plane source is available. Two
     // sources are tried; planes are reported in _appSpace so anchors land in
@@ -1210,6 +1226,45 @@ bool VROSceneRendererOpenXR::initPassthrough() {
     return true;
 }
 
+void VROSceneRendererOpenXR::initBoundaryVisibility() {
+    if (!_boundaryVisibilityAvailable) return;
+    XrResult r = xrGetInstanceProcAddr(_instance, "xrRequestBoundaryVisibilityMETA",
+                                       (PFN_xrVoidFunction *)&_pfnRequestBoundaryVisibility);
+    if (XR_FAILED(r)) {
+        ALOGW("xrGetInstanceProcAddr('xrRequestBoundaryVisibilityMETA') failed: %d", (int)r);
+        _pfnRequestBoundaryVisibility = nullptr;
+    }
+}
+
+// Called after every xrEndFrame, because suppression is only granted while a
+// passthrough layer is being submitted: a request made when passthrough is
+// first enabled, before that frame ends, is refused.
+void VROSceneRendererOpenXR::updateBoundaryVisibility(bool passthroughSubmitted) {
+    if (_pfnRequestBoundaryVisibility == nullptr) return;
+    XrBoundaryVisibilityMETA wanted = passthroughSubmitted
+        ? XR_BOUNDARY_VISIBILITY_SUPPRESSED_META
+        : XR_BOUNDARY_VISIBILITY_NOT_SUPPRESSED_META;
+    if (wanted == _boundaryVisibility) return;
+    if (_boundaryRequestCooldown > 0) {
+        --_boundaryRequestCooldown;
+        return;
+    }
+    // Spaced out, so a runtime that keeps refusing, or keeps reporting the
+    // boundary back, is not asked on every frame.
+    _boundaryRequestCooldown = 45;
+
+    XrResult r = _pfnRequestBoundaryVisibility(_session, wanted);
+    if (r == XR_SUCCESS) {
+        _boundaryVisibility = wanted;
+        ALOGV("Boundary %s", wanted == XR_BOUNDARY_VISIBILITY_SUPPRESSED_META
+                                 ? "suppressed" : "shown");
+    } else if (r == XR_BOUNDARY_VISIBILITY_SUPPRESSION_NOT_ALLOWED_META) {
+        ALOGV("Boundary suppression not allowed yet, will retry");
+    } else {
+        ALOGW("xrRequestBoundaryVisibilityMETA(%d) failed: %d", (int)wanted, (int)r);
+    }
+}
+
 void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
     if (_passthrough == XR_NULL_HANDLE || _passthroughLayer == XR_NULL_HANDLE) {
         ALOGW("setPassthroughEnabled(%s): XR_FB_passthrough not available on this device",
@@ -1666,6 +1721,13 @@ void VROSceneRendererOpenXR::pollEvents() {
                     _inputController->logActiveInteractionProfiles(_session);
                 }
                 break;
+            case XR_TYPE_EVENT_DATA_BOUNDARY_VISIBILITY_CHANGED_META: {
+                auto *boundaryEvent =
+                    reinterpret_cast<XrEventDataBoundaryVisibilityChangedMETA *>(&event);
+                _boundaryVisibility = boundaryEvent->boundaryVisibility;
+                ALOGV("Boundary visibility changed: %d", (int)_boundaryVisibility);
+                break;
+            }
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB:
@@ -1962,7 +2024,9 @@ void VROSceneRendererOpenXR::renderFrame() {
         ALOGE("xrEndFrame FAILED: result=%d state=%d shouldRender=%d layerCount=%u",
               (int)endResult, (int)_sessionState,
               (int)frameState.shouldRender, endInfo.layerCount);
+        return;
     }
+    updateBoundaryVisibility(ptLayerComp.layerHandle != XR_NULL_HANDLE);
 }
 
 void VROSceneRendererOpenXR::renderEye(int eyeIndex,
