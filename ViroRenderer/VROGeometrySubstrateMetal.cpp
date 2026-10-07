@@ -420,6 +420,10 @@ void VROGeometrySubstrateMetal::renderElement(const VROGeometry &geometry,
 
     [encoder setRenderPipelineState:pipeline];
     [encoder setDepthStencilState:getDepthStencilState(*metalDriver)];
+    // Viro geometry is GL-wound (CCW front faces); Metal defaults to CW, so
+    // without this, back-face culling keeps the far faces and the mesh draws
+    // inside-out.
+    [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     [encoder setCullMode:VRODriverMetal::toMTLCullMode(metalDriver->getCullMode())];
 
     for (const VROVertexDescriptorMetal *vd : descriptorsForElement(elementIndex)) {

@@ -59,6 +59,7 @@ if(VIRO_DESKTOP_SCENE)
   target_sources(viro_sim_host PRIVATE
     VROSceneGraphMetalBridge.mm
     VRODriverMetalOpenXR.mm
+    VROInputControllerXR.mm
     VRORenderTargetMetalXR.mm)
   # The full render stack: the real VRORenderer + choreographer + portal-tree
   # render pass + scene graph + Metal substrates. Source set mirrors the
