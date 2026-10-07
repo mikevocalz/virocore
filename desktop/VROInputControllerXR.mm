@@ -20,6 +20,11 @@
 //      pinch is also derived from thumb-tip<->index-tip distance (<0.02m)
 //      and, when the gaze action is unavailable, an aim ray derived from
 //      the right-hand index proximal->tip direction is used as pointer.
+//    - Right aim pose (/user/hand/right/input/aim/pose) on the touch
+//      controller and hand-interaction profiles: the pointer on devices
+//      without eye tracking (Quest 3), and on Glasses when gaze drops.
+//
+//  Pointer priority: eye gaze, then the aim action, then the joint ray.
 //
 //  Pinch = pinch_ext action (preferred) OR joint-distance fallback; both
 //  signals are real runtime input and the log line records which fired.
@@ -140,6 +145,8 @@ void VROInputControllerXR::bindXR(XrInstance instance, XrSession session,
                                       "pinch_left", "Pinch Left");
     _pinchAction[1]  = createXrAction(XR_ACTION_TYPE_FLOAT_INPUT,
                                       "pinch_right", "Pinch Right");
+    _aimAction       = createXrAction(XR_ACTION_TYPE_POSE_INPUT,
+                                      "aim_right", "Aim Right");
 
     // ---- Suggested bindings -------------------------------------------------
     // Eye gaze profile: single component path under /user/eyes_ext.
@@ -155,50 +162,61 @@ void VROInputControllerXR::bindXR(XrInstance instance, XrSession session,
             s.suggestedBindings = &binding;
             s.countSuggestedBindings = 1;
             XrResult r = xrSuggestInteractionProfileBindings(instance, &s);
-            std::printf("input-xr: eye-gaze binding suggest -> %d\n", (int)r);
+            if (r == XR_ERROR_PATH_UNSUPPORTED) {
+                std::puts("input-xr: eye gaze not supported by this system");
+            } else {
+                std::printf("input-xr: eye-gaze binding suggest -> %d\n", (int)r);
+            }
         }
     }
 
     // EXT hand interaction profile: pinch_ext/value per hand.
     {
-        XrPath profile, pl, pr;
+        XrPath profile, pl, pr, aim;
         if (toPath("/interaction_profiles/ext/hand_interaction_ext", &profile) &&
             toPath("/user/hand/left/input/pinch_ext/value", &pl) &&
             toPath("/user/hand/right/input/pinch_ext/value", &pr) &&
-            _pinchAction[0] != XR_NULL_HANDLE && _pinchAction[1] != XR_NULL_HANDLE) {
+            toPath("/user/hand/right/input/aim/pose", &aim) &&
+            _pinchAction[0] != XR_NULL_HANDLE && _pinchAction[1] != XR_NULL_HANDLE &&
+            _aimAction != XR_NULL_HANDLE) {
             XrActionSuggestedBinding bindings[] = {
                 {_pinchAction[0], pl},
                 {_pinchAction[1], pr},
+                {_aimAction, aim},
             };
             XrInteractionProfileSuggestedBinding s{
                 XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
             s.interactionProfile = profile;
             s.suggestedBindings = bindings;
-            s.countSuggestedBindings = 2;
+            s.countSuggestedBindings = 3;
             XrResult r = xrSuggestInteractionProfileBindings(instance, &s);
             std::printf("input-xr: hand-interaction pinch binding suggest -> %d\n",
                         (int)r);
         }
     }
 
-    // Touch controllers: the trigger drives the same pinch actions, so the
-    // simulator's default controller profile can select without hand tracking.
+    // Touch controllers: the trigger drives the same pinch actions and the
+    // right aim pose is the pointer, so a controller can select without hand
+    // or eye tracking.
     for (const char *profileStr : {"/interaction_profiles/oculus/touch_controller",
                                    "/interaction_profiles/meta/touch_controller_plus"}) {
-        XrPath profile, tl, tr;
+        XrPath profile, tl, tr, aim;
         if (toPath(profileStr, &profile) &&
             toPath("/user/hand/left/input/trigger/value", &tl) &&
             toPath("/user/hand/right/input/trigger/value", &tr) &&
-            _pinchAction[0] != XR_NULL_HANDLE && _pinchAction[1] != XR_NULL_HANDLE) {
+            toPath("/user/hand/right/input/aim/pose", &aim) &&
+            _pinchAction[0] != XR_NULL_HANDLE && _pinchAction[1] != XR_NULL_HANDLE &&
+            _aimAction != XR_NULL_HANDLE) {
             XrActionSuggestedBinding bindings[] = {
                 {_pinchAction[0], tl},
                 {_pinchAction[1], tr},
+                {_aimAction, aim},
             };
             XrInteractionProfileSuggestedBinding s{
                 XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
             s.interactionProfile = profile;
             s.suggestedBindings = bindings;
-            s.countSuggestedBindings = 2;
+            s.countSuggestedBindings = 3;
             XrResult r = xrSuggestInteractionProfileBindings(instance, &s);
             std::printf("input-xr: %s trigger binding suggest -> %d\n",
                         profileStr, (int)r);
@@ -221,6 +239,15 @@ void VROInputControllerXR::bindXR(XrInstance instance, XrSession session,
         sci.poseInActionSpace.position = {0, 0, 0};
         XrResult r = xrCreateActionSpace(session, &sci, &_gazeSpace);
         std::printf("input-xr: gaze action space -> %d\n", (int)r);
+    }
+    if (_aimAction != XR_NULL_HANDLE) {
+        XrActionSpaceCreateInfo sci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        sci.action = _aimAction;
+        sci.subactionPath = XR_NULL_PATH;
+        sci.poseInActionSpace.orientation = {0, 0, 0, 1};
+        sci.poseInActionSpace.position = {0, 0, 0};
+        XrResult r = xrCreateActionSpace(session, &sci, &_aimSpace);
+        std::printf("input-xr: aim action space -> %d\n", (int)r);
     }
 
     // ---- Hand trackers (XR_EXT_hand_tracking) -------------------------------
@@ -259,6 +286,10 @@ void VROInputControllerXR::shutdownXR() {
     if (_gazeSpace != XR_NULL_HANDLE) {
         xrDestroySpace(_gazeSpace);
         _gazeSpace = XR_NULL_HANDLE;
+    }
+    if (_aimSpace != XR_NULL_HANDLE) {
+        xrDestroySpace(_aimSpace);
+        _aimSpace = XR_NULL_HANDLE;
     }
     if (_actionSet != XR_NULL_HANDLE) {
         xrDestroyActionSet(_actionSet);
@@ -312,6 +343,23 @@ void VROInputControllerXR::onProcess(const VROCamera &camera) {
     bool jointPinch = false, aimValid = false;
     VROVector3f aimOrigin, aimDir;
     processHands(camera, jointPinch, aimOrigin, aimDir, aimValid);
+
+    // ---- Aim action: controller or hand-interaction aim beats the joint ray --
+    if (_actionsAttached && _aimSpace != XR_NULL_HANDLE &&
+        _sessionState == XR_SESSION_STATE_FOCUSED) {
+        XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+        gi.action = _aimAction;
+        XrActionStatePose ps{XR_TYPE_ACTION_STATE_POSE};
+        XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+        if (XR_SUCCEEDED(xrGetActionStatePose(_session, &gi, &ps)) && ps.isActive &&
+            XR_SUCCEEDED(xrLocateSpace(_aimSpace, _baseSpace, _frameTime, &loc)) &&
+            (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+            (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+            aimOrigin = xrVec(loc.pose.position);
+            aimDir = xrPoseForward(loc.pose);
+            aimValid = true;
+        }
+    }
 
     // ---- Pinch via pinch_ext actions (preferred signal) ----------------------
     bool actionPinch = false;
