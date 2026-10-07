@@ -149,6 +149,8 @@ public:
      */
     void onControllerStatus(int source, VROEventDelegate::ControllerStatus status);
     void onButtonEvent(int source, VROEventDelegate::ClickState clickAction);
+    // Tracking loss releases capture without synthesizing a Clicked activation.
+    void cancelSource(int source);
     void onTouchpadEvent(int source, VROEventDelegate::TouchState touchAction, float lastKnownX, float lastKnownY);
     
     /*

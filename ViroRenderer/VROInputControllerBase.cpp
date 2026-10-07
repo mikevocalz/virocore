@@ -79,6 +79,41 @@ void VROInputControllerBase::setProjection(VROMatrix4f projection) {
     _projection = projection;
 }
 
+void VROInputControllerBase::cancelSource(int source) {
+    const int ray = rayForSource(source);
+    std::vector<std::pair<int, std::shared_ptr<VRONode>>> captured;
+    for (auto &entry : _lastClickedNodesBySource) {
+        if (rayForSource(entry.first) == ray && entry.second) {
+            captured.emplace_back(entry.first, entry.second);
+            entry.second = nullptr;
+        }
+    }
+    std::shared_ptr<VRODraggedObject> cancelledDrag = getDraggedObject(ray);
+    if (cancelledDrag != nullptr) {
+        endDrag(cancelledDrag->_source);
+    }
+    auto hover = _lastHoveredNodesBySource.find(ray);
+    if (hover != _lastHoveredNodesBySource.end() && hover->second) {
+        auto node = hover->second;
+        hover->second = nullptr;
+        if (node->getEventDelegate()) node->getEventDelegate()->onHover(ray, node, false, {});
+    }
+    _hoverPendingBySource.erase(ray);
+    _hoverExitBySource.erase(ray);
+    _hitResultsBySource.erase(ray);
+    // Empty coordinates mean off-target release to consumers. Never call the
+    // ordinary click-completion path, which can reroute through hover grace.
+    for (const auto &entry : captured) {
+        for (const auto &delegate : _delegates) {
+            delegate->onClick(entry.first, entry.second, VROEventDelegate::ClickUp, {});
+        }
+        if (entry.second->getEventDelegate()) {
+            entry.second->getEventDelegate()->onClick(entry.first, entry.second,
+                                                       VROEventDelegate::ClickUp, {});
+        }
+    }
+}
+
 void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickState clickState) {
     // Resolve the click against the hit of the ray that carries this source
     // (a grip shares its hand's aim ray) so two simultaneous pointers don't
