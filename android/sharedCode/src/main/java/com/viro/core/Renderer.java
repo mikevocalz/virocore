@@ -171,9 +171,10 @@ public class Renderer {
     }
 
     /**
-     * Select the vertical tracking origin: false = eye-level (LOCAL, default),
-     * true = floor-level (LOCAL_FLOOR or a STAGE-derived offset). No-op on
-     * non-OpenXR backends.
+     * Select the vertical tracking origin: false = eye-level (LOCAL),
+     * true = floor-level (LOCAL_FLOOR or a STAGE-derived offset). Without a
+     * call, PICO and Meta runtimes default to floor-level and others to
+     * eye-level. No-op on non-OpenXR backends.
      */
     public void setTrackingOrigin(boolean floor) {
         nativeSetTrackingOrigin(mNativeRef, floor);

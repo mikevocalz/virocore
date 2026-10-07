@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Meta Quest and Meta VR glasses start floor-level (`VROSceneRendererOpenXR`).** With no `trackingOrigin` set from JS, a Meta Horizon runtime now defaults to the floor origin, as PICO already did. The eye-level default put the app's floor at chest height. The origin still resolves LOCAL_FLOOR, then a STAGE-emulated floor, then eye level, and an explicit `setTrackingOrigin` still wins.
+
 ## v3.0.3 — 6 October 2026
 
 ### Added
