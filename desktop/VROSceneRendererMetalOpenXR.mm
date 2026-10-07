@@ -24,16 +24,37 @@
 #import <AppKit/AppKit.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
-// When compiled with -DVIRO_DESKTOP_SCENE, the per-eye render draws the
-// geometry produced by real Viro classes (VROBox → VROGeometry sources and
-// elements) instead of the fixed fallback triangle.
+// When compiled with -DVIRO_DESKTOP_SCENE, the per-eye render draws real Viro
+// scene content. By default the REAL VRORenderer drives the frame through the
+// Metal substrate path (VRODriverMetalOpenXR); -DVRO_BRIDGE_FALLBACK keeps the
+// old hand-rolled bridge pipeline for A/B comparison.
 #if VIRO_DESKTOP_SCENE
 #include "VROSceneGraphMetalBridge.h"
+#if !VRO_BRIDGE_FALLBACK
+#include "VRORenderer.h"
+#include "VRORendererConfiguration.h"
+#include "VROSceneController.h"
+#include "VROScene.h"
+#include "VRONode.h"
+#include "VROBox.h"
+#include "VROMaterial.h"
+#include "VROMaterialVisual.h"
+#include "VROMatrix4f.h"
+#include "VROVector3f.h"
+#include "VROVector4f.h"
+#include "VROQuaternion.h"
+#include "VROEye.h"
+#include "VROViewport.h"
+#include "VROFieldOfView.h"
+#include "VRODriverMetalOpenXR.h"
+#include "VROInputControllerXR.h"
+#endif
 #endif
 
 namespace {
@@ -153,6 +174,46 @@ const Uniforms kIdentityUniforms = {{
     0, 0, 0, 1
 }};
 
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+// Identical to VROSceneRendererOpenXR.cpp::xrPoseToMatrix.
+VROMatrix4f xrPoseToMatrix(const XrPosef &pose) {
+    VROQuaternion q(pose.orientation.x, pose.orientation.y,
+                    pose.orientation.z, pose.orientation.w);
+    VROMatrix4f rot = q.getMatrix();
+    rot[12] = pose.position.x;
+    rot[13] = pose.position.y;
+    rot[14] = pose.position.z;
+    return rot;
+}
+
+// VROSceneRendererOpenXR.cpp::xrFovToProjection with the z row remapped to
+// Metal's [0,1] NDC depth (the GL-style [-1,1] variant clips the front half
+// of clip space on Metal).
+VROMatrix4f xrFovToProjectionMetal(const XrFovf &fov,
+                                   float nearZ = 0.1f,
+                                   float farZ  = 100.0f) {
+    const float left   = tanf(fov.angleLeft);
+    const float right  = tanf(fov.angleRight);
+    const float down   = tanf(fov.angleDown);
+    const float up     = tanf(fov.angleUp);
+
+    const float w  =  right - left;
+    const float h  =  up    - down;
+    const float q  =  farZ / (nearZ - farZ);
+    const float qn =  farZ * nearZ / (nearZ - farZ);
+
+    float m[16] = {};
+    m[0]  =  2.0f / w;
+    m[5]  =  2.0f / h;
+    m[8]  =  (right + left) / w;
+    m[9]  =  (up    + down) / h;
+    m[10] =  q;
+    m[11] = -1.0f;
+    m[14] =  qn;
+    return VROMatrix4f(m);
+}
+#endif
+
 } // namespace
 
 struct VROSceneRendererMetalOpenXR::Impl {
@@ -188,6 +249,79 @@ struct VROSceneRendererMetalOpenXR::Impl {
     bool viroScene = false;
 
     int frameBudget = 600;
+
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+    // Real VRORenderer path: driver + renderer + a one-node scene.
+    std::shared_ptr<VRODriverMetalOpenXR> _driver;
+    std::shared_ptr<VRORenderer> _renderer;
+    std::shared_ptr<VROInputControllerXR> _inputController;
+    std::shared_ptr<VROSceneController> _sceneController;
+    std::shared_ptr<VRONode> _boxNode;
+
+    bool buildViroRendererScene() {
+        _driver = std::make_shared<VRODriverMetalOpenXR>(device, queue);
+        _driver->initialize();
+        _inputController = std::make_shared<VROInputControllerXR>(_driver);
+
+        // All optional passes off — the driver reports a GPU without MRT, so
+        // the choreographer renders the scene directly to the display target.
+        VRORendererConfiguration config;
+        config.enableShadows = false;
+        config.enableBloom = false;
+        config.enableHDR = false;
+        config.enablePBR = false;
+        _renderer = std::make_shared<VRORenderer>(config, _inputController);
+
+        _sceneController = std::make_shared<VROSceneController>();
+        std::shared_ptr<VROScene> scene = _sceneController->getScene();
+
+        std::shared_ptr<VROMaterial> material = std::make_shared<VROMaterial>();
+        material->setLightingModel(VROLightingModel::Constant);
+        material->getDiffuse().setColor(VROVector4f(0.15f, 0.65f, 1.0f, 1.0f));
+
+        std::shared_ptr<VROBox> box = VROBox::createBox(0.5f, 0.5f, 0.5f);
+        box->setMaterials({ material });
+
+        _boxNode = std::make_shared<VRONode>();
+        _boxNode->setGeometry(box);
+        _boxNode->setPosition(VROVector3f(0, 0, -1.5f));
+        scene->getRootNode()->addChildNode(_boxNode);
+
+        _renderer->setSceneController(_sceneController, _driver);
+
+        // Per-eye depth targets (the swapchain supplies color only).
+        for (uint32_t v = 0; v < eyes.size() && v < 8; ++v) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor
+                texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                width:eyes[v].width height:eyes[v].height mipmapped:NO];
+            td.usage = MTLTextureUsageRenderTarget;
+            td.storageMode = MTLStorageModePrivate;
+            depthTexture[v] = [device newTextureWithDescriptor:td];
+        }
+        std::puts("viro renderer scene built (real VRORenderer, Metal substrate)");
+        return true;
+    }
+
+    // prepareFrame bookkeeping once per frame, before the per-eye renders.
+    void prepareViroFrame() {
+        VROViewport viewport(0, 0, (int)eyes[0].width, (int)eyes[0].height);
+        const float kRad2Deg = 180.0f / (float)M_PI;
+        const XrFovf &f0 = _lastFov[0];
+        VROFieldOfView fov(-f0.angleLeft  * kRad2Deg,
+                            f0.angleRight * kRad2Deg,
+                           -f0.angleDown  * kRad2Deg,
+                            f0.angleUp    * kRad2Deg);
+        // Rotation-only head pose for camera/frustum (see android notes).
+        VROMatrix4f headPose = xrPoseToMatrix(_lastPose[0]);
+        headPose[12] = headPose[13] = headPose[14] = 0.0f;
+        VROMatrix4f proj = xrFovToProjectionMetal(f0);
+        if (_boxNode) {
+            _boxNode->setRotation(VROQuaternion::fromAngleAxis(_frame * 0.01f,
+                                                             VROVector3f(0, 1, 0)));
+        }
+        _renderer->prepareFrame(_frame, viewport, fov, headPose, proj, _driver);
+    }
+#endif
 
     // ---- init: instance → system → Metal binding → session → swapchains ----
     bool init() {
@@ -323,7 +457,11 @@ struct VROSceneRendererMetalOpenXR::Impl {
         refSpace.poseInReferenceSpace.orientation = {0, 0, 0, 1};
         XR_CHECK(xrCreateReferenceSpace(session, &refSpace, &stageSpace));
 
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+        return buildViroRendererScene();
+#else
         return buildRenderResources();
+#endif
     }
 
     // MSL pipeline + geometry. Under VIRO_DESKTOP_SCENE the vertex/index data
@@ -558,6 +696,11 @@ struct VROSceneRendererMetalOpenXR::Impl {
                 if (frames % 60 == 0)
                     handTrackersPoll(hands, stageSpace, frameState.predictedDisplayTime);
 
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+                if (viewsValid) {
+                    prepareViroFrame();
+                }
+#endif
                 for (uint32_t v = 0; v < viewCount && viewsValid; ++v) {
                     uint32_t imgIndex = 0;
                     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -580,7 +723,20 @@ struct VROSceneRendererMetalOpenXR::Impl {
                             rd.storageMode = MTLStorageModeShared;
                             copy = [device newTextureWithDescriptor:rd];
                         }
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+                        _driver->beginEye(tex, depthTexture[v]);
+                        {
+                            VROMatrix4f viewM = xrPoseToMatrix(_lastPose[v]).invert();
+                            VROMatrix4f projM = xrFovToProjectionMetal(_lastFov[v]);
+                            VROViewport eyeVp(0, 0, (int)tex.width, (int)tex.height);
+                            _renderer->renderEye(v == 0 ? VROEyeType::Left
+                                                        : VROEyeType::Right,
+                                                 viewM, projM, eyeVp, _driver);
+                        }
+                        _driver->endEye(copy);
+#else
                         renderEye(v, tex, copy);
+#endif
                         if (copy) {
                             readbackDone = true;
                             size_t bpr = tex.width * 4;
@@ -598,6 +754,9 @@ struct VROSceneRendererMetalOpenXR::Impl {
                 }
 
                 if (viewsValid) {
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+                    _renderer->endFrame(_driver);
+#endif
                     ei.layerCount = 1;
                     ei.layers = layers;
                     ++_frame;

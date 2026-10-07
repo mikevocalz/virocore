@@ -115,10 +115,25 @@ void initPointCloudTexture() {
 
 #include "VROImageMacOS.h"
 
+// The com.viro.ViroKit bundle (and its blank.png resource) does not exist in
+// the standalone desktop build, so synthesize the 1x1 white texture instead.
+static NSImage *vro_blankImage() {
+    static unsigned char pixel[4] = {255, 255, 255, 255};
+    unsigned char *planes = pixel;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:&planes
+                      pixelsWide:1 pixelsHigh:1
+                   bitsPerSample:8 samplesPerPixel:4
+                        hasAlpha:YES isPlanar:NO
+                  colorSpaceName:NSCalibratedRGBColorSpace
+                     bytesPerRow:4 bitsPerPixel:32];
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
+    [image addRepresentation:rep];
+    return image;
+}
+
 void initBlankTexture(const VRORenderContext &context) {
-    NSBundle *bundle = [NSBundle bundleWithIdentifier:@"com.viro.ViroKit"];
-    NSString *path = [bundle pathForResource:@"blank" ofType:@"png"];
-    NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
+    NSImage *image = vro_blankImage();
     
     std::shared_ptr<VROImage> wrapper = std::make_shared<VROImageMacOS>(image, VROTextureInternalFormat::RGBA8);
     staticBlankTexture = std::make_shared<VROTexture>(true, VROMipmapMode::None, wrapper);

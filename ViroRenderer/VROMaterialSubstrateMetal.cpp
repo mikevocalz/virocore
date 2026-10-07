@@ -23,550 +23,184 @@
 //  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 //  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
 
 #include "VROMaterialSubstrateMetal.h"
 #if VRO_METAL
 
-#include "VROSharedStructures.h"
-#include "VROMetalUtils.h"
+#include "VROMaterial.h"
+#include "VROMaterialVisual.h"
 #include "VRODriverMetal.h"
-#include "VROMatrix4f.h"
-#include "VROLight.h"
-#include "VROMath.h"
-#include "VROAllocationTracker.h"
-#include "VROConcurrentBuffer.h"
+#include "VROGeometry.h"
 #include "VROSortKey.h"
+#include "VROTexture.h"
 #include "VRORenderContext.h"
-#include <set>
-#include <sstream>
-#include <algorithm>
+#include "VROLog.h"
+#include "VROShaderModifier.h"
 
-static std::map<std::string, std::shared_ptr<VROMetalShader>> _sharedPrograms;
+// Minimal MSL for the milestone substrate: a constant (unlit) pipeline with
+// fixed hemisphere shading so lit faces read distinctly. Lighting-model and
+// texture variants can be added without changing the binding contract.
+static const char *kVROMetalShaderSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
 
-std::shared_ptr<VROMetalShader> VROMaterialSubstrateMetal::getPooledShader(std::string vertexShader,
-                                                                           std::string fragmentShader,
-                                                                           id <MTLLibrary> library) {
-    std::string name = vertexShader + "_" + fragmentShader;
-    
-    std::map<std::string, std::shared_ptr<VROMetalShader>>::iterator it = _sharedPrograms.find(name);
-    if (it == _sharedPrograms.end()) {
-        id <MTLFunction> vertexProgram = [library newFunctionWithName:[NSString stringWithUTF8String:vertexShader.c_str()]];
-        id <MTLFunction> fragmentProgram = [library newFunctionWithName:[NSString stringWithUTF8String:fragmentShader.c_str()]];
-        
-        std::shared_ptr<VROMetalShader> program = std::make_shared<VROMetalShader>(vertexProgram, fragmentProgram);
-        _sharedPrograms[name] = program;
-        
-        return program;
-    }
-    else {
-        return it->second;
-    }
+struct VROMetalViewUniforms {
+    float4x4 modelview_projection;
+    float4x4 normal_matrix;
+};
+
+struct VROMetalMaterialUniforms {
+    float4 diffuse_color;
+    float  opacity;
+    float3 _pad;
+};
+
+struct VROVertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+    float2 texcoord [[attribute(3)]];
+};
+
+struct VROVertexInPosOnly {
+    float3 position [[attribute(0)]];
+};
+
+struct VROVertexOut {
+    float4 position [[position]];
+    float  shade;
+};
+
+constant float3 kLightDirection = { 0.4f, 0.8f, 0.45f };
+
+vertex VROVertexOut vro_constant_vertex(VROVertexIn in [[stage_in]],
+                                        constant VROMetalViewUniforms &uniforms [[buffer(15)]]) {
+    VROVertexOut out;
+    out.position = uniforms.modelview_projection * float4(in.position, 1.0);
+    float3 n = normalize((uniforms.normal_matrix * float4(in.normal, 0.0)).xyz);
+    out.shade = 0.35 + 0.65 * max(dot(n, normalize(kLightDirection)), 0.0);
+    return out;
 }
+
+vertex VROVertexOut vro_constant_vertex_posonly(VROVertexInPosOnly in [[stage_in]],
+                                                constant VROMetalViewUniforms &uniforms [[buffer(15)]]) {
+    VROVertexOut out;
+    out.position = uniforms.modelview_projection * float4(in.position, 1.0);
+    out.shade = 1.0;
+    return out;
+}
+
+fragment float4 vro_constant_fragment(VROVertexOut in [[stage_in]],
+                                      constant VROMetalMaterialUniforms &material [[buffer(0)]]) {
+    return float4(material.diffuse_color.rgb * in.shade,
+                  material.diffuse_color.a * material.opacity);
+}
+)MSL";
 
 VROMaterialSubstrateMetal::VROMaterialSubstrateMetal(const VROMaterial &material,
                                                      VRODriverMetal &driver) :
     _material(material),
-    _lightingModel(material.getLightingModel()) {
+    _vertexProgramFull(nil),
+    _vertexProgramPosOnly(nil),
+    _fragmentProgram(nil),
+    _warnedLightingModel(false),
+    _warnedTextures(false),
+    _warnedModifiers(false) {
 
-    id <MTLDevice> device = driver.getDevice();
+    _viewUniforms = {};
+    _materialUniforms = {};
+
+    // The driver caches one shared library compiled from the embedded source;
+    // the first material substrate built compiles it.
     id <MTLLibrary> library = driver.getLibrary();
-
-    _dynamicLibrary = nil;
-
-    size_t modifierCount = material.getShaderModifiers().size();
-
-    if (modifierCount > 0) {
-        std::string source = driver.getLibrarySource();
-        if (!source.empty()) {
-            NSLog(@"VROMaterialSubstrateMetal: Inflating %lu modifiers", material.getShaderModifiers().size());
-            // Log a bit of the source to verify pragmas exist
-            NSLog(@"VROMaterialSubstrateMetal: Source prefix: %s", source.substr(0, 100).c_str());
-            if (source.find("#pragma surface_modifier_body") == std::string::npos) {
-                NSLog(@"VROMaterialSubstrateMetal: Warning: Pragmas not found in source!");
-            }
-            
-            inflateModifiers(source, material.getShaderModifiers());
-            _dynamicLibrary = driver.newLibraryWithSource(source);
-            if (_dynamicLibrary) {
-                NSLog(@"VROMaterialSubstrateMetal: Successfully compiled dynamic shader library");
-                library = _dynamicLibrary;
-            } else {
-                NSLog(@"VROMaterialSubstrateMetal: Failed to compile dynamic shader library. Source length: %lu", source.length());
-                // The error is already logged in VRODriverMetal::newLibraryWithSource
-            }
-        } else {
-            NSLog(@"VROMaterialSubstrateMetal: Warning: Driver library source is empty");
-        }
-    } else {
-        NSLog(@"VROMaterialSubstrateMetal: Material has NO modifiers");
+    if (library == nil) {
+        library = driver.newLibraryWithSource(kVROMetalShaderSource);
+        driver.setLibrary(library);
+    }
+    if (library == nil) {
+        pwarn("VROMaterialSubstrateMetal: failed to compile shader library; material will not render");
+        return;
     }
 
-    _lightingUniformsBuffer = new VROConcurrentBuffer(sizeof(VROSceneLightingUniforms), @"VROSceneLightingUniformBuffer", device);
-    _materialUniformsBuffer = new VROConcurrentBuffer(sizeof(VROMaterialUniforms), @"VROMaterialUniformBuffer", device);
-    _customUniformsBuffer = new VROConcurrentBuffer(1024, @"VROCustomUniformBuffer", device);
-    
-    switch (material.getLightingModel()) {
-        case VROLightingModel::Constant:
-            loadConstantLighting(material, library, device, driver);
-            break;
-            
-        case VROLightingModel::Blinn:
-            loadBlinnLighting(material, library, device, driver);
-            break;
-            
-        case VROLightingModel::Lambert:
-            loadLambertLighting(material, library, device, driver);
-            break;
-            
-        case VROLightingModel::Phong:
-            loadPhongLighting(material, library, device, driver);
-            break;
-            
-        case VROLightingModel::PhysicallyBased:
-            // Fallback to Blinn/Phong for PBR on Metal until native PBR is implemented
-            loadBlinnLighting(material, library, device, driver);
-            break;
+    _vertexProgramFull  = [library newFunctionWithName:@"vro_constant_vertex"];
+    _vertexProgramPosOnly = [library newFunctionWithName:@"vro_constant_vertex_posonly"];
+    _fragmentProgram    = [library newFunctionWithName:@"vro_constant_fragment"];
 
-        default:
-            break;
+    if (!_vertexProgramFull || !_vertexProgramPosOnly || !_fragmentProgram) {
+        pwarn("VROMaterialSubstrateMetal: shader entry points missing from library");
     }
-        
-    ALLOCATION_TRACKER_ADD(MaterialSubstrates, 1);
+
+    if (_material.getLightingModel() != VROLightingModel::Constant) {
+        // Logged once per material; rendering proceeds with the constant pipeline.
+        pwarn("VROMaterialSubstrateMetal: lighting model %d unsupported; rendering with constant pipeline",
+              (int)_material.getLightingModel());
+        _warnedLightingModel = true;
+    }
+    if (!_material.getShaderModifiers().empty()) {
+        pwarn("VROMaterialSubstrateMetal: %zu shader modifiers ignored (unsupported)",
+              _material.getShaderModifiers().size());
+        _warnedModifiers = true;
+    }
 }
 
 VROMaterialSubstrateMetal::~VROMaterialSubstrateMetal() {
-    delete (_materialUniformsBuffer);
-    delete (_lightingUniformsBuffer);
-    delete (_customUniformsBuffer);
-    
-    ALLOCATION_TRACKER_SUB(MaterialSubstrates, 1);
+    _vertexProgramFull = nil;
+    _vertexProgramPosOnly = nil;
+    _fragmentProgram = nil;
 }
 
-void VROMaterialSubstrateMetal::inflateModifiers(std::string &source, const std::vector<std::shared_ptr<VROShaderModifier>> &modifiers) {
-    // 1. Gather all unique uniform declarations and group by type
-    std::set<std::string> seenUniforms;
-    for (const auto &modifier : modifiers) {
-        std::stringstream ss(modifier->getUniformsSource());
-        std::string line;
-        while (std::getline(ss, line)) {
-            line = VROStringUtil::trim(line);
-            if (line.empty() || line.find("uniform") == std::string::npos) continue;
-            
-            // Extract type and name: uniform type name;
-            std::vector<std::string> parts = VROStringUtil::split(line, " \t;");
-            if (parts.size() < 3) continue;
-            
-            std::string type = parts[1];
-            std::string name = parts[2];
-            
-            if (seenUniforms.find(name) != seenUniforms.end()) continue;
-            seenUniforms.insert(name);
-            
-            if (type == "float") _customLayout.floats.push_back(name);
-            else if (type == "vec2") _customLayout.vec4s.push_back(name); // map vec2 to vec4 for easier alignment
-            else if (type == "vec3") _customLayout.vec3s.push_back(name);
-            else if (type == "vec4") _customLayout.vec4s.push_back(name);
-            else if (type == "mat4") _customLayout.mat4s.push_back(name);
-        }
-    }
-    
-    // Sort for deterministic layout
-    std::sort(_customLayout.floats.begin(), _customLayout.floats.end());
-    std::sort(_customLayout.vec3s.begin(), _customLayout.vec3s.end());
-    std::sort(_customLayout.vec4s.begin(), _customLayout.vec4s.end());
-    std::sort(_customLayout.mat4s.begin(), _customLayout.mat4s.end());
-    
-    // 2. Build MSL struct and defines
-    std::string customUniformsMembers;
-    std::string customDefines;
-    size_t offset = 0;
-    
-    for (const auto &name : _customLayout.floats) {
-        customUniformsMembers += "    float " + name + ";\n";
-        customDefines += "#define " + name + " _custom." + name + "\n";
-        offset += 4;
-    }
-    // Aligns to 16 bytes for next group (float3/float4)
-    if (offset % 16 != 0) {
-        int padFloats = (16 - (offset % 16)) / 4;
-        customUniformsMembers += "    float _pad[" + std::to_string(padFloats) + "];\n";
-    }
-    
-    for (const auto &name : _customLayout.vec3s) {
-        customUniformsMembers += "    float3 " + name + ";\n";
-        customUniformsMembers += "    float _pad_" + name + ";\n"; // float3 is 12 bytes, but occupies 16 in constant buffers usually
-        customDefines += "#define " + name + " _custom." + name + "\n";
-    }
-    
-    for (const auto &name : _customLayout.vec4s) {
-        customUniformsMembers += "    float4 " + name + ";\n";
-        customDefines += "#define " + name + " _custom." + name + "\n";
-    }
-    
-    for (const auto &name : _customLayout.mat4s) {
-        customUniformsMembers += "    float4x4 " + name + ";\n";
-        customDefines += "#define " + name + " _custom." + name + "\n";
-    }
-
-    if (customUniformsMembers.empty()) {
-        customUniformsMembers = "    float _unused_padding;";
-    }
-    VROStringUtil::replaceAll(source, "#pragma custom_uniforms", customUniformsMembers);
-
-    // 3. Inject modifier bodies, combining multiple modifiers for same directive
-    std::map<std::string, std::string> combinedBodies;
-    for (const auto &modifier : modifiers) {
-        std::string bodyDirective = modifier->getDirective(VROShaderSection::Body);
-        std::string body = modifier->getBodySource();
-        
-        // Basic GLSL to Metal type conversion for common types in the body
-        VROStringUtil::replaceAll(body, "vec2", "float2");
-        VROStringUtil::replaceAll(body, "vec3", "float3");
-        VROStringUtil::replaceAll(body, "vec4", "float4");
-        VROStringUtil::replaceAll(body, "mat4", "float4x4");
-        
-        combinedBodies[bodyDirective] += "\n{ // Modifier Start\n" + body + "\n} // Modifier End\n";
-    }
-    
-    for (auto const& it : combinedBodies) {
-        std::string directive = it.first;
-        std::string body = it.second;
-        std::string fullInjection = customDefines + body;
-        VROStringUtil::replaceAll(source, directive, fullInjection);
-    }
-    
-    // 4. Remove any remaining uniforms pragmas
-    VROStringUtil::replaceAll(source, "#pragma geometry_modifier_uniforms", "");
-    VROStringUtil::replaceAll(source, "#pragma vertex_modifier_uniforms", "");
-    VROStringUtil::replaceAll(source, "#pragma surface_modifier_uniforms", "");
-    VROStringUtil::replaceAll(source, "#pragma fragment_modifier_uniforms", "");
-    VROStringUtil::replaceAll(source, "#pragma lighting_model_modifier_uniforms", "");
-    VROStringUtil::replaceAll(source, "#pragma image_modifier_uniforms", "");
-}
-
-void VROMaterialSubstrateMetal::loadConstantLighting(const VROMaterial &material,
-                                                     id <MTLLibrary> library, id <MTLDevice> device,
-                                                     VRODriverMetal &driver) {
-    
-    
-    std::string vertexProgram = "constant_lighting_vertex";
-    std::string fragmentProgram;
-    
-    VROMaterialVisual &diffuse = material.getDiffuse();
-
-    if (diffuse.getTextureType() == VROTextureType::None) {
-        fragmentProgram = "constant_lighting_fragment_c";
-    }
-    else if (diffuse.getTextureType() == VROTextureType::Texture2D) {
-        _textures.push_back(diffuse.getTexture());
-        fragmentProgram = "constant_lighting_fragment_t";
-    }
-    else {
-        _textures.push_back(diffuse.getTexture());
-        fragmentProgram = "constant_lighting_fragment_q";
-    }
-    
-    _program = getPooledShader(vertexProgram, fragmentProgram, library);
-}
-
-void VROMaterialSubstrateMetal::loadLambertLighting(const VROMaterial &material,
-                                                    id <MTLLibrary> library, id <MTLDevice> device,
-                                                    VRODriverMetal &driver) {
-    
-    std::string vertexProgram = "lambert_lighting_vertex";
-    std::string fragmentProgram;
-    
-    VROMaterialVisual &diffuse = material.getDiffuse();
-    VROMaterialVisual &reflective = material.getReflective();
-    
-    if (diffuse.getTextureType() == VROTextureType::None) {
-        if (reflective.getTextureType() == VROTextureType::TextureCube) {
-            _textures.push_back(reflective.getTexture());
-            fragmentProgram = "lambert_lighting_fragment_c_reflect";
-        }
-        else {
-            fragmentProgram = "lambert_lighting_fragment_c";
-        }
-    }
-    else {
-        _textures.push_back(diffuse.getTexture());
-        
-        if (reflective.getTextureType() == VROTextureType::TextureCube) {
-            _textures.push_back(reflective.getTexture());
-            fragmentProgram = "lambert_lighting_fragment_t_reflect";
-        }
-        else {
-            fragmentProgram = "lambert_lighting_fragment_t";
-        }
-    }
-    
-    _program = getPooledShader(vertexProgram, fragmentProgram, library);
-}
-
-void VROMaterialSubstrateMetal::loadPhongLighting(const VROMaterial &material,
-                                                  id <MTLLibrary> library, id <MTLDevice> device,
-                                                  VRODriverMetal &driver) {
-    
-    /*
-     If there's no specular map, then we fall back to Lambert lighting.
-     */
-    VROMaterialVisual &specular = material.getSpecular();
-    if (specular.getTextureType() != VROTextureType::Texture2D) {
-        loadLambertLighting(material, library, device, driver);
-        return;
-    }
-    
-    std::string vertexProgram = "phong_lighting_vertex";
-    std::string fragmentProgram;
-    
-    VROMaterialVisual &diffuse = material.getDiffuse();
-    VROMaterialVisual &reflective = material.getReflective();
-    
-    if (diffuse.getTextureType() == VROTextureType::None) {
-        _textures.push_back(specular.getTexture());
-        
-        if (reflective.getTextureType() == VROTextureType::TextureCube) {
-            _textures.push_back(reflective.getTexture());
-            fragmentProgram = "phong_lighting_fragment_c_reflect";
-        }
-        else {
-            fragmentProgram = "phong_lighting_fragment_c";
-        }
-    }
-    else {
-        _textures.push_back(diffuse.getTexture());
-        _textures.push_back(specular.getTexture());
-        
-        if (reflective.getTextureType() == VROTextureType::TextureCube) {
-            _textures.push_back(reflective.getTexture());
-            fragmentProgram = "phong_lighting_fragment_t_reflect";
-        }
-        else {
-            fragmentProgram = "phong_lighting_fragment_t";
-        }
-    }
-    
-    _program = getPooledShader(vertexProgram, fragmentProgram, library);
-}
-
-void VROMaterialSubstrateMetal::loadBlinnLighting(const VROMaterial &material,
-                                                  id <MTLLibrary> library, id <MTLDevice> device,
-                                                  VRODriverMetal &driver) {
-    
-    /*
-     If there's no specular map, then we fall back to Lambert lighting.
-     */
-    VROMaterialVisual &specular = material.getSpecular();
-    if (specular.getTextureType() != VROTextureType::Texture2D) {
-        loadLambertLighting(material, library, device, driver);
-        return;
-    }
-    
-    std::string vertexProgram = "blinn_lighting_vertex";
-    std::string fragmentProgram;
-    
-    VROMaterialVisual &diffuse = material.getDiffuse();
-    VROMaterialVisual &reflective = material.getReflective();
-    
-    if (diffuse.getTextureType() == VROTextureType::None) {
-        _textures.push_back(specular.getTexture());
-
-        if (reflective.getTextureType() == VROTextureType::TextureCube) {
-            _textures.push_back(reflective.getTexture());
-            fragmentProgram = "blinn_lighting_fragment_c_reflect";
-        }
-        else {
-            fragmentProgram = "blinn_lighting_fragment_c";
-        }
-    }
-    else {
-        _textures.push_back(diffuse.getTexture());
-        _textures.push_back(specular.getTexture());
-
-        if (reflective.getTextureType() == VROTextureType::TextureCube) {
-            _textures.push_back(reflective.getTexture());
-            fragmentProgram = "blinn_lighting_fragment_t_reflect";
-        }
-        else {
-            fragmentProgram = "blinn_lighting_fragment_t";
-        }
-    }
-    
-    _program = getPooledShader(vertexProgram, fragmentProgram, library);
-}
-
-VROConcurrentBuffer &VROMaterialSubstrateMetal::bindMaterialUniforms(float opacity, VROEyeType eye,
-                                                                     int frame) {
-    VROMaterialUniforms *uniforms = (VROMaterialUniforms *)_materialUniformsBuffer->getWritableContents(eye, frame);
-    uniforms->diffuse_surface_color = toVectorFloat4(_material.getDiffuse().getColor());
-    uniforms->diffuse_intensity = _material.getDiffuse().getIntensity();
-    uniforms->shininess = _material.getShininess();
-    uniforms->alpha = _material.getTransparency() * opacity;
-    uniforms->roughness = _material.getRoughness().getColor().x;
-    uniforms->metalness = _material.getMetalness().getColor().x;
-    uniforms->ao = _material.getAmbientOcclusion().getColor().x;
-
-    // Fill custom uniforms buffer based on the layout created during inflation
-    if (!_material.getShaderModifiers().empty()) {
-        uint8_t *customBuffer = (uint8_t *)_customUniformsBuffer->getWritableContents(eye, frame);
-        size_t offset = 0;
-
-        std::map<std::string, float> floats = _material.getShaderUniformFloats();
-        for (const std::string &name : _customLayout.floats) {
-            float val = 0;
-            if (floats.count(name)) val = floats[name];
-            if (offset + sizeof(float) <= 1024) {
-                memcpy(customBuffer + offset, &val, sizeof(float));
-                offset += sizeof(float);
-            }
-        }
-
-        // Align to 16 bytes for vector types
-        offset = (offset + 15) & ~15;
-
-        std::map<std::string, VROVector3f> vec3s = _material.getShaderUniformVec3s();
-        for (const std::string &name : _customLayout.vec3s) {
-            VROVector3f val;
-            if (vec3s.count(name)) val = vec3s[name];
-            if (offset + sizeof(float) * 4 <= 1024) {
-                simd_float4 vec = { val.x, val.y, val.z, 0.0f };
-                memcpy(customBuffer + offset, &vec, sizeof(float) * 4);
-                offset += sizeof(float) * 4;
-            }
-        }
-
-        std::map<std::string, VROVector4f> vec4s = _material.getShaderUniformVec4s();
-        for (const std::string &name : _customLayout.vec4s) {
-            VROVector4f val;
-            if (vec4s.count(name)) val = vec4s[name];
-            if (offset + sizeof(float) * 4 <= 1024) {
-                simd_float4 vec = { val.x, val.y, val.z, val.w };
-                memcpy(customBuffer + offset, &vec, sizeof(float) * 4);
-                offset += sizeof(float) * 4;
-            }
-        }
-
-        std::map<std::string, VROMatrix4f> mat4s = _material.getShaderUniformMat4s();
-        for (const std::string &name : _customLayout.mat4s) {
-            VROMatrix4f val;
-            if (mat4s.count(name)) val = mat4s[name];
-            if (offset + sizeof(float) * 16 <= 1024) {
-                memcpy(customBuffer + offset, val.getArray(), sizeof(float) * 16);
-                offset += sizeof(float) * 16;
-            }
-        }
-    }
-
-    return *_materialUniformsBuffer;
-}
-
-void VROMaterialSubstrateMetal::updateSortKey(VROSortKey &key, const std::vector<std::shared_ptr<VROLight>> &lights,
-                                              const VRORenderContext &context,
-                                              std::shared_ptr<VRODriver> driver) {
-    key.shader = _program->getShaderId();
-    key.textures = hashTextures(_textures);
+id <MTLFunction> VROMaterialSubstrateMetal::getVertexProgram(VROMetalVertexVariant variant) const {
+    return (variant == VROMetalVertexVariant::Full) ? _vertexProgramFull : _vertexProgramPosOnly;
 }
 
 bool VROMaterialSubstrateMetal::bindShader(int lightsHash,
                                            const std::vector<std::shared_ptr<VROLight>> &lights,
                                            const VRORenderContext &context,
                                            std::shared_ptr<VRODriver> &driver) {
-    // In Metal, pipeline state is bound by the geometry substrate, not the material substrate.
-    // However, we need to bind the lighting uniforms here, similar to OpenGL.
-    // This is the CRITICAL FIX: bindLights was defined but never called!
-    NSLog(@"[METAL LIGHTING] bindShader() called with %zu lights, hash=%d", lights.size(), lightsHash);
-    bindLights(lightsHash, lights, context, driver);
-    NSLog(@"[METAL LIGHTING] bindLights() completed");
-    return true;
+    if (!lights.empty() && !_warnedLightingModel) {
+        pwarn("VROMaterialSubstrateMetal: %zu lights ignored (constant pipeline)", lights.size());
+        _warnedLightingModel = true;
+    }
+    return _vertexProgramFull != nil && _fragmentProgram != nil;
 }
 
 void VROMaterialSubstrateMetal::bindProperties(std::shared_ptr<VRODriver> &driver) {
-    // In Metal, material properties are bound via bindMaterialUniforms in the geometry substrate
-    // This is called from VROGeometrySubstrateMetal::renderMaterial
+    VROVector4f diffuse = _material.getDiffuse().getColor();
+    _materialUniforms.diffuse_color[0] = diffuse.x;
+    _materialUniforms.diffuse_color[1] = diffuse.y;
+    _materialUniforms.diffuse_color[2] = diffuse.z;
+    _materialUniforms.diffuse_color[3] = diffuse.w;
+    _materialUniforms.opacity = _material.getTransparency();
 }
 
 void VROMaterialSubstrateMetal::bindGeometry(float opacity, const VROGeometry &geometry) {
-    // In Metal, geometry-specific properties are handled in the geometry substrate
+    _materialUniforms.opacity *= opacity;
 }
 
 void VROMaterialSubstrateMetal::bindView(VROMatrix4f modelMatrix, VROMatrix4f viewMatrix,
                                          VROMatrix4f projectionMatrix, VROMatrix4f normalMatrix,
                                          VROVector3f cameraPosition, VROEyeType eyeType,
                                          const VRORenderContext &context) {
-    // In Metal, view uniforms are bound in VROGeometrySubstrateMetal::render
+    VROMatrix4f mvp = projectionMatrix.multiply(viewMatrix).multiply(modelMatrix);
+    memcpy(_viewUniforms.modelview_projection, mvp.getArray(), sizeof(_viewUniforms.modelview_projection));
+    memcpy(_viewUniforms.normal_matrix, normalMatrix.getArray(), sizeof(_viewUniforms.normal_matrix));
 }
 
 void VROMaterialSubstrateMetal::updateTextures() {
-    // Textures are managed through the _textures vector and updated when materials change
-}
-
-void VROMaterialSubstrateMetal::bindShader() {
-    // Legacy method kept for compatibility
-    // The virtual bindShader(int lightsHash, ...) should be used instead
-}
-
-void VROMaterialSubstrateMetal::bindLights(int lightsHash,
-                                           const std::vector<std::shared_ptr<VROLight>> &lights,
-                                           const VRORenderContext &context,
-                                           std::shared_ptr<VRODriver> &driver) {
-
-    NSLog(@"[METAL LIGHTING] bindLights() starting - received %zu lights", lights.size());
-
-    VRODriverMetal &metal = (VRODriverMetal &)(*driver.get());
-    id <MTLRenderCommandEncoder> renderEncoder = metal.getRenderTarget()->getRenderEncoder();
-
-    VROEyeType eyeType = context.getEyeType();
-    int frame = context.getFrame();
-
-    VROSceneLightingUniforms *uniforms = (VROSceneLightingUniforms *)_lightingUniformsBuffer->getWritableContents(eyeType,
-                                                                                                                  frame);
-    uniforms->num_lights = 0;
-    VROVector3f ambientLight;
-    
-    for (const std::shared_ptr<VROLight> &light : lights) {
-        if (light->getType() == VROLightType::Ambient) {
-            ambientLight += light->getColor();
-        }
-        else {
-            VROLightUniforms &light_uniforms = uniforms->lights[uniforms->num_lights];
-            light_uniforms.type = (int) light->getType();
-            light_uniforms.color = toVectorFloat3(light->getColor());
-            light_uniforms.position = toVectorFloat3(light->getTransformedPosition());
-            light_uniforms.direction = toVectorFloat3(light->getDirection());
-            light_uniforms.attenuation_start_distance = light->getAttenuationStartDistance();
-            light_uniforms.attenuation_end_distance = light->getAttenuationEndDistance();
-            light_uniforms.attenuation_falloff_exp = light->getAttenuationFalloffExponent();
-            light_uniforms.spot_inner_angle = degrees_to_radians(light->getSpotInnerAngle());
-            light_uniforms.spot_outer_angle = degrees_to_radians(light->getSpotOuterAngle());
-            
-            uniforms->num_lights++;
-        }
+    if (!_warnedTextures) {
+        pwarn("VROMaterialSubstrateMetal: updateTextures() ignored (texture binding unsupported)");
+        _warnedTextures = true;
     }
-    
-    uniforms->ambient_light_color = toVectorFloat3(ambientLight);
-
-    NSLog(@"[METAL LIGHTING] Final values - num_lights=%d, ambient=(%f,%f,%f)",
-          uniforms->num_lights,
-          uniforms->ambient_light_color.x,
-          uniforms->ambient_light_color.y,
-          uniforms->ambient_light_color.z);
-
-    [renderEncoder setVertexBuffer:_lightingUniformsBuffer->getMTLBuffer(eyeType)
-                            offset:_lightingUniformsBuffer->getWriteOffset(frame)
-                           atIndex:4];
-    [renderEncoder setFragmentBuffer:_lightingUniformsBuffer->getMTLBuffer(eyeType)
-                              offset:_lightingUniformsBuffer->getWriteOffset(frame)
-                             atIndex:4];
-
-    NSLog(@"[METAL LIGHTING] Lighting buffer bound at index 4 for vertex and fragment shaders");
 }
 
-uint32_t VROMaterialSubstrateMetal::hashTextures(const std::vector<std::shared_ptr<VROTexture>> &textures) const {
-    uint32_t h = 0;
-    for (const std::shared_ptr<VROTexture> &texture : textures) {
-        h = 31 * h + texture->getTextureId();
-    }
-    return h;
+void VROMaterialSubstrateMetal::updateSortKey(VROSortKey &key,
+                                              const std::vector<std::shared_ptr<VROLight>> &lights,
+                                              const VRORenderContext &context,
+                                              std::shared_ptr<VRODriver> driver) {
+    key.materialRenderingOrder = _material.getRenderingOrder();
+    // Single stable shader identity for the constant pipeline.
+    key.shader = 1;
+    key.textures = 0;
 }
 
-#endif
+#endif // VRO_METAL

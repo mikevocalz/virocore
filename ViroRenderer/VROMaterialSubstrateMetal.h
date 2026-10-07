@@ -23,6 +23,7 @@
 //  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 //  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
 
 #ifndef VROMaterialSubstrateMetal_h
 #define VROMaterialSubstrateMetal_h
@@ -30,34 +31,72 @@
 #include "VRODefines.h"
 #if VRO_METAL
 
-#include "VROMaterial.h"
-#include <Metal/Metal.h>
-#include <MetalKit/MetalKit.h>
-#include <vector>
 #include "VROMaterialSubstrate.h"
-#include "VROMetalShader.h"
+#include "VROMatrix4f.h"
+#include <Metal/Metal.h>
+#include <vector>
+#include <memory>
 
-class VROMatrix4f;
-class VROVector4f;
+class VROMaterial;
 class VRODriverMetal;
-class VROLight;
 class VROConcurrentBuffer;
+class VROVector3f;
+class VROTexture;
 enum class VROEyeType;
 
 /*
- Metal representation of a VROMaterial. Each VROMaterial defines a vertex
- program and fragment program (by way of the material's lighting model), along
- with the set of uniforms and samplers to bind to said program.
+ Uniform block consumed by the vertex functions (bound at vertex buffer
+ index kVROMetalViewUniformsIndex). Must match the MSL struct of the same
+ name in VROMaterialSubstrateMetal.cpp.
+ */
+struct VROMetalViewUniforms {
+    float modelview_projection[16];
+    float normal_matrix[16];
+};
+
+/*
+ Uniform block consumed by the fragment functions (bound at fragment buffer
+ index 0). Must match VROMetalMaterialUniforms in the MSL source.
+ */
+struct VROMetalMaterialUniforms {
+    float diffuse_color[4];
+    float opacity;
+    float _pad[3];
+};
+
+/*
+ Index (into the vertex shader's buffer table) at which VROMetalViewUniforms
+ is bound. Geometry vertex buffers occupy indices 0..14.
+ */
+static const int kVROMetalViewUniformsIndex = 15;
+
+/*
+ Which vertex-entry variant a material provides. The geometry substrate
+ picks the variant matching the attributes actually present in the geometry:
+ full (position+normal+texcoord) or position-only.
+ */
+enum class VROMetalVertexVariant {
+    Full,
+    PositionOnly
+};
+
+/*
+ Metal representation of a VROMaterial (minimal milestone implementation).
+
+ Supported: a single "constant" pipeline — per-vertex hemisphere shading over
+ the material's diffuse color and the node's opacity. Lighting models other
+ than VROLightingModelConstant, all textures, shader modifiers, and dynamic
+ uniforms are currently skipped WITH a logged warning (no silent no-ops).
  */
 class VROMaterialSubstrateMetal : public VROMaterialSubstrate {
-    
+
 public:
-    
+
     VROMaterialSubstrateMetal(const VROMaterial &material,
                               VRODriverMetal &driver);
     virtual ~VROMaterialSubstrateMetal();
 
-    // Override VROMaterialSubstrate virtual methods
+    // VROMaterialSubstrate
     bool bindShader(int lightsHash,
                     const std::vector<std::shared_ptr<VROLight>> &lights,
                     const VRORenderContext &context,
@@ -73,81 +112,53 @@ public:
                        const VRORenderContext &context,
                        std::shared_ptr<VRODriver> driver) override;
 
-    // Metal-specific methods
-    void bindShader();
-    void bindLights(int lightsHash,
-                    const std::vector<std::shared_ptr<VROLight>> &lights,
-                    const VRORenderContext &context,
-                    std::shared_ptr<VRODriver> &driver);
+    /*
+     Vertex/fragment functions for this material. The vertex function is
+     chosen by the geometry substrate based on the attributes present.
+     */
+    id <MTLFunction> getVertexProgram(VROMetalVertexVariant variant) const;
+    id <MTLFunction> getFragmentProgram() const {
+        return _fragmentProgram;
+    }
 
     /*
-     Set the uniforms required to render this material, and return the buffer.
+     The uniform bytes most recently produced by bindView() / bindGeometry() /
+     bindProperties(); the geometry substrate binds them to the encoder.
      */
-    VROConcurrentBuffer &bindMaterialUniforms(float opacity, VROEyeType eye, int frame);
-    
-    id <MTLFunction> getVertexProgram() const {
-        return _program->getVertexProgram();
+    const VROMetalViewUniforms &getViewUniforms() const {
+        return _viewUniforms;
     }
-    id <MTLFunction> getFragmentProgram() const {
-        return _program->getFragmentProgram();
+    const VROMetalMaterialUniforms &getMaterialUniforms() const {
+        return _materialUniforms;
     }
+
+    /*
+     Textures: always empty in the minimal implementation (kept so callers
+     written against the old API still compile).
+     */
     const std::vector<std::shared_ptr<VROTexture>> &getTextures() const {
         return _textures;
     }
-    
-    VROConcurrentBuffer *getCustomUniformsBuffer() const {
-        return _customUniformsBuffer;
-    }
-    
+
 private:
-    struct VROUniformLayout {
-        std::vector<std::string> floats;
-        std::vector<std::string> vec3s;
-        std::vector<std::string> vec4s;
-        std::vector<std::string> mat4s;
-    };
-    VROUniformLayout _customLayout;
-
-    id <MTLLibrary> _dynamicLibrary;
-
-    static std::shared_ptr<VROMetalShader> getPooledShader(std::string vertexShader,
-                                                           std::string fragmentShader,
-                                                           id <MTLLibrary> library);
-    
-    void loadConstantLighting(const VROMaterial &material,
-                              id <MTLLibrary> library, id <MTLDevice> device,
-                              VRODriverMetal &driver);
-    void loadLambertLighting(const VROMaterial &material,
-                             id <MTLLibrary> library, id <MTLDevice> device,
-                             VRODriverMetal &driver);
-    void loadPhongLighting(const VROMaterial &material,
-                           id <MTLLibrary> library, id <MTLDevice> device,
-                           VRODriverMetal &driver);
-    void loadBlinnLighting(const VROMaterial &material,
-                           id <MTLLibrary> library, id <MTLDevice> device,
-                           VRODriverMetal &driver);
-
-    void inflateModifiers(std::string &source, const std::vector<std::shared_ptr<VROShaderModifier>> &modifiers);
 
     const VROMaterial &_material;
-    VROLightingModel _lightingModel;
-    
-    std::shared_ptr<VROMetalShader> _program;
-    
-    VROConcurrentBuffer *_materialUniformsBuffer;
-    VROConcurrentBuffer *_lightingUniformsBuffer;
-    VROConcurrentBuffer *_customUniformsBuffer;
-    
+
+    id <MTLFunction> _vertexProgramFull;
+    id <MTLFunction> _vertexProgramPosOnly;
+    id <MTLFunction> _fragmentProgram;
+
+    VROMetalViewUniforms _viewUniforms;
+    VROMetalMaterialUniforms _materialUniforms;
+
     std::vector<std::shared_ptr<VROTexture>> _textures;
-    
-    void bindConstantLighting(const std::shared_ptr<VROLight> &light);
-    void bindBlinnLighting(const std::shared_ptr<VROLight> &light);
-    void bindPhongLighting(const std::shared_ptr<VROLight> &light);
-    void bindLambertLighting(const std::shared_ptr<VROLight> &light);
-    
-    uint32_t hashTextures(const std::vector<std::shared_ptr<VROTexture>> &textures) const;
-    
+
+    // Log-once guards so unsupported features are surfaced, not silently dropped.
+    bool _warnedLightingModel;
+    bool _warnedTextures;
+    bool _warnedModifiers;
+
 };
 
-#endif
+#endif // VRO_METAL
 #endif /* VROMaterialSubstrateMetal_h */
