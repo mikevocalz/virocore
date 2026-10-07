@@ -555,6 +555,26 @@ public class ViroViewOpenXR extends ViroView {
         return mNativeRenderer != null ? mNativeRenderer.getRuntimeCapabilities() : null;
     }
 
+    /**
+     * Recorder for capturing the rendered scene. Created on first use, because the
+     * XR session has to exist before its swapchains have a size to record at.
+     *
+     * <p>The capture itself runs through the same path every other platform uses:
+     * {@link ViroMediaRecorder} turns on the choreographer's render-to-texture
+     * delegate, and {@code VROChoreographer::render} already gates that work on
+     * {@code Left || Monocular}, so one eye is captured rather than a stereo pair.
+     * The choreographer blits back to the display after handing the frame over, so
+     * recording does not blank the headset.
+     *
+     * <p><b>A capture of a passthrough scene does not contain the room.</b> The
+     * swapchain is cleared transparent and the camera feed is composited by the OS
+     * beneath our projection layer, so what comes back is the virtual content on
+     * transparency. Compositing the real world needs the passthrough camera API and
+     * is tracked separately.
+     *
+     * @return the recorder, or {@code null} if the XR session has not produced
+     *         swapchains yet — retry once a scene is rendering.
+     */
     @Override
     public ViroMediaRecorder getRecorder() {
         if (mMediaRecorder == null) {
