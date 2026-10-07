@@ -34,6 +34,7 @@
 #include "VROMaterialSubstrate.h"
 #include "VROMatrix4f.h"
 #include <Metal/Metal.h>
+#include <cstddef>
 #include <vector>
 #include <memory>
 
@@ -78,8 +79,13 @@ struct VROMetalMaterialUniforms {
     float lit;                  // 0 for VROLightingModel::Constant
     float has_diffuse_texture;
     float light_count;
+    float encode_srgb;          // 1 when the color target is not *_sRGB
+    float _pad[3];
     VROMetalLight lights[kVROMetalMaxLights];
 };
+static_assert(offsetof(VROMetalMaterialUniforms, lights) == 48,
+              "lights[] must start at byte 48 to match the MSL struct");
+static_assert(sizeof(VROMetalLight) == 48, "VROMetalLight stride must match MSL");
 
 /*
  Index (into the vertex shader's buffer table) at which VROMetalViewUniforms
@@ -161,6 +167,9 @@ public:
     id <MTLTexture> getDiffuseTexture() const {
         return _diffuseTexture;
     }
+    id <MTLSamplerState> getDiffuseSampler() const {
+        return _diffuseSampler;
+    }
 
 private:
 
@@ -175,11 +184,13 @@ private:
 
     std::vector<std::shared_ptr<VROTexture>> _textures;
     id <MTLTexture> _diffuseTexture;
+    id <MTLSamplerState> _diffuseSampler;
 
     // Log-once guards so unsupported features are surfaced, not silently dropped.
     bool _warnedLightingModel;
     bool _warnedTextures;
     bool _warnedModifiers;
+    bool _warnedLightCount;
 
 };
 

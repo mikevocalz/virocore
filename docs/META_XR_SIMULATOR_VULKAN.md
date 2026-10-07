@@ -159,6 +159,8 @@ Simulator traps the script handles, both of which silently produce the wrong dev
 - The config env var is `META_XRSIM_CONFIG_JSON`. Any other name is ignored and the simulator runs on its bundled `config/sim_core_configuration.json`.
 - `device_profile` in `~/Library/Application Support/MetaXR/MetaXrSimulator/persistent_data.json` overrides the config file. The script writes the profile there per run and restores the file afterwards.
 
+The simulator's Meta VR Glasses profile squashes everything horizontally to about 0.85. It locates a ±37°×±34° FOV (tangent span 1.507×1.349, ratio 1.117) but recommends a 1680×1760 swapchain (ratio 0.955), so each pixel covers 0.855 times as much angle horizontally as vertically. `hello_xr` shows the same squash, and both apps draw square shapes on Quest 3, whose FOV and swapchain agree. Apps render correctly per spec. The inconsistency is in the profile. The host logs `eye N fov ... tan span ... vs swapchain ...` at startup so a mismatch is visible.
+
 Quest 3's eye FOVs are asymmetric, so the box sits off-center in each eye. A center-pixel check reads black there on a correct frame; the readback gate counts lit pixels across the whole image instead.
 
 ## Future: Vulkan backend for Windows

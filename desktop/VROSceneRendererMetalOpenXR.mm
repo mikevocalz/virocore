@@ -755,6 +755,21 @@ struct VROSceneRendererMetalOpenXR::Impl {
                     for (uint32_t v = 0; v < located && v < viewCount; ++v) {
                         pvViews[v].pose = locatedViews[v].pose;
                         pvViews[v].fov = locatedViews[v].fov;
+                        static bool fovLogged[8] = {};
+                        if (v < 8 && !fovLogged[v]) {
+                            fovLogged[v] = true;
+                            const XrFovf &f = locatedViews[v].fov;
+                            float spanX = tanf(f.angleRight) - tanf(f.angleLeft);
+                            float spanY = tanf(f.angleUp) - tanf(f.angleDown);
+                            // On a correct swapchain the tangent-span ratio
+                            // equals the pixel ratio, so pixels are square.
+                            std::printf("eye %u fov L%.1f R%.1f U%.1f D%.1f deg; "
+                                        "tan span %.3fx%.3f (%.3f) vs swapchain %ux%u (%.3f)\n",
+                                        v, f.angleLeft * 57.2958f, f.angleRight * 57.2958f,
+                                        f.angleUp * 57.2958f, f.angleDown * 57.2958f,
+                                        spanX, spanY, spanX / spanY, eyes[v].width,
+                                        eyes[v].height, (float)eyes[v].width / eyes[v].height);
+                        }
 #if VIRO_DESKTOP_SCENE
                         _lastPose[v] = locatedViews[v].pose;
                         _lastFov[v] = locatedViews[v].fov;

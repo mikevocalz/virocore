@@ -66,6 +66,8 @@ struct VROMetalMaterialUniforms {
     float  lit;
     float  has_diffuse_texture;
     float  light_count;
+    float  encode_srgb;
+    float  _pad0, _pad1, _pad2;  // scalars: a float3 here would be 16-aligned
     VROMetalLight lights[8];
 };
 
@@ -130,15 +132,20 @@ static float3 vro_diffuse_light(constant VROMetalMaterialUniforms &m, float3 n, 
 
 fragment float4 vro_constant_fragment(VROVertexOut in [[stage_in]],
                                       constant VROMetalMaterialUniforms &material [[buffer(0)]],
-                                      texture2d<float> diffuseTexture [[texture(0)]]) {
-    constexpr sampler s(filter::linear, address::repeat);
+                                      texture2d<float> diffuseTexture [[texture(0)]],
+                                      sampler diffuseSampler [[sampler(0)]]) {
     float4 base = material.diffuse_color;
     if (material.has_diffuse_texture > 0.5) {
-        base *= diffuseTexture.sample(s, in.texcoord);
+        base *= diffuseTexture.sample(diffuseSampler, in.texcoord);
     }
     float3 rgb = base.rgb;
     if (material.lit > 0.5) {
         rgb *= vro_diffuse_light(material, normalize(in.normal), in.world_position);
+    }
+    // Shading is linear. An *_sRGB target encodes on write; a Unorm target
+    // (e.g. a default MTKView) needs the encode here.
+    if (material.encode_srgb > 0.5) {
+        rgb = pow(max(rgb, 0.0), float3(1.0 / 2.2));
     }
     return float4(rgb, base.a * material.opacity);
 }
@@ -151,9 +158,11 @@ VROMaterialSubstrateMetal::VROMaterialSubstrateMetal(const VROMaterial &material
     _vertexProgramPosOnly(nil),
     _fragmentProgram(nil),
     _diffuseTexture(nil),
+    _diffuseSampler(nil),
     _warnedLightingModel(false),
     _warnedTextures(false),
-    _warnedModifiers(false) {
+    _warnedModifiers(false),
+    _warnedLightCount(false) {
 
     _viewUniforms = {};
     _materialUniforms = {};
@@ -206,10 +215,10 @@ bool VROMaterialSubstrateMetal::bindShader(int lightsHash,
                                            const VRORenderContext &context,
                                            std::shared_ptr<VRODriver> &driver) {
     const size_t count = std::min(lights.size(), (size_t)kVROMetalMaxLights);
-    if (lights.size() > count && !_warnedLightingModel) {
+    if (lights.size() > count && !_warnedLightCount) {
         pwarn("VROMaterialSubstrateMetal: %zu lights, only the first %d are used",
               lights.size(), kVROMetalMaxLights);
-        _warnedLightingModel = true;
+        _warnedLightCount = true;
     }
     for (size_t i = 0; i < count; ++i) {
         const VROLight &light = *lights[i];
@@ -246,14 +255,23 @@ void VROMaterialSubstrateMetal::bindProperties(std::shared_ptr<VRODriver> &drive
     // Resolve the diffuse texture each bind: the material may swap textures
     // or finish loading one between frames.
     _diffuseTexture = nil;
+    _diffuseSampler = nil;
     std::shared_ptr<VROTexture> texture = _material.getDiffuse().getTexture();
     if (texture) {
         VROTextureSubstrate *sub = texture->getSubstrate(0, driver, true);
         if (sub) {
-            _diffuseTexture = static_cast<VROTextureSubstrateMetal *>(sub)->getTexture();
+            auto *metal = static_cast<VROTextureSubstrateMetal *>(sub);
+            _diffuseTexture = metal->getTexture();
+            _diffuseSampler = metal->getSampler();
         }
     }
-    _materialUniforms.has_diffuse_texture = _diffuseTexture != nil ? 1 : 0;
+    _materialUniforms.has_diffuse_texture =
+        (_diffuseTexture != nil && _diffuseSampler != nil) ? 1 : 0;
+
+    MTLPixelFormat target =
+        std::static_pointer_cast<VRODriverMetal>(driver)->getColorPixelFormat();
+    _materialUniforms.encode_srgb =
+        (target == MTLPixelFormatBGRA8Unorm_sRGB || target == MTLPixelFormatRGBA8Unorm_sRGB) ? 0 : 1;
 }
 
 void VROMaterialSubstrateMetal::bindGeometry(float opacity, const VROGeometry &geometry) {
