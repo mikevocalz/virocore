@@ -119,11 +119,15 @@ dependencies {
     implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.62'
 }
 
+// Copying the AAR into a sibling viro checkout is opt-in: an unconditional copy
+// dirtied that repo on every build. Pass -PviroCopyAar=true to copy, and
+// -PviroAarDest=<dir> to point at a viro checkout other than ../../../viro.
+def viroCopyAar = project.hasProperty('viroCopyAar') && project.property('viroCopyAar') == 'true'
+def viroAarDest = project.findProperty('viroAarDest') ?: '../../../viro/android/viro_renderer/'
+
 task copyReleaseAAR(type: Copy) {
     from('build/outputs/aar')
-
-    // Change the next line to reflect the path to your viro repo
-    into('../../../viro/android/viro_renderer/')
+    into(viroAarDest)
     include('viroreact-release.aar')
     rename('viroreact-release.aar', 'viro_renderer-release.aar')
 }
@@ -137,15 +141,13 @@ task copyReleaseAAR(type: Copy) {
 tasks.whenTaskAdded { task ->
     if (task.name == 'assembleRelease') {
         task.dependsOn ':viroar:assembleRelease'
-        task.finalizedBy 'copyReleaseAAR'
+        if (viroCopyAar) task.finalizedBy 'copyReleaseAAR'
     }
 }
 
 task copyDebugAAR(type: Copy) {
     from('build/outputs/aar')
-
-    // Change the next line to reflect the path to your viro repo
-    into('../../../viro/android/viro_renderer/')
+    into(viroAarDest)
     include('viroreact-debug.aar')
     rename('viroreact-debug.aar', 'viro_renderer-release.aar')
 }
@@ -153,7 +155,7 @@ task copyDebugAAR(type: Copy) {
 tasks.whenTaskAdded { task ->
     if (task.name == 'assembleDebug') {
         task.dependsOn ':viroar:assembleDebug'
-        task.finalizedBy 'copyDebugAAR'
+        if (viroCopyAar) task.finalizedBy 'copyDebugAAR'
     }
 }
 
