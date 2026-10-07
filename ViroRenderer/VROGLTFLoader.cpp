@@ -1663,28 +1663,6 @@ static void getNodeRestTRS(const tinygltf::Model &gModel, int nodeIndex,
     }
 }
 
-// Helper: build a local TRS matrix for a joint, falling back to the node's rest-pose for
-// any channels not present in the animation.  Mixamo/Blender rigs typically only animate
-// rotation; without the rest-pose translation every non-root bone would collapse to the
-// origin, producing severe mesh corruption.
-static VROMatrix4f buildJointLocalTransform(const tinygltf::Model &gModel, int nodeIndex,
-                                            const VROKeyframeAnimation *anim,
-                                            const VROKeyframeAnimationFrame *frame) {
-    VROVector3f restT; VROVector3f restS; VROQuaternion restR;
-    getNodeRestTRS(gModel, nodeIndex, restT, restS, restR);
-
-    VROVector3f   scale       = anim->_hasScale       ? frame->scale       : restS;
-    VROQuaternion rotation    = anim->_hasRotation    ? frame->rotation    : restR;
-    VROVector3f   translation = anim->_hasTranslation ? frame->translation : restT;
-
-    VROMatrix4f m;
-    m.toIdentity();
-    m.scale(scale.x, scale.y, scale.z);
-    m = rotation.getMatrix() * m;
-    m.translate(translation);
-    return m;
-}
-
 bool VROGLTFLoader::processSkeletalTransformsForFrame(const tinygltf::Model &gModel,
                                                       int skin,
                                                       int animationIndex,
@@ -1692,6 +1670,38 @@ bool VROGLTFLoader::processSkeletalTransformsForFrame(const tinygltf::Model &gMo
                                                       int keyFrameTime,
                                                       int currentJointIndex,
                                                       std::map<int, VROMatrix4f> &transformsOut) {
+    // A node's local matrix for this frame. glTF keeps T, R and S in separate
+    // channels, so every channel this animation has for the node is merged, and
+    // rest-pose TRS fills whatever is not animated. Reading only
+    // anims.at(subAnimPropertyIndex) gave joints a partial pose. The frame index
+    // is clamped per channel: a channel can be shorter than the one that set the
+    // timebase, and indexing past its end read out of bounds.
+    auto sampleNodeLocal = [&gModel, animationIndex, keyFrameTime](int nodeIndex) -> VROMatrix4f {
+        VROVector3f t; VROVector3f s; VROQuaternion r;
+        getNodeRestTRS(gModel, nodeIndex, t, s, r);
+        auto animMapIt = _nodeKeyFrameAnims.find(nodeIndex);
+        if (animMapIt != _nodeKeyFrameAnims.end()) {
+            auto animsIt = animMapIt->second.find(animationIndex);
+            if (animsIt != animMapIt->second.end()) {
+                for (const auto &anim : animsIt->second) {
+                    const auto &frames = anim->getFrames();
+                    if (frames.empty()) continue;
+                    int idx = keyFrameTime < (int) frames.size() ? keyFrameTime : (int) frames.size() - 1;
+                    const auto &frame = *frames[idx];
+                    if (anim->_hasTranslation) t = frame.translation;
+                    if (anim->_hasRotation)    r = frame.rotation;
+                    if (anim->_hasScale)       s = frame.scale;
+                }
+            }
+        }
+        VROMatrix4f m;
+        m.toIdentity();
+        m.scale(s.x, s.y, s.z);
+        m = r.getMatrix() * m;
+        m.translate(t);
+        return m;
+    };
+
     // If we are at the root (transform not yet placed by a parent), compute and store it.
     // Detect "root" by the absence of a pre-placed transform rather than hardcoding index 0,
     // so models whose skeleton root joint is not at index 0 are handled correctly.
@@ -1724,44 +1734,12 @@ bool VROGLTFLoader::processSkeletalTransformsForFrame(const tinygltf::Model &gMo
         }
 
         // Build the accumulated world transform from outermost to innermost ancestor.
-        // For each ancestor, collect its TRS from all animation channels (unflattened T/R/S)
-        // falling back to the rest-pose for any channel not present in the animation.
         VROMatrix4f ancestorWorld;
         ancestorWorld.toIdentity();
         for (int i = (int)nonSkinAncestors.size() - 1; i >= 0; i--) {
-            int ancNode = nonSkinAncestors[i];
-            VROVector3f ancT; VROVector3f ancS; VROQuaternion ancR;
-            getNodeRestTRS(gModel, ancNode, ancT, ancS, ancR);
-            const auto &ancAnimMap = _nodeKeyFrameAnims[ancNode];
-            auto ancAnimIt = ancAnimMap.find(animationIndex);
-            if (ancAnimIt != ancAnimMap.end()) {
-                for (const auto &ancAnim : ancAnimIt->second) {
-                    if (keyFrameTime >= (int)ancAnim->getFrames().size()) continue;
-                    const auto &ancFrame = *ancAnim->getFrames()[keyFrameTime];
-                    if (ancAnim->_hasTranslation) ancT = ancFrame.translation;
-                    if (ancAnim->_hasRotation)    ancR = ancFrame.rotation;
-                    if (ancAnim->_hasScale)       ancS = ancFrame.scale;
-                }
-            }
-            VROMatrix4f ancLocal;
-            ancLocal.toIdentity();
-            ancLocal.scale(ancS.x, ancS.y, ancS.z);
-            ancLocal = ancR.getMatrix() * ancLocal;
-            ancLocal.translate(ancT);
-            ancestorWorld = ancestorWorld.multiply(ancLocal);
+            ancestorWorld = ancestorWorld.multiply(sampleNodeLocal(nonSkinAncestors[i]));
         }
-
-        // Compute root joint's local transform, then pre-multiply by ancestor world.
-        const auto &anims = _nodeKeyFrameAnims[rootNodeIndex][animationIndex];
-        VROMatrix4f rootLocal;
-        if (anims.empty()) {
-            rootLocal = getTransformOfNode(gModel, rootNodeIndex);
-        } else {
-            const auto &anim = anims.at(subAnimPropertyIndex);
-            const auto &frame = *anim->getFrames()[keyFrameTime];
-            rootLocal = buildJointLocalTransform(gModel, rootNodeIndex, anim.get(), &frame);
-        }
-        transformsOut[currentJointIndex] = ancestorWorld.multiply(rootLocal);
+        transformsOut[currentJointIndex] = ancestorWorld.multiply(sampleNodeLocal(rootNodeIndex));
     }
 
     // Grab the transform of the current joint to be cascaded and multiplied on the child.
@@ -1771,19 +1749,9 @@ bool VROGLTFLoader::processSkeletalTransformsForFrame(const tinygltf::Model &gMo
     std::vector<int> childJoints = _skinIndexToJointChildJoints[skin][currentJointIndex];
     for (int childJointIndex : childJoints) {
         int childNodeIndex = _skinIndexToJointNodeIndex[skin][childJointIndex];
-        const auto &anims = _nodeKeyFrameAnims[childNodeIndex][animationIndex];
-
-        VROMatrix4f localTransform;
-        if (anims.empty()) {
-            localTransform = getTransformOfNode(gModel, childNodeIndex);
-        } else {
-            const auto &anim = anims.at(subAnimPropertyIndex);
-            const auto &frame = *anim->getFrames()[keyFrameTime];
-            localTransform = buildJointLocalTransform(gModel, childNodeIndex, anim.get(), &frame);
-        }
 
         // Cascade: world transform = parent_world * local
-        transformsOut[childJointIndex] = currentMatrix.multiply(localTransform);
+        transformsOut[childJointIndex] = currentMatrix.multiply(sampleNodeLocal(childNodeIndex));
 
         // Continue going down the skeletal tree
         if (!processSkeletalTransformsForFrame(gModel, skin, animationIndex, subAnimPropertyIndex,
@@ -3238,7 +3206,7 @@ VROMatrix4f VROGLTFLoader::getTransformOfNode(const tinygltf::Model &gModel, int
         rot = mat.extractRotation(scale);
     }
 
-    // Compose T * R * S in the correct order (matching glTF spec and buildJointLocalTransform).
+    // Compose T * R * S in the correct order (matching glTF spec and sampleNodeLocal in processSkeletalTransformsForFrame).
     // scale() then left-multiply by R (R * S), then translate column (T * R * S).
     VROMatrix4f localTransform;
     localTransform.scale(scale.x, scale.y, scale.z);     // S
