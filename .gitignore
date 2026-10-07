@@ -122,3 +122,6 @@ ios/fastlane/README.md
 
 /.vscode
 /android/scripts
+
+# Python bytecode from desktop/tools
+__pycache__/

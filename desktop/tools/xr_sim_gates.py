@@ -8,6 +8,12 @@ failure. Needs MetaXRSimulator running, the Meta XR Operator layer installed
 
     python3 desktop/tools/xr_sim_gates.py [--profiles "Meta VR Glasses,Meta Quest 3"]
                                           [--transports gpu_handle,jpg]
+                                          [--skip-modes] [--skip-hello-xr]
+
+Per profile it runs: the render and input gates for each transport; the
+immersive, passthrough and passthrough-fallback display modes; and Khronos
+hello_xr (Metal) on the same runtime, built from the OpenXR source CMake
+already fetched into desktop/build/_deps.
 
 Two simulator traps this script handles:
   * The config env var is META_XRSIM_CONFIG_JSON. Any other name is ignored
@@ -21,6 +27,9 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOST = os.path.join(HERE, "..", "build", "viro_sim_host")
+OPENXR_SRC = os.path.join(HERE, "..", "build", "_deps", "openxr-src")
+HELLO_BUILD = os.path.join(HERE, "..", "build", "hello_xr")
+HELLO = os.path.join(HELLO_BUILD, "src", "tests", "hello_xr", "hello_xr")
 SIM = "/Applications/MetaXRSimulator.app/Contents/Resources/MetaXRSimulator"
 OPERATOR = os.path.expanduser(
     "~/Library/Application Support/metavr/tools/meta-xr-operator/"
@@ -104,23 +113,35 @@ def set_profile(profile):
     json.dump(data, open(PERSIST, "w"), indent=2)
 
 
-def run(profile, transport, op_ok, workdir):
-    print(f"\n### {profile} / ses_texture_format={transport}")
+def launch(profile, transport, workdir, tag, extra_env=None):
+    """Starts viro_sim_host on the given profile; returns (process, log path)."""
     cfg = json.load(open(os.path.join(HERE, "sim-config.json")))
     cfg["device_profile"], cfg["ses_texture_format"] = profile, transport
     cfg_path = os.path.join(workdir, "sim-config.json")
     json.dump(cfg, open(cfg_path, "w"))
     set_profile(profile)
 
-    log = os.path.join(workdir, f"host-{profile.replace(' ', '_')}-{transport}.log")
+    log = os.path.join(workdir, f"host-{profile.replace(' ', '_')}-{tag}.log")
     env = dict(os.environ,
                XR_RUNTIME_JSON=os.path.join(SIM, "meta_openxr_simulator.json"),
                META_XRSIM_CONFIG_JSON=cfg_path,
                XR_API_LAYER_PATH=OPERATOR,
                XR_ENABLE_API_LAYERS="XR_APILAYER_METAX_operator",
-               VIRO_FRAMES="216000")
+               VIRO_FRAMES="216000", **(extra_env or {}))
     host = subprocess.Popen([HOST], cwd=os.path.dirname(HOST), env=env,
                             stdout=open(log, "w"), stderr=subprocess.STDOUT)
+    return host, log
+
+
+def stop(host):
+    host.terminate()
+    host.wait(timeout=10)
+    time.sleep(2)
+
+
+def run(profile, transport, op_ok, workdir):
+    print(f"\n### {profile} / ses_texture_format={transport}")
+    host, log = launch(profile, transport, workdir, transport)
     try:
         if not wait_for(log, r"^session state -> 5"):
             check("session reaches FOCUSED", False, f"see {log}")
@@ -197,8 +218,117 @@ def run(profile, transport, op_ok, workdir):
             op.close()
         check("host survives input", host.poll() is None)
     finally:
-        host.terminate()
-        host.wait(timeout=10)
+        stop(host)
+
+
+# Display modes. The box is the only scene content, so the frame corner shows
+# what is behind it: black (immersive), the simulator room (passthrough) or
+# slate (passthrough requested on a system that can't provide it).
+MODES = [
+    ("immersive", {}, 1, "immersive"),
+    ("passthrough", {"VIRO_PASSTHROUGH": "1"}, 3, "passthrough"),
+    ("passthrough-fallback", {"VIRO_PASSTHROUGH": "1", "VIRO_XR_DISABLE_EXT": "XR_FB_passthrough"},
+     1, "immersive (passthrough fallback)"),
+]
+
+
+def run_modes(profile, workdir):
+    for tag, extra, blend, mode in MODES:
+        print(f"\n### {profile} / {tag}")
+        host, log = launch(profile, "gpu_handle", workdir, tag, extra)
+        try:
+            if not wait_for(log, r"^session state -> 5"):
+                check(f"{tag}: session reaches FOCUSED", False, f"see {log}")
+                continue
+            time.sleep(2.5)
+            text = open(log).read()
+            got = re.search(r"^mode: (.*), blend (\d+)$", text, re.M)
+            check(f"{tag}: mode and blend", got and got.groups() == (mode, str(blend)),
+                  ", ".join(got.groups()) if got else "no mode line")
+            if tag == "passthrough-fallback":
+                check(f"{tag}: logs the missing capability",
+                      "passthrough unavailable: XR_FB_passthrough not enabled" in text)
+            op = Operator()
+            try:
+                img = op.capture("left")
+            finally:
+                op.close()
+            if img is None:
+                check(f"{tag}: capture", False)
+                continue
+            img.save(os.path.join(workdir, f"{profile.replace(' ', '_')}-{tag}-left.png"))
+            r, g, b = img.getpixel((20, 20))
+            if tag == "immersive":
+                check(f"{tag}: background black", r + g + b < 30, f"corner {r},{g},{b}")
+            elif tag == "passthrough":
+                lit_count, _ = lit(img)
+                check(f"{tag}: room visible behind the scene",
+                      lit_count > 0.9 * img.size[0] * img.size[1], f"lit {lit_count}")
+            else:
+                check(f"{tag}: slate background, not black",
+                      abs(r - g) < 25 and b > r and r > 60, f"corner {r},{g},{b}")
+        finally:
+            stop(host)
+
+
+def build_hello_xr():
+    if os.access(HELLO, os.X_OK):
+        return True
+    cfg = subprocess.run(["cmake", "-S", OPENXR_SRC, "-B", HELLO_BUILD, "-DBUILD_TESTS=ON",
+                          "-DBUILD_CONFORMANCE_TESTS=OFF", "-DBUILD_API_LAYERS=OFF",
+                          "-DCMAKE_BUILD_TYPE=Release"], capture_output=True, text=True)
+    if cfg.returncode == 0:
+        cfg = subprocess.run(["cmake", "--build", HELLO_BUILD, "--target", "hello_xr", "-j8"],
+                             capture_output=True, text=True)
+    if cfg.returncode != 0:
+        print(cfg.stdout[-2000:], cfg.stderr[-2000:])
+    return os.access(HELLO, os.X_OK)
+
+
+def run_hello_xr(profile, workdir):
+    print(f"\n### {profile} / hello_xr (Metal)")
+    if not build_hello_xr():
+        check("hello_xr builds", False)
+        return
+    set_profile(profile)
+    log = os.path.join(workdir, f"hello_xr-{profile.replace(' ', '_')}.log")
+    env = dict(os.environ,
+               XR_RUNTIME_JSON=os.path.join(SIM, "meta_openxr_simulator.json"),
+               META_XRSIM_CONFIG_JSON=os.path.join(HERE, "sim-config.json"),
+               XR_API_LAYER_PATH=OPERATOR,
+               XR_ENABLE_API_LAYERS="XR_APILAYER_METAX_operator")
+    # hello_xr quits on the first stdin byte (or EOF), so keep the pipe open.
+    app = subprocess.Popen([HELLO, "-g", "Metal", "-v"], cwd=os.path.dirname(HELLO), env=env,
+                           stdin=subprocess.PIPE, stdout=open(log, "w"),
+                           stderr=subprocess.STDOUT)
+    try:
+        focused = wait_for(log, r"XR_SESSION_STATE_FOCUSED", timeout=60)
+        check("hello_xr: session reaches FOCUSED", focused, "" if focused else f"see {log}")
+        if not focused:
+            return
+        time.sleep(4)
+        op = Operator()
+        try:
+            eyes = [op.capture(e) for e in ("left", "right")]
+        finally:
+            op.close()
+        for e, img in zip(("left", "right"), eyes):
+            if img:
+                img.save(os.path.join(workdir, f"hello_xr-{profile.replace(' ', '_')}-{e}.png"))
+        # hello_xr draws several differently colored cubes; count color buckets.
+        buckets = [len({(r // 32, g // 32, b // 32) for r, g, b in img.getdata() if r + g + b > 60})
+                   if img else 0 for img in eyes]
+        check("hello_xr: both eyes show multi-colored cubes", all(n > 20 for n in buckets),
+              f"color buckets L={buckets[0]} R={buckets[1]}")
+        check("hello_xr: no XR errors", "XR_ERROR" not in open(log).read())
+    finally:
+        if app.poll() is None:
+            app.stdin.write(b"\n")
+            app.stdin.flush()
+            try:
+                app.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                app.kill()
         time.sleep(2)
 
 
@@ -206,6 +336,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profiles", default="Meta VR Glasses,Meta Quest 3")
     ap.add_argument("--transports", default="gpu_handle,jpg")
+    ap.add_argument("--skip-modes", action="store_true",
+                    help="skip the immersive/passthrough/fallback runs")
+    ap.add_argument("--skip-hello-xr", action="store_true",
+                    help="skip the Khronos hello_xr run")
     args = ap.parse_args()
 
     if not os.access(HOST, os.X_OK):
@@ -224,6 +358,10 @@ def main():
         for profile in args.profiles.split(","):
             for transport in args.transports.split(","):
                 run(profile.strip(), transport.strip(), op_ok, workdir)
+            if op_ok and not args.skip_modes:
+                run_modes(profile.strip(), workdir)
+            if op_ok and not args.skip_hello_xr:
+                run_hello_xr(profile.strip(), workdir)
     finally:
         if os.path.exists(backup):
             shutil.move(backup, PERSIST)

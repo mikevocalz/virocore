@@ -19,6 +19,7 @@
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+#include "VROPassthroughXR.h"
 
 #import <Metal/Metal.h>
 #import <AppKit/AppKit.h>
@@ -27,6 +28,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -195,6 +197,13 @@ struct VROSceneRendererMetalOpenXR::Impl {
     XrSpace stageSpace = XR_NULL_HANDLE;
     XrEnvironmentBlendMode blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 
+    // VIRO_PASSTHROUGH=1 asks for Passthrough; if the system can't provide
+    // it, the mode becomes PassthroughFallback (immersive over slate).
+    enum class DisplayMode { Immersive, Passthrough, PassthroughFallback };
+    DisplayMode displayMode = DisplayMode::Immersive;
+    bool passthroughExt = false;
+    std::unique_ptr<VROPassthroughXR> passthrough;
+
     struct EyeSwapchain {
         XrSwapchain handle = XR_NULL_HANDLE;
         uint32_t width = 0;
@@ -263,6 +272,14 @@ struct VROSceneRendererMetalOpenXR::Impl {
         scene->getRootNode()->addChildNode(_boxNode);
 
         _renderer->setSceneController(_sceneController, _driver);
+        // Passthrough clears to transparent so the camera feed shows through.
+        // A requested-but-unavailable passthrough clears to slate instead of
+        // black, so the fallback is visible and not mistaken for a dead frame.
+        _renderer->setClearColor(
+            displayMode == DisplayMode::Passthrough ? VROVector4f(0, 0, 0, 0)
+            : displayMode == DisplayMode::PassthroughFallback ? VROVector4f(0.16f, 0.18f, 0.24f, 1)
+                                                              : VROVector4f(0, 0, 0, 1),
+            _driver);
 
         // Attach happens while the session is still IDLE (spec requirement
         // for xrAttachSessionActionSets): action set + eye-gaze binding +
@@ -316,13 +333,39 @@ struct VROSceneRendererMetalOpenXR::Impl {
         XR_CHECK(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr));
         std::vector<XrExtensionProperties> avail(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
         XR_CHECK(xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, avail.data()));
+        const char *env = getenv("VIRO_PASSTHROUGH");
+        const bool wantPassthrough = env && std::strcmp(env, "1") == 0;
+        if (wantPassthrough) displayMode = DisplayMode::Passthrough;
+        // VIRO_XR_DISABLE_EXT hides extensions from this app, to exercise the
+        // missing-capability paths on a runtime that has everything.
+        // Comma-separated, exact names: XR_FB_passthrough must not hide
+        // XR_FB_passthrough_keyboard_hands or the reverse.
+        std::vector<std::string> disabled;
+        if (const char *d = getenv("VIRO_XR_DISABLE_EXT")) {
+            std::string list(d);
+            for (size_t start = 0; start <= list.size();) {
+                size_t end = list.find(',', start);
+                if (end == std::string::npos) end = list.size();
+                if (end > start) disabled.push_back(list.substr(start, end - start));
+                start = end + 1;
+            }
+        }
+        std::vector<const char *> want(std::begin(wanted), std::end(wanted));
+        if (wantPassthrough) want.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
         std::vector<const char *> enabled;
-        for (const char *w : wanted) {
+        for (const char *w : want) {
             bool found = false;
             for (const auto &p : avail)
                 if (std::strcmp(p.extensionName, w) == 0) found = true;
-            std::printf("ext %s: %s\n", w, found ? "yes" : "NO");
+            if (found && std::find(disabled.begin(), disabled.end(), w) != disabled.end()) {
+                std::printf("ext %s: hidden by VIRO_XR_DISABLE_EXT\n", w);
+                found = false;
+            } else {
+                std::printf("ext %s: %s\n", w, found ? "yes" : "NO");
+            }
             if (found) enabled.push_back(w);
+            if (found && std::strcmp(w, XR_FB_PASSTHROUGH_EXTENSION_NAME) == 0)
+                passthroughExt = true;
         }
 
         XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -380,18 +423,45 @@ struct VROSceneRendererMetalOpenXR::Impl {
         XR_CHECK(xrCreateSession(instance, &sessionInfo, &session));
         std::puts("session created (Metal-bound)");
 
-        // Blend modes: a see-through glasses profile may not support OPAQUE;
-        // take the runtime's preferred (first) mode.
+        // Blend modes: immersive wants OPAQUE, passthrough wants ALPHA_BLEND.
+        // If the wanted mode is missing, take the runtime's first and say so.
         uint32_t bmCount = 0;
         XR_CHECK(xrEnumerateEnvironmentBlendModes(instance, system,
             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &bmCount, nullptr));
         std::vector<XrEnvironmentBlendMode> blendModes(bmCount);
         XR_CHECK(xrEnumerateEnvironmentBlendModes(instance, system,
             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, bmCount, &bmCount, blendModes.data()));
-        blendMode = blendModes.empty() ? XR_ENVIRONMENT_BLEND_MODE_OPAQUE : blendModes[0];
+        auto hasMode = [&](XrEnvironmentBlendMode m) {
+            return std::find(blendModes.begin(), blendModes.end(), m) != blendModes.end();
+        };
         std::printf("blend modes:");
         for (auto b : blendModes) std::printf(" %d", (int)b);
-        std::printf(" -> using %d\n", (int)blendMode);
+        std::putchar('\n');
+        if (displayMode == DisplayMode::Passthrough) {
+            auto started = VROPassthroughXR::start(instance, session, passthroughExt,
+                hasMode(XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND));
+            if (auto *pt = std::get_if<std::unique_ptr<VROPassthroughXR>>(&started)) {
+                passthrough = std::move(*pt);
+                std::puts("passthrough layer running");
+            } else {
+                std::printf("passthrough unavailable: %s; falling back to immersive\n",
+                            std::get<std::string>(started).c_str());
+                displayMode = DisplayMode::PassthroughFallback;
+            }
+        }
+        XrEnvironmentBlendMode wantedMode = displayMode == DisplayMode::Passthrough
+            ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND : XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        if (hasMode(wantedMode) || blendModes.empty()) {
+            blendMode = wantedMode;
+        } else {
+            blendMode = blendModes[0];
+            std::printf("blend mode %d not offered by this system\n", (int)wantedMode);
+        }
+        std::printf("mode: %s, blend %d\n",
+                    displayMode == DisplayMode::Passthrough ? "passthrough"
+                    : displayMode == DisplayMode::PassthroughFallback
+                        ? "immersive (passthrough fallback)" : "immersive",
+                    (int)blendMode);
 
         uint32_t viewCount = 0;
         XR_CHECK(xrEnumerateViewConfigurationViews(instance, system,
@@ -586,7 +656,10 @@ struct VROSceneRendererMetalOpenXR::Impl {
 
     // ---- frame loop (mirrors VROSceneRendererOpenXR::renderFrame) -----------
     int run() {
-        if (!init()) return 1;
+        if (!init()) {
+            teardown();
+            return 1;
+        }
         if (const char *fb = getenv("VIRO_FRAMES")) frameBudget = atoi(fb);
         std::printf("frame budget: %d\n", frameBudget);
 
@@ -603,7 +676,13 @@ struct VROSceneRendererMetalOpenXR::Impl {
         proj.space = stageSpace;
         proj.viewCount = viewCount;
         proj.views = pvViews.data();
-        XrCompositionLayerBaseHeader *layers[] = {(XrCompositionLayerBaseHeader *)&proj};
+        std::vector<const XrCompositionLayerBaseHeader *> layers;
+        if (passthrough) {
+            layers.push_back(passthrough->layer());
+            // The scene's transparent clear must reveal the layer underneath.
+            proj.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        }
+        layers.push_back((const XrCompositionLayerBaseHeader *)&proj);
         std::vector<XrView> locatedViews(viewCount, {XR_TYPE_VIEW});
 
         XrSessionBeginInfo beginInfo{XR_TYPE_SESSION_BEGIN_INFO};
@@ -750,8 +829,8 @@ struct VROSceneRendererMetalOpenXR::Impl {
 #if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
                     _renderer->endFrame(_driver);
 #endif
-                    ei.layerCount = 1;
-                    ei.layers = layers;
+                    ei.layerCount = (uint32_t)layers.size();
+                    ei.layers = layers.data();
                     ++_frame;
                     if (++frames >= frameBudget) done = true;
                 }
@@ -799,6 +878,7 @@ struct VROSceneRendererMetalOpenXR::Impl {
         // action set — all session-scoped, so shut down before xrDestroySession.
         if (_inputController) _inputController->shutdownXR();
 #endif
+        passthrough.reset();  // session-scoped: before xrDestroySession
         for (auto &e : eyes)
             if (e.handle != XR_NULL_HANDLE) xrDestroySwapchain(e.handle);
         eyes.clear();
