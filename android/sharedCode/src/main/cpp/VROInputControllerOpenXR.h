@@ -207,8 +207,9 @@ private:
     bool     _eyeGazeEnabled    = false;
 
     // ── Hand interaction (XR_EXT_hand_interaction; Android XR) ────────────────
-    // pinch_ext/value is BOOLEAN so it cannot share the float trigger action.
-    // Its edge state is also separate from the skeletal-tracking pinch flags —
+    // pinch_ext/value (float, runtime-thresholded) binds to its own boolean
+    // actions rather than the float trigger action. Its edge state is also
+    // separate from the skeletal-tracking pinch flags —
     // two writers on one flag would corrupt updateInputButton edge detection.
     XrAction _leftPinchAction      = XR_NULL_HANDLE;
     XrAction _rightPinchAction     = XR_NULL_HANDLE;

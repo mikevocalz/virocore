@@ -158,9 +158,10 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     _rightVibrateAction = createAction(_actionSet, XR_ACTION_TYPE_VIBRATION_OUTPUT,
                                        "vibrate_right", "Vibrate Right");
 
-    // Pinch select for XR_EXT_hand_interaction (Android XR). pinch_ext/value is
-    // a BOOLEAN path, so it cannot share the float trigger action — dedicated
-    // boolean actions feed the same ClickDown/ClickUp sources as the triggers.
+    // Pinch select for XR_EXT_hand_interaction. pinch_ext/value is a float
+    // component that the spec lets an app bind to a boolean action (the runtime
+    // thresholds it). Dedicated boolean actions keep the pinch edge separate
+    // from the trigger's and feed the same ClickDown/ClickUp sources.
     if (_handInteractionEnabled) {
         _leftPinchAction  = createAction(_actionSet, XR_ACTION_TYPE_BOOLEAN_INPUT,
                                          "left_pinch",  "Left Pinch Select");
@@ -204,6 +205,14 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         XrPath p;
         xrStringToPath(instance, str, &p);
         return p;
+    };
+    // Device logs prove which suggestion the runtime accepted.
+    auto logSuggest = [&](const char *profile, XrResult r) {
+        char name[XR_MAX_RESULT_STRING_SIZE] = {0};
+        if (XR_FAILED(xrResultToString(instance, r, name))) {
+            snprintf(name, sizeof(name), "%d", (int)r);
+        }
+        ALOGI("[XR-DIAG] suggest %s -> %s", profile, name);
     };
 
     const XrActionSuggestedBinding bindings[] = {
@@ -250,6 +259,7 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         suggestion.countSuggestedBindings = bindingCount;
 
         XrResult sresult = xrSuggestInteractionProfileBindings(instance, &suggestion);
+        logSuggest(profileStr, sresult);
         if (XR_SUCCEEDED(sresult)) {
             anyProfileAccepted = true;
             ALOGV("Suggested interaction profile: %s", profileStr);
@@ -284,21 +294,25 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         eyeSuggestion.countSuggestedBindings = 1;
 
         XrResult eyeResult = xrSuggestInteractionProfileBindings(instance, &eyeSuggestion);
+        logSuggest("/interaction_profiles/ext/eye_gaze_interaction", eyeResult);
         if (!XR_SUCCEEDED(eyeResult)) {
             ALOGW("Eye gaze suggested bindings failed: %d; disabling eye gaze", eyeResult);
             _eyeGazeEnabled = false;
         }
     }
 
-    // XR_EXT_hand_interaction (Android XR / hand-first runtimes) uses different
-    // component paths than the controller profiles: pinch_ext/value (boolean)
-    // is the select, grasp_ext/value (float) the grip, and there are no face
-    // buttons, thumbsticks, or haptics. It needs its own binding set — any
-    // mismatched path would reject the whole suggestion, so keep it separate.
+    // XR_EXT_hand_interaction (Meta VR Glasses, Quest hands, Android XR) uses
+    // different component paths than the controller profiles: pinch_ext/value
+    // (float, bound to a boolean action) is the select, grasp_ext/value (float)
+    // the grip, and there are no face buttons, thumbsticks, or haptics. It
+    // needs its own binding set — any mismatched path would reject the whole
+    // suggestion, so keep it separate. The profile path carries an `_ext`
+    // suffix (xr.xml, XR_EXT_hand_interaction rev 2); without it the runtime
+    // rejects the suggestion and no hand input binds.
+    static const char *const kHandProfile = "/interaction_profiles/ext/hand_interaction_ext";
     if (_handInteractionEnabled) {
         XrPath handProfile;
-        if (XR_SUCCEEDED(xrStringToPath(instance,
-                "/interaction_profiles/ext/hand_interaction", &handProfile))) {
+        if (XR_SUCCEEDED(xrStringToPath(instance, kHandProfile, &handProfile))) {
             const XrActionSuggestedBinding handBindings[] = {
                 { _leftAimPoseAction,     makePath("/user/hand/left/input/aim/pose")            },
                 { _rightAimPoseAction,    makePath("/user/hand/right/input/aim/pose")           },
@@ -318,14 +332,13 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
                 (uint32_t)(sizeof(handBindings) / sizeof(handBindings[0]));
 
             XrResult hr = xrSuggestInteractionProfileBindings(instance, &handSuggestion);
-            if (XR_SUCCEEDED(hr)) {
-                ALOGV("Suggested interaction profile: ext/hand_interaction");
-            } else {
-                ALOGW("hand_interaction bindings rejected (%d); disabling", hr);
+            logSuggest(kHandProfile, hr);
+            if (XR_FAILED(hr)) {
+                ALOGW("hand_interaction_ext bindings rejected (%d); disabling", hr);
                 _handInteractionEnabled = false;
             }
         } else {
-            ALOGW("hand_interaction profile path unavailable; disabling");
+            ALOGW("hand_interaction_ext profile path unavailable; disabling");
             _handInteractionEnabled = false;
         }
     }
@@ -525,6 +538,20 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     rightValid = stickyPose(_rightCtrlAim, rightValid, rightPos, rightRot, rightForward);
     leftValid  = stickyPose(_leftCtrlAim,  leftValid,  leftPos,  leftRot,  leftForward);
 
+    // A side bound to ext/hand_interaction_ext has a hand, not a controller, on
+    // the aim action. With skeletal tracking for that hand, drop the action
+    // pose so processHands drives it exactly as before the profile bound (menu
+    // pinch, system-gesture filter, gaze routing). Without skeletal tracking
+    // (hands-only runtimes) the action pose and pinch action are the hand.
+    auto skeletalHand = [this](int hand) {
+        return _handTrackingEnabled && _pfnLocateHandJoints &&
+               (hand == 0 ? _leftHandTracker : _rightHandTracker) != XR_NULL_HANDLE;
+    };
+    const bool actionHand[2] = { _handProfileBound[0] && !skeletalHand(0),
+                                 _handProfileBound[1] && !skeletalHand(1) };
+    if (_handProfileBound[0] && !actionHand[0]) leftValid  = false;
+    if (_handProfileBound[1] && !actionHand[1]) rightValid = false;
+
     // Controller actions own a side only while its controller aim is valid.
     // Inactivity must cancel an existing press; ignoring it loses release edges.
     auto pollFloatButton = [this, session](XrAction action, int source, float threshold,
@@ -580,16 +607,6 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     pollBooleanButton(_yButtonAction, ViroOculus::YButton, leftValid, _prevYButton);
     pollBooleanButton(_menuAction, ViroOculus::BackButton, leftValid, _prevMenuButton, true);
 
-    // XR_EXT_hand_interaction: pinch is the select gesture on Android XR. It
-    // feeds the same ClickDown/ClickUp sources as the trigger so panels, drag
-    // handles, and Rive buttons behave identically on controller-free devices.
-    if (_handInteractionEnabled) {
-        pollBooleanButton(_rightPinchAction, ViroOculus::Controller,
-                          rightValid, _prevHandPinchRight);
-        pollBooleanButton(_leftPinchAction, ViroOculus::LeftController,
-                          leftValid, _prevHandPinchLeft);
-    }
-
     // ── Right thumbstick → scroll events ─────────────────────────────────────
     {
         XrActionStateVector2f state  = { XR_TYPE_ACTION_STATE_VECTOR2F };
@@ -620,8 +637,11 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         }
     }
 
-    const bool controllerAimActive = isPoseActionActive(session, _rightAimPoseAction) ||
-                                     isPoseActionActive(session, _leftAimPoseAction);
+    // A hand bound through hand_interaction_ext also activates the aim action;
+    // only a controller-profile binding counts as a controller in hand.
+    const bool controllerAimActive =
+        (!_handProfileBound[1] && isPoseActionActive(session, _rightAimPoseAction)) ||
+        (!_handProfileBound[0] && isPoseActionActive(session, _leftAimPoseAction));
 
     // ── Eye gaze pose — located here because it decides who owns select ─────
     bool          gazeLocated = false;
@@ -662,7 +682,8 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         gazeOwnsSelect = false;
     } else if (_prevPinchGaze) {
         gazeOwnsSelect = true;
-    } else if (_prevPinchLeft || _prevPinchRight) {
+    } else if (_prevPinchLeft || _prevPinchRight ||
+               _prevHandPinchLeft || _prevHandPinchRight) {
         gazeOwnsSelect = false;
     } else {
         gazeOwnsSelect = gazeLocated;
@@ -693,6 +714,60 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
                  gazeOwnsSelect, gazePinch, gazeHandTracked,
                  rightHandValid, rightHandPos, rightHandRot, rightHandForward,
                  leftHandValid,  leftHandPos,  leftHandRot,  leftHandForward);
+
+    // XR_EXT_hand_interaction pinch, only on sides where the runtime's hand
+    // profile is the hand source (processHands skipped them). Same contract as
+    // the skeletal pinch: under gaze it feeds the merged EyeGaze edge, else it
+    // clicks on that hand's ray, and a pinch held across the handback stays
+    // disarmed until released.
+    auto pollHandPinch = [&](XrAction action, int hand, int source, bool sideValid) {
+        bool &prev  = (hand == 0) ? _prevHandPinchLeft : _prevHandPinchRight;
+        bool &armed = (hand == 0) ? _pinchArmedLeft    : _pinchArmedRight;
+        // Skeletal or controller sides own `armed`; only end a stale press here.
+        if (!actionHand[hand]) {
+            if (updateInputButton(false, false, prev) == VROInputButtonEdge::Cancel) {
+                VROInputControllerBase::cancelSource(source);
+            }
+            return;
+        }
+        XrActionStateBoolean state = { XR_TYPE_ACTION_STATE_BOOLEAN };
+        XrActionStateGetInfo info  = { XR_TYPE_ACTION_STATE_GET_INFO };
+        info.action = action;
+        const bool active = sideValid &&
+                            XR_SUCCEEDED(xrGetActionStateBoolean(session, &info, &state)) &&
+                            state.isActive == XR_TRUE;
+        bool pinched = active && state.currentState == XR_TRUE;
+        if (gazeOwnsSelect) {
+            if (updateInputButton(false, false, prev) == VROInputButtonEdge::Cancel) {
+                VROInputControllerBase::cancelSource(source);
+            }
+            if (active) {
+                gazeHandTracked[hand] = true;
+                gazePinch[hand]       = pinched;
+            }
+            armed = !pinched;
+            return;
+        }
+        if (!armed) {
+            armed   = !pinched;
+            pinched = false;
+        }
+        switch (updateInputButton(active, pinched, prev)) {
+            case VROInputButtonEdge::Down:
+                queueButtonEvent(source, VROEventDelegate::ClickDown); break;
+            case VROInputButtonEdge::Up:
+                queueButtonEvent(source, VROEventDelegate::ClickUp); break;
+            case VROInputButtonEdge::Cancel:
+                VROInputControllerBase::cancelSource(source); break;
+            case VROInputButtonEdge::None: break;
+        }
+    };
+    if (_handInteractionEnabled) {
+        pollHandPinch(_leftPinchAction,  0, ViroOculus::LeftController,
+                      actionHand[0] && leftValid);
+        pollHandPinch(_rightPinchAction, 1, ViroOculus::Controller,
+                      actionHand[1] && rightValid);
+    }
 
     // One edge for both hands. A press is cancelled, never completed, when a
     // hand in it stops tracking, the gaze is lost past the blink window, or a
