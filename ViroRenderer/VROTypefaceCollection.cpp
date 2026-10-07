@@ -77,19 +77,16 @@ std::vector<VROFontRun> VROTypefaceCollection::computeRuns(std::wstring text) {
     // using wide-strings, we expect each character to be a Unicode code point. This is
     // almost always the case, with two complications:
     //
-    // 1. Surrogates. Our 2-byte wide characters support all characters in the "Basic
-    //    Multilingual Plane" (BMP). There are some characters in Unicode, however, that
-    //    require 4 bytes. These are typically mathematical characters, musical symbols,
-    //    and rare CJK (Chinese/Japanese/Korean) characters. These are supported in UTF-16
-    //    via surrogates. We do not currently support surrogates.
+    // 1. Surrogates. On platforms with 2-byte wide characters, surrogate pairs
+    //    are decoded into full code points at the platform boundary (see
+    //    VRO_STRING_GET_CHARS_WIDE on Android), so each character here is a
+    //    single Unicode code point.
     //
     // 2. Variation sequences. Variation sequences are pairs of code points, a base
     //    character followed by a variation selector. The variation selector is
     //    essentially a 'modifier' that alters the base character. For each code point,
     //    we have to check to see if the _next_ code point is a variation selector. These
     //    are supported by Viro.
-    //
-    // TODO VIRO-3240 Support surrogate pairs
     std::shared_ptr<VROTypeface> lastTypeface = nullptr;
     int start = 0;
     

@@ -47,6 +47,7 @@ class VRODriverOpenGLAndroidOpenXR;
 class VROInputControllerOpenXR;
 class VRODisplayOpenGLOpenXR;
 class VROARSessionOpenXR;
+class VROARScene;
 class VROSceneController;
 class VRONode;
 
@@ -277,6 +278,8 @@ private:
     PFN_xrRequestBoundaryVisibilityMETA _pfnRequestBoundaryVisibility = nullptr;
     XrBoundaryVisibilityMETA _boundaryVisibility = XR_BOUNDARY_VISIBILITY_NOT_SUPPRESSED_META;
     uint32_t        _boundaryRequestCooldown = 0;  // frames until the next request
+    bool            _handInteractionAvailable = false;  // XR_EXT_hand_interaction present (Android XR)
+    bool            _alphaBlendAvailable      = false;  // view config supports ALPHA_BLEND env blend
 
     // Per-eye swapchains (index 0 = left, 1 = right)
     VROOpenXRSwapchain _swapchains[2];
@@ -322,6 +325,11 @@ private:
     // detection is unavailable on the device. Driven once per renderFrame().
     std::shared_ptr<VROARSessionOpenXR>           _arSession;
 
+    // The attached AR scene, kept so OpenXR session-state changes can be
+    // published as VROARTrackingState — the ARCore renderer does this from
+    // its camera; here the session state machine is the honest source.
+    std::weak_ptr<VROARScene>                     _arScene;
+
     // ── Java callback (onDrawFrame) ───────────────────────────────────────────
     JavaVM  *_jvm      = nullptr;
     jobject  _jview    = nullptr;  // global ref to ViroViewOpenXR instance
@@ -352,6 +360,7 @@ private:
     void renderLoop();
     void pollEvents();
     void handleSessionStateChange(XrEventDataSessionStateChanged *event);
+    void pushARTrackingState();
     void renderFrame();
     void updateBoundaryVisibility(bool passthroughSubmitted);
 
