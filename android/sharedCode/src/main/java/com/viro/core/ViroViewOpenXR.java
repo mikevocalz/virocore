@@ -512,8 +512,9 @@ public class ViroViewOpenXR extends ViroView {
     }
 
     /**
-     * Select the vertical tracking origin: {@code false} = eye-level (default),
-     * {@code true} = floor-level. Cached and re-applied if the renderer isn't
+     * Select the vertical tracking origin: {@code false} = eye-level,
+     * {@code true} = floor-level. Without a call, PICO and Meta runtimes start
+     * floor-level and other runtimes eye-level. Cached and re-applied if the renderer isn't
      * ready yet, so an initial trackingOrigin prop set during mount survives.
      * No-op on non-OpenXR backends.
      */

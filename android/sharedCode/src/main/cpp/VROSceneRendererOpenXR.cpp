@@ -853,15 +853,20 @@ bool VROSceneRendererOpenXR::createReferenceSpace() {
     // dropped content at world (0,0,-2) ~39° below the horizon on Quest 3. Floor
     // origin is opt-in via setTrackingOrigin and resolved by buildReferenceSpace.
     //
-    // PICO exception: unless JS has explicitly chosen an origin, a PICO runtime
-    // defaults to Floor. PICO is a standing/room-scale-first platform and its
-    // 4 Ultra enumerates a native LOCAL_FLOOR (verified on device), so floor
-    // origin here is the true physical floor — not a guessed head-height offset.
-    // Quest stays Eye for upstream parity (this only trips when the vendor probe
-    // says PICO). A `trackingOrigin` prop from JS still wins via _explicit.
-    if (!_trackingOriginExplicit && _runtimeInfo.vendor == VROOpenXRVendor::PICO) {
+    // PICO and Meta exception: unless JS has explicitly chosen an origin, these
+    // runtimes default to Floor. Both are standing/room-scale-first. PICO's
+    // 4 Ultra enumerates a native LOCAL_FLOOR (verified on device). On Meta
+    // Horizon (Quest, and Meta VR glasses on the same runtime) the eye-level
+    // default put the app's floor at chest height. buildReferenceSpace still
+    // walks LOCAL_FLOOR -> STAGE-emulated -> eye, so a runtime without either
+    // floor source stays eye-level. A `trackingOrigin` prop from JS still wins
+    // via _trackingOriginExplicit. Other runtimes keep the Eye default.
+    const bool floorFirstVendor = _runtimeInfo.vendor == VROOpenXRVendor::PICO ||
+                                  _runtimeInfo.vendor == VROOpenXRVendor::META;
+    if (!_trackingOriginExplicit && floorFirstVendor) {
         _trackingOrigin = VROTrackingOrigin::Floor;
-        ALOGI("[XR-DIAG] PICO detected — defaulting tracking origin to Floor");
+        ALOGI("[XR-DIAG] %s detected — defaulting tracking origin to Floor",
+              _runtimeInfo.vendor == VROOpenXRVendor::PICO ? "PICO" : "Meta");
     }
     return buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
 }
