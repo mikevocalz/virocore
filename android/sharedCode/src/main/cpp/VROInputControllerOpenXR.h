@@ -47,7 +47,9 @@ public:
      * xrAttachSessionActionSets. Must be called before the session enters
      * XR_SESSION_STATE_READY.
      */
-    bool createActionSet(XrInstance instance, XrSession session, bool eyeGazeSupported = false);
+    bool createActionSet(XrInstance instance, XrSession session,
+                         bool eyeGazeSupported = false,
+                         bool handInteractionSupported = false);
 
     /*
      * Destroy controller action spaces. Call before xrDestroySession.
@@ -185,6 +187,16 @@ private:
     XrSpace  _eyeGazeSpace      = XR_NULL_HANDLE;
     bool     _eyeGazeEnabled    = false;
 
+    // ── Hand interaction (XR_EXT_hand_interaction; Android XR) ────────────────
+    // pinch_ext/value is BOOLEAN so it cannot share the float trigger action.
+    // Its edge state is also separate from the skeletal-tracking pinch flags —
+    // two writers on one flag would corrupt updateInputButton edge detection.
+    XrAction _leftPinchAction      = XR_NULL_HANDLE;
+    XrAction _rightPinchAction     = XR_NULL_HANDLE;
+    bool     _handInteractionEnabled = false;
+    bool     _prevHandPinchLeft    = false;
+    bool     _prevHandPinchRight   = false;
+
     // ── Back button callback ──────────────────────────────────────────────────
     std::function<void()> _backButtonCallback;
 
@@ -304,6 +316,20 @@ private:
 public:
     /** Enable or disable hand tracking gesture processing. Thread-safe (atomic store). */
     void setHandTrackingEnabled(bool enabled) { _handTrackingEnabled = enabled; }
+    /*
+     Whether the virtual controller model is drawn. Off in passthrough: the
+     user already sees their real controllers, and the model covers them.
+     */
+    void setControllerMeshEnabled(bool enabled) { _controllerMeshEnabled = enabled; }
+private:
+    bool _controllerMeshEnabled = true;
+    /*
+     Wall-clock of the last camera-transform event handed to JS. The pose is
+     consumed as a placement latch and a "pose alive" heartbeat — both work at
+     10 Hz — while the event itself crosses JNI and the React bridge, so
+     emitting it at display rate (72–90 Hz) was pure per-frame bridge churn.
+     */
+    double _lastCameraNotifyMs = -1.0;
 };
 
 #endif  // ANDROID_VROINPUTCONTROLLEROPENXR_H

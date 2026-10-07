@@ -28,6 +28,7 @@
 #include "VROLog.h"
 #include "VROGlyphOpenGL.h"
 #include "VRODriverOpenGLAndroid.h"
+#include <cstdlib>
 
 static const std::string kSystemFont = "Roboto-Regular";
 
@@ -78,7 +79,27 @@ FT_FaceRec_ *VROTypefaceAndroid::loadFTFace() {
             }
         }
     }
-    FT_Set_Pixel_Sizes(_face, 0, getSize());
+    if (!FT_IS_SCALABLE(_face) && _face->num_fixed_sizes > 0) {
+        // Bitmap-only fonts (e.g. NotoColorEmoji) expose fixed strikes instead
+        // of scalable outlines; pick the closest strike so glyphs rasterize.
+        // FT_Set_Pixel_Sizes can report success on such faces while leaving no
+        // usable strike, so select explicitly rather than only on failure.
+        int best = 0;
+        long bestDiff = std::labs(_face->available_sizes[0].size - getSize());
+        for (int i = 1; i < _face->num_fixed_sizes; i++) {
+            long diff = std::labs(_face->available_sizes[i].size - getSize());
+            if (diff < bestDiff) {
+                best = i;
+                bestDiff = diff;
+            }
+        }
+        FT_Select_Size(_face, best);
+    } else {
+        FT_Set_Pixel_Sizes(_face, 0, getSize());
+    }
+    if (_face->size != nullptr && _face->size->metrics.y_ppem > 0) {
+        _glyphPixelScale = getSize() / (float) _face->size->metrics.y_ppem;
+    }
     _numFaces = _face->num_faces;
 
     return _face;
@@ -86,7 +107,8 @@ FT_FaceRec_ *VROTypefaceAndroid::loadFTFace() {
 
 std::shared_ptr<VROGlyph> VROTypefaceAndroid::loadGlyph(uint32_t charCode, uint32_t variantSelector,
                                                         uint32_t outlineWidth, VROGlyphRenderMode renderMode) {
-    std::shared_ptr<VROGlyph> glyph = std::make_shared<VROGlyphOpenGL>();
+    std::shared_ptr<VROGlyphOpenGL> glyph = std::make_shared<VROGlyphOpenGL>();
+    glyph->setPixelScale(_glyphPixelScale);
     std::shared_ptr<VRODriverOpenGLAndroid> driver = std::dynamic_pointer_cast<VRODriverOpenGLAndroid>(_driver.lock());
     if (!driver) {
         return glyph;
@@ -113,5 +135,5 @@ std::string VROTypefaceAndroid::getFontPath(std::string fontName, std::string su
 }
 
 float VROTypefaceAndroid::getLineHeight() const {
-    return _face->size->metrics.height >> 6;
+    return (_face->size->metrics.height >> 6) * _glyphPixelScale;
 }

@@ -12,6 +12,7 @@
 #include "VROInputPresenterOpenXR.h"
 #include "VROVector3f.h"
 #include "VROCamera.h"
+#include "VROTime.h"
 #include "VROInputType.h"
 
 #undef  LOG_TAG
@@ -69,8 +70,10 @@ VROInputControllerOpenXR::~VROInputControllerOpenXR() {
 }
 
 bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession session,
-                                               bool eyeGazeSupported) {
-    _eyeGazeEnabled = eyeGazeSupported;
+                                               bool eyeGazeSupported,
+                                               bool handInteractionSupported) {
+    _eyeGazeEnabled        = eyeGazeSupported;
+    _handInteractionEnabled = handInteractionSupported;
     _instance       = instance;  // captured for logActiveInteractionProfiles()
 
     // ── 1. Create action set ──────────────────────────────────────────────────
@@ -126,6 +129,20 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
                                        "vibrate_left",  "Vibrate Left");
     _rightVibrateAction = createAction(_actionSet, XR_ACTION_TYPE_VIBRATION_OUTPUT,
                                        "vibrate_right", "Vibrate Right");
+
+    // Pinch select for XR_EXT_hand_interaction (Android XR). pinch_ext/value is
+    // a BOOLEAN path, so it cannot share the float trigger action — dedicated
+    // boolean actions feed the same ClickDown/ClickUp sources as the triggers.
+    if (_handInteractionEnabled) {
+        _leftPinchAction  = createAction(_actionSet, XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                         "left_pinch",  "Left Pinch Select");
+        _rightPinchAction = createAction(_actionSet, XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                         "right_pinch", "Right Pinch Select");
+        if (!_leftPinchAction || !_rightPinchAction) {
+            ALOGW("Pinch actions failed to create; disabling hand interaction");
+            _handInteractionEnabled = false;
+        }
+    }
 
     // Eye gaze pose (only when the device reports eye-tracking support).
     if (_eyeGazeEnabled) {
@@ -242,6 +259,46 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         if (!XR_SUCCEEDED(eyeResult)) {
             ALOGW("Eye gaze suggested bindings failed: %d; disabling eye gaze", eyeResult);
             _eyeGazeEnabled = false;
+        }
+    }
+
+    // XR_EXT_hand_interaction (Android XR / hand-first runtimes) uses different
+    // component paths than the controller profiles: pinch_ext/value (boolean)
+    // is the select, grasp_ext/value (float) the grip, and there are no face
+    // buttons, thumbsticks, or haptics. It needs its own binding set — any
+    // mismatched path would reject the whole suggestion, so keep it separate.
+    if (_handInteractionEnabled) {
+        XrPath handProfile;
+        if (XR_SUCCEEDED(xrStringToPath(instance,
+                "/interaction_profiles/ext/hand_interaction", &handProfile))) {
+            const XrActionSuggestedBinding handBindings[] = {
+                { _leftAimPoseAction,     makePath("/user/hand/left/input/aim/pose")            },
+                { _rightAimPoseAction,    makePath("/user/hand/right/input/aim/pose")           },
+                { _leftGripPoseAction,    makePath("/user/hand/left/input/grip/pose")           },
+                { _rightGripPoseAction,   makePath("/user/hand/right/input/grip/pose")          },
+                { _leftPinchAction,       makePath("/user/hand/left/input/pinch_ext/value")     },
+                { _rightPinchAction,      makePath("/user/hand/right/input/pinch_ext/value")    },
+                { _leftGripAction,        makePath("/user/hand/left/input/grasp_ext/value")     },
+                { _rightGripAction,       makePath("/user/hand/right/input/grasp_ext/value")    },
+            };
+            XrInteractionProfileSuggestedBinding handSuggestion = {
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
+            };
+            handSuggestion.interactionProfile     = handProfile;
+            handSuggestion.suggestedBindings      = handBindings;
+            handSuggestion.countSuggestedBindings =
+                (uint32_t)(sizeof(handBindings) / sizeof(handBindings[0]));
+
+            XrResult hr = xrSuggestInteractionProfileBindings(instance, &handSuggestion);
+            if (XR_SUCCEEDED(hr)) {
+                ALOGV("Suggested interaction profile: ext/hand_interaction");
+            } else {
+                ALOGW("hand_interaction bindings rejected (%d); disabling", hr);
+                _handInteractionEnabled = false;
+            }
+        } else {
+            ALOGW("hand_interaction profile path unavailable; disabling");
+            _handInteractionEnabled = false;
         }
     }
 
@@ -372,12 +429,18 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     syncInfo.countActiveActionSets = 1;
     xrSyncActions(session, &syncInfo);
 
-    // The head pose, to JS. Every other input controller (AR, Cardboard,
-    // Daydream, OVR) calls this from its own onProcess and OpenXR never did —
-    // so `ViroARScene.onCameraTransformUpdate` was silent on a headset, which
-    // is the one platform whose content has to be placed relative to a head.
-    // Without it a floor-referenced runtime puts every scene at the user's feet.
-    notifyCameraTransform(camera);
+    // The head pose, to JS — throttled to 10 Hz. Every other input controller
+    // (AR, Cardboard, Daydream, OVR) calls this from its own onProcess and
+    // OpenXR never did — so `ViroARScene.onCameraTransformUpdate` was silent on
+    // a headset, which is the one platform whose content has to be placed
+    // relative to a head. But the event crosses JNI and the React bridge on
+    // every emit: at display rate that is 72–90 bridge crossings a second for
+    // data JS only ever uses as a first-pose latch and a liveness heartbeat.
+    const double cameraNowMs = VROTimeCurrentMillis();
+    if (cameraNowMs - _lastCameraNotifyMs >= 100.0) {
+        _lastCameraNotifyMs = cameraNowMs;
+        notifyCameraTransform(camera);
+    }
 
     // ── Capture poses for both hands (no dispatch yet) ───────────────────────
     // Each hand can be supplied by either a held controller or by tracked
@@ -480,6 +543,16 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     pollBooleanButton(_xButtonAction, ViroOculus::XButton, leftValid, _prevXButton);
     pollBooleanButton(_yButtonAction, ViroOculus::YButton, leftValid, _prevYButton);
     pollBooleanButton(_menuAction, ViroOculus::BackButton, leftValid, _prevMenuButton, true);
+
+    // XR_EXT_hand_interaction: pinch is the select gesture on Android XR. It
+    // feeds the same ClickDown/ClickUp sources as the trigger so panels, drag
+    // handles, and Rive buttons behave identically on controller-free devices.
+    if (_handInteractionEnabled) {
+        pollBooleanButton(_rightPinchAction, ViroOculus::Controller,
+                          rightValid, _prevHandPinchRight);
+        pollBooleanButton(_leftPinchAction, ViroOculus::LeftController,
+                          leftValid, _prevHandPinchLeft);
+    }
 
     // ── Right thumbstick → scroll events ─────────────────────────────────────
     {
@@ -975,7 +1048,8 @@ void VROInputControllerOpenXR::updateControllerMeshViz(int source, XrSession ses
     auto presenter = std::dynamic_pointer_cast<VROInputPresenterOpenXR>(getPresenter());
     if (!presenter) return;
 
-    if (gripSpace == XR_NULL_HANDLE || gripPoseAction == XR_NULL_HANDLE) {
+    if (!_controllerMeshEnabled ||
+        gripSpace == XR_NULL_HANDLE || gripPoseAction == XR_NULL_HANDLE) {
         presenter->updateControllerMesh(source, {}, {}, false);
         return;
     }

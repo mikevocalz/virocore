@@ -123,14 +123,61 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
     // single-pointer backends.
     int ray = rayForSource(source);
     auto hit = getHitResultForSource(ray);
-    if (hit == nullptr) {
-        return;
-    }
     bool sourceAware = _hitResultsBySource.count(ray) > 0;
     // Click completion stays per button; hover state belongs to the ray.
     std::shared_ptr<VRONode> &lastClicked = sourceAware
         ? _lastClickedNodesBySource[source]
         : _lastClickedNode;
+
+    // Click capture is keyed by BUTTON source, but OpenXR splits one hand into
+    // several — a pinch press on `Controller` released as a fist relax fires
+    // its ClickUp on `RightGrip`, which owns no pending click. Without the
+    // fallback the up resolves against whatever the ray happens to hit, the
+    // capturing quad never sees its release, and the panel's pointer capture
+    // stays claimed for the rest of the session. A release therefore also
+    // closes any press a sibling source opened on the SAME ray.
+    if (clickState == VROEventDelegate::ClickUp && lastClicked == nullptr && sourceAware) {
+        for (auto &entry : _lastClickedNodesBySource) {
+            if (entry.first != source && rayForSource(entry.first) == ray &&
+                entry.second != nullptr) {
+                std::vector<float> emptyPos;
+                for (std::shared_ptr<VROEventDelegate> delegate : _delegates) {
+                    delegate->onClick(entry.first, entry.second, clickState, emptyPos);
+                }
+                if (entry.second->getEventDelegate()) {
+                    entry.second->getEventDelegate()->onClick(entry.first, entry.second,
+                                                              clickState, emptyPos);
+                }
+                entry.second = nullptr;
+            }
+        }
+    }
+
+    // A release whose ray missed everything must still close out the press it
+    // opened. Returning early here orphaned lastClicked: the node that took
+    // ClickDown never saw ClickUp, so Clicked never fired — and on grab-based
+    // panels the stuck capture kept their input gate shut for the rest of the
+    // session. Deliver the up to lastClicked (empty position, like a
+    // background hit), clear it, and end any drag this ray owns.
+    if (hit == nullptr) {
+        if (clickState == VROEventDelegate::ClickUp && lastClicked != nullptr) {
+            std::vector<float> emptyPos;
+            for (std::shared_ptr<VROEventDelegate> delegate : _delegates) {
+                delegate->onClick(source, lastClicked, clickState, emptyPos);
+            }
+            if (lastClicked->getEventDelegate()) {
+                lastClicked->getEventDelegate()->onClick(source, lastClicked, clickState, emptyPos);
+            }
+            lastClicked = nullptr;
+        }
+        if (clickState == VROEventDelegate::ClickUp) {
+            std::shared_ptr<VRODraggedObject> drag = getDraggedObject(ray);
+            if (drag != nullptr) {
+                endDrag(drag->_source);
+            }
+        }
+        return;
+    }
     std::shared_ptr<VRONode> &lastHovered = sourceAware
         ? _lastHoveredNodesBySource[ray]
         : _lastHoveredNode;
@@ -241,6 +288,18 @@ void VROInputControllerBase::onButtonEvent(int source, VROEventDelegate::ClickSt
             std::shared_ptr<VRONode> other = entry.second->_draggedNode;
             if (isSameOrAncestor(other, draggableNode) || isSameOrAncestor(draggableNode, other)) {
                 return;
+            }
+        }
+
+        // A press on a clickable node inside a draggable one (a button on a
+        // panel) is a click, not a drag: moving the panel under the ray made
+        // the release miss the button, so Clicked never fired.
+        if (focusedNode != nullptr && focusedNode != draggableNode) {
+            for (std::shared_ptr<VRONode> n = focusedNode->getParentNode(); n != nullptr;
+                 n = n->getParentNode()) {
+                if (n == draggableNode) {
+                    return;
+                }
             }
         }
 
@@ -768,8 +827,15 @@ void VROInputControllerBase::processGazeEvent(int source) {
             newNode->getEventDelegate() && !hit->isBackgroundHit()) {
             const VROVector3f position = hit->getLocation();
             auto previous = _canvasHoverPositions.find(source);
-            if (previous == _canvasHoverPositions.end() || position.distance(previous->second) > 0.0001f) {
+            const double now = VROTimeCurrentMillis();
+            auto lastDispatch = _canvasHoverDispatchMillis.find(source);
+            const bool moved = previous == _canvasHoverPositions.end() ||
+                position.distance(previous->second) > kCanvasHoverMinDistance;
+            const bool due = lastDispatch == _canvasHoverDispatchMillis.end() ||
+                now - lastDispatch->second >= kCanvasHoverMinIntervalMillis;
+            if (moved && due) {
                 _canvasHoverPositions[source] = position;
+                _canvasHoverDispatchMillis[source] = now;
                 newNode->getEventDelegate()->onHover(source, newNode, true,
                                                      {position.x, position.y, position.z});
             }
@@ -777,6 +843,7 @@ void VROInputControllerBase::processGazeEvent(int source) {
         return;
     }
     _canvasHoverPositions.erase(source);
+    _canvasHoverDispatchMillis.erase(source);
 
     VROVector3f hitLoc = hit->getLocation();
     std::vector<float> pos = {hitLoc.x, hitLoc.y, hitLoc.z};

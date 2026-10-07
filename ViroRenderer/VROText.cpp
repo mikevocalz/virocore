@@ -358,28 +358,32 @@ void VROText::buildBitmapText(std::wstring &text,
         
         std::shared_ptr<VROGlyph> whitespaceGlyph = firstTypeface->getGlyph(spaceCode, 0, outlineWidth, VROGlyphRenderMode::Bitmap);
         std::shared_ptr<VROGlyphAtlas> whitespaceAtlas = whitespaceGlyph->getBitmap(0).atlas;
-        
-        std::shared_ptr<VROMaterial> whitespaceMaterial = std::make_shared<VROMaterial>();
-        whitespaceMaterial->setNeedsToneMapping(false);
-        whitespaceMaterial->getDiffuse().setColor(color);
-        whitespaceMaterial->getDiffuse().setTexture(whitespaceAtlas->getTexture());
-        whitespaceMaterial->setRenderingOrder(1);
-        
-        std::vector<int> indices;
-        materialMap[whitespaceAtlas] = { whitespaceMaterial, indices };
-        
+
+        if (whitespaceAtlas) {
+            std::shared_ptr<VROMaterial> whitespaceMaterial = std::make_shared<VROMaterial>();
+            whitespaceMaterial->setNeedsToneMapping(false);
+            whitespaceMaterial->getDiffuse().setColor(color);
+            whitespaceMaterial->getDiffuse().setTexture(whitespaceAtlas->getTexture());
+            whitespaceMaterial->setRenderingOrder(1);
+
+            std::vector<int> indices;
+            materialMap[whitespaceAtlas] = { whitespaceMaterial, indices };
+        }
+
         if (outlineWidth > 0) {
             std::shared_ptr<VROGlyphAtlas> whitespaceAtlasOutline = whitespaceGlyph->getBitmap(outlineWidth).atlas;
 
-            std::shared_ptr<VROMaterial> whitespaceMaterialOutline = std::make_shared<VROMaterial>();
-            whitespaceMaterialOutline->setNeedsToneMapping(false);
-            whitespaceMaterialOutline->setWritesToDepthBuffer(false);
-            whitespaceMaterialOutline->getDiffuse().setColor(outlineColor);
-            whitespaceMaterialOutline->getDiffuse().setTexture(whitespaceGlyph->getBitmap(outlineWidth).atlas->getTexture());
-            whitespaceMaterialOutline->setRenderingOrder(0);
+            if (whitespaceAtlasOutline) {
+                std::shared_ptr<VROMaterial> whitespaceMaterialOutline = std::make_shared<VROMaterial>();
+                whitespaceMaterialOutline->setNeedsToneMapping(false);
+                whitespaceMaterialOutline->setWritesToDepthBuffer(false);
+                whitespaceMaterialOutline->getDiffuse().setColor(outlineColor);
+                whitespaceMaterialOutline->getDiffuse().setTexture(whitespaceAtlasOutline->getTexture());
+                whitespaceMaterialOutline->setRenderingOrder(0);
 
-            std::vector<int> indices;
-            materialMap[whitespaceAtlasOutline] = { whitespaceMaterialOutline, indices };
+                std::vector<int> indices;
+                materialMap[whitespaceAtlasOutline] = { whitespaceMaterialOutline, indices };
+            }
         }
         
         glyphMap[spaceCode] = whitespaceGlyph;
@@ -402,7 +406,7 @@ void VROText::buildBitmapText(std::wstring &text,
                 
                 const std::shared_ptr<VROGlyphAtlas> atlas = glyph->getBitmap(0).atlas;
                 auto materialAndIndices = materialMap.find(atlas);
-                if (materialAndIndices == materialMap.end()) {
+                if (atlas && materialAndIndices == materialMap.end()) {
                     std::shared_ptr<VROMaterial> material = std::make_shared<VROMaterial>();
                     material->setNeedsToneMapping(false);
                     material->getDiffuse().setColor(color);
@@ -415,7 +419,7 @@ void VROText::buildBitmapText(std::wstring &text,
                 if (outlineWidth > 0) {
                     const std::shared_ptr<VROGlyphAtlas> atlasOutline = glyph->getBitmap(outlineWidth).atlas;
                     auto materialAndIndices = materialMap.find(atlasOutline);
-                    if (materialAndIndices == materialMap.end()) {
+                    if (atlasOutline && materialAndIndices == materialMap.end()) {
                         std::shared_ptr<VROMaterial> material = std::make_shared<VROMaterial>();
                         material->setNeedsToneMapping(false);
                         material->getDiffuse().setColor(outlineColor);
@@ -446,13 +450,21 @@ void VROText::buildBitmapText(std::wstring &text,
     for (auto &kv : glyphMap) {
         std::shared_ptr<VROGlyph> glyph = kv.second;
         const std::shared_ptr<VROGlyphAtlas> &atlas = glyph->getBitmap(0).atlas;
-        std::shared_ptr<VROMaterial> material = materialMap[atlas].first;
-        material->getDiffuse().setTexture(atlas->getTexture());
-        
+        if (atlas) {
+            std::shared_ptr<VROMaterial> material = materialMap[atlas].first;
+            if (material) {
+                material->getDiffuse().setTexture(atlas->getTexture());
+            }
+        }
+
         if (outlineWidth > 0) {
             const std::shared_ptr<VROGlyphAtlas> &atlasOutline = glyph->getBitmap(outlineWidth).atlas;
-            std::shared_ptr<VROMaterial> materialOutline = materialMap[atlasOutline].first;
-            materialOutline->getDiffuse().setTexture(atlasOutline->getTexture());
+            if (atlasOutline) {
+                std::shared_ptr<VROMaterial> materialOutline = materialMap[atlasOutline].first;
+                if (materialOutline) {
+                    materialOutline->getDiffuse().setTexture(atlasOutline->getTexture());
+                }
+            }
         }
     }
     
@@ -462,11 +474,15 @@ void VROText::buildBitmapText(std::wstring &text,
                                      [&var, &materialMap, outlineWidth, outlineOffset] (std::shared_ptr<VROGlyph> &glyph, float x, float y) {
                                          if (outlineWidth > 0) {
                                              const VROGlyphBitmap &bitmap = glyph->getBitmap(outlineWidth);
-                                             buildBitmapChar(bitmap, x, y, outlineOffset, outlineOffset,
-                                                             var, materialMap[bitmap.atlas].second);
+                                             if (bitmap.atlas) {
+                                                 buildBitmapChar(bitmap, x, y, outlineOffset, outlineOffset,
+                                                                 var, materialMap[bitmap.atlas].second);
+                                             }
                                          }
                                          const VROGlyphBitmap &bitmap = glyph->getBitmap(0);
-                                         buildBitmapChar(bitmap, x, y, 0, 0, var, materialMap[bitmap.atlas].second);
+                                         if (bitmap.atlas) {
+                                             buildBitmapChar(bitmap, x, y, 0, 0, var, materialMap[bitmap.atlas].second);
+                                         }
                                      });
 
     // If no text geometry was constructed as a result of text formatting, return to prevent
