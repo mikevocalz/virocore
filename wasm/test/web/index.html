@@ -40,9 +40,18 @@
           // Passing `canvas` sets Module.canvas so emscripten's GL layer can
           // find the target; we also pass the selector to initViroScene.
           const mod = await ViroWeb({ canvas });
+          window.__viro = mod; // expose for inspection
           status.textContent = "module ready — starting render loop";
           mod.initViroScene("#viroCanvas", w, h);
-          mod.viroBuildDemoCube();
+          // Build the lit demo cube on the CLEAN (non-AR) render path.
+          // Do NOT call viroInitAR: AR mode composites a blank (no web camera)
+          // background and uses device projection, which hides the scene.
+          if (typeof mod.viroBuildDemoCube === "function") {
+            mod.viroBuildDemoCube();
+            window.__hasBuildCube = true;
+          } else {
+            window.__hasBuildCube = false;
+          }
           status.textContent = "rendering (spinning cube)";
           // Exposed so smoke tests can drive destroyViroScene/re-init without
           // a second module instance.
