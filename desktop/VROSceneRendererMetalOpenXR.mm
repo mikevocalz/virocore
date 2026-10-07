@@ -20,6 +20,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "VROPassthroughXR.h"
+#include "VROSimSceneContent.h"
 
 #import <Metal/Metal.h>
 #import <AppKit/AppKit.h>
@@ -256,8 +257,10 @@ struct VROSceneRendererMetalOpenXR::Impl {
         std::shared_ptr<VROScene> scene = _sceneController->getScene();
 
         std::shared_ptr<VROMaterial> material = std::make_shared<VROMaterial>();
-        material->setLightingModel(VROLightingModel::Constant);
-        material->getDiffuse().setColor(VROVector4f(0.15f, 0.65f, 1.0f, 1.0f));
+        // Lit and textured, so captures cover texture sampling and lighting.
+        material->setLightingModel(VROLightingModel::Lambert);
+        material->getDiffuse().setTexture(VROSimMakeCheckerTexture(256, 8));
+        material->getDiffuse().setColor(VROVector4f(1, 1, 1, 1));
 
         std::shared_ptr<VROBox> box = VROBox::createBox(0.5f, 0.5f, 0.5f);
         box->setMaterials({ material });
@@ -270,6 +273,7 @@ struct VROSceneRendererMetalOpenXR::Impl {
         _boxDelegate = std::make_shared<VROSimBoxDelegate>(material);
         _boxNode->setEventDelegate(_boxDelegate);
         scene->getRootNode()->addChildNode(_boxNode);
+        VROSimAddLights(scene->getRootNode());
 
         _renderer->setSceneController(_sceneController, _driver);
         // Passthrough clears to transparent so the camera feed shows through.

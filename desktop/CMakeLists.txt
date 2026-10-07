@@ -44,6 +44,7 @@ add_executable(viro_sim_host
   main.mm
   VROSceneRendererMetalOpenXR.mm
   VROPassthroughXR.mm
+  VROSimSceneContent.mm
 )
 
 if(VIRO_DESKTOP_SCENE)

@@ -59,7 +59,8 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type,
     int bytesPerPixel;
     switch (format) {
         case VROTextureFormat::RGBA8:
-            pixelFormat = MTLPixelFormatRGBA8Unorm;
+            // sRGB data decodes to linear on sample, matching the GL path.
+            pixelFormat = sRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
             bytesPerPixel = 4;
             break;
         case VROTextureFormat::R8:

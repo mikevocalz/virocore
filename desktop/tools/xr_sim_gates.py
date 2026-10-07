@@ -173,6 +173,15 @@ def run(profile, transport, op_ok, workdir):
             for e, img in eyes.items():
                 if img:
                     img.save(os.path.join(workdir, f"{profile.replace(' ', '_')}-{transport}-{e}.png"))
+            # The box carries an orange/white checker; an untextured material
+            # renders one flat color and fails this.
+            left = eyes["left"]
+            if left:
+                px = list(left.getdata())
+                orange = sum(1 for r, g, b in px if r > 150 and 60 < g < 160 and b < 90)
+                white = sum(1 for r, g, b in px if r > 170 and g > 170 and b > 170)
+                check("diffuse texture sampled (checker visible)", orange > 2000 and white > 2000,
+                      f"orange={orange} white={white}")
             check("Gate C: both eyes non-black",
                   all(n > 1000 for n, _ in stats.values()),
                   " ".join(f"{e}={n}" for e, (n, _) in stats.items()))

@@ -52,7 +52,21 @@ enum class VROEyeType;
 struct VROMetalViewUniforms {
     float modelview_projection[16];
     float normal_matrix[16];
+    float model_matrix[16];
 };
+
+/*
+ One scene light in world space. color_type.rgb is color * intensity / 1000
+ (Viro's 1000 = unit intensity) and .w is the VROLightType. Must match
+ VROMetalLight in the MSL source.
+ */
+struct VROMetalLight {
+    float color_type[4];
+    float direction[4];
+    float position[4];
+};
+
+static const int kVROMetalMaxLights = 8;
 
 /*
  Uniform block consumed by the fragment functions (bound at fragment buffer
@@ -61,7 +75,10 @@ struct VROMetalViewUniforms {
 struct VROMetalMaterialUniforms {
     float diffuse_color[4];
     float opacity;
-    float _pad[3];
+    float lit;                  // 0 for VROLightingModel::Constant
+    float has_diffuse_texture;
+    float light_count;
+    VROMetalLight lights[kVROMetalMaxLights];
 };
 
 /*
@@ -81,12 +98,13 @@ enum class VROMetalVertexVariant {
 };
 
 /*
- Metal representation of a VROMaterial (minimal milestone implementation).
+ Metal representation of a VROMaterial.
 
- Supported: a single "constant" pipeline — per-vertex hemisphere shading over
- the material's diffuse color and the node's opacity. Lighting models other
- than VROLightingModelConstant, all textures, shader modifiers, and dynamic
- uniforms are currently skipped WITH a logged warning (no silent no-ops).
+ Supported: diffuse color and diffuse texture; Constant (unlit) and diffuse
+ lighting from up to kVROMetalMaxLights scene lights (ambient, directional,
+ omni, spot), with Lambert, Blinn and Phong all shaded as Lambert. Specular,
+ normal maps, PBR, shader modifiers and dynamic uniforms are skipped WITH a
+ logged warning (no silent no-ops).
  */
 class VROMaterialSubstrateMetal : public VROMaterialSubstrate {
 
@@ -132,12 +150,16 @@ public:
         return _materialUniforms;
     }
 
-    /*
-     Textures: always empty in the minimal implementation (kept so callers
-     written against the old API still compile).
-     */
     const std::vector<std::shared_ptr<VROTexture>> &getTextures() const {
         return _textures;
+    }
+
+    /*
+     Diffuse texture resolved by the last bindProperties(), or nil. The
+     geometry substrate binds it at fragment texture index 0.
+     */
+    id <MTLTexture> getDiffuseTexture() const {
+        return _diffuseTexture;
     }
 
 private:
@@ -152,6 +174,7 @@ private:
     VROMetalMaterialUniforms _materialUniforms;
 
     std::vector<std::shared_ptr<VROTexture>> _textures;
+    id <MTLTexture> _diffuseTexture;
 
     // Log-once guards so unsupported features are surfaced, not silently dropped.
     bool _warnedLightingModel;
