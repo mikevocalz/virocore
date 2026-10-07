@@ -8,6 +8,14 @@ size. This checks ELF headers, not APK ZIP offsets: also run
 Usage: python3 verify-16kb-alignment.py artifact [artifact ...] [--abi arm64-v8a]
 Exit 0: every selected library passed; 1: invalid, missing, or under-aligned
 libraries; 2: argument error. No third-party dependencies.
+
+This file exists byte-identically in two repositories: mikevocalz/virocore and
+mikevocalz/expo-pico, both at scripts/verify-16kb-alignment.py, with its test
+alongside it. There is no shared source and no package — a change to one is only
+in the other if someone copies it. The alignment check gates release artifacts
+in both, so the copies drifting apart means one repo silently stops enforcing
+what the other does. Change both, or neither. test_verify_16kb_alignment.py
+asserts they still match.
 """
 import argparse
 import struct
@@ -50,8 +58,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--allow", action="append", default=[], metavar="BASENAME",
         help="Library basename permitted to be under-aligned, repeatable. Reported "
-             "as ALLOW and excluded from the exit code. An --allow that nothing "
-             "matches is an error so the list cannot silently rot.")
+             "as ALLOW and excluded from the exit code. For third-party binaries "
+             "you cannot rebuild; every entry needs a reason at the call site. An "
+             "--allow that nothing matches is an error, so the list cannot rot.")
     args = parser.parse_args(argv)
     if args.min_align < 1 or args.min_align & (args.min_align - 1):
         parser.error("--min-align must be a positive power of two")
@@ -83,6 +92,10 @@ def main(argv=None) -> int:
                 check(artifact, Path(artifact).read_bytes())
             else:
                 with zipfile.ZipFile(artifact) as archive:
+                    # infolist(), not namelist(): a zip may carry several members
+                    # under one name, and read(name) resolves through NameToInfo,
+                    # which keeps only the last. Reading each ZipInfo checks every
+                    # member, so a stale .so shadowed by a good one cannot pass.
                     entries = [i for i in archive.infolist() if i.filename.endswith(".so") and
                                any(part in (args.abi, f"android.{args.abi}")
                                    for part in i.filename.split("/"))]
@@ -93,12 +106,14 @@ def main(argv=None) -> int:
         except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
             failures += 1
             print(f"FAIL  {artifact}: {error}")
-
     summary = f"Checked {checked} libraries; {failures} failure(s)"
     if allowed:
         summary += f"; {len(allowed)} allowed ({', '.join(sorted(allowed))})"
     print(summary + ".")
 
+    # An --allow that matched nothing is itself a failure. Either the library was
+    # rebuilt and the entry should go, or its name changed and the allowance is
+    # now silently covering a different file. Both need a human.
     stale = [name for name in dict.fromkeys(args.allow) if name not in allowed]
     if stale:
         print(f"FAIL  unused --allow: {', '.join(stale)} matched no under-aligned "

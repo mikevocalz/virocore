@@ -126,3 +126,7 @@ ios/fastlane/README.md
 
 # Local WASM migration notes (not tracked)
 wasm/MIGRATION.md
+
+# Python bytecode (scripts/test_verify_16kb_alignment.py, desktop/tools)
+__pycache__/
+*.pyc
