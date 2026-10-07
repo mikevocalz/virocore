@@ -14,16 +14,13 @@ A black simulator viewport must therefore be classified across three independent
 
 A Vulkan backend removes the known GLES incompatibility, but it does **not** by itself prove visible simulator output.
 
-## Reproduced accepted-but-black case
+## Reproduced accepted-but-black case — resolved
 
-A live simulator probe has already exercised the intended Vulkan path with `XR_KHR_vulkan_enable2`, runtime-mediated Vulkan instance/device creation, a 1680×1760×3 swapchain, RUNNING→FOCUSED session state, `shouldRender=true`, OPAQUE blend mode, and a projection layer accepted at approximately 60 fps.
+A live simulator probe exercised the intended Vulkan path with `XR_KHR_vulkan_enable2`, runtime-mediated Vulkan instance/device creation, a 1680×1760×3 swapchain, RUNNING→FOCUSED session state, `shouldRender=true`, and a projection layer accepted at approximately 60 fps — while all compositor outputs remained black (operator `openxr_capture_composited_image`, in-process debug eye viewport, and RemoteFrameObservation frontend stream). The Metal path reproduced the same signature with a verified-magenta swapchain texture.
 
-Despite that, all observed compositor outputs remained black:
-- Meta XR Operator MCP `openxr_capture_composited_image`: 840×880 PNG, zero non-black pixels;
-- in-process debug eye viewport: black;
-- standalone MetaXRSimulator RemoteFrameObservation viewport: black.
+**The cause was app-side, not a simulator compositor defect.** The probe populated `XrCompositionLayerProjectionView.pose` and `.fov` with fabricated constants (identity pose, hard-coded FOV). Meta XR Simulator silently discards projection views whose pose/FOV were not produced by `xrLocateViews` for the frame's `predictedDisplayTime` — the layer is *accepted*, `layer list` reports it, `shouldRender` is true, and nothing in the API surface warns that the views were dropped. After switching to located views, composited output immediately produced the expected magenta on both Vulkan and Metal paths under default config (`gpu_handle` transport, compositor enabled, interop active). Earlier `jpg`/`disable_interop`/`disable_compositor` toggles were all red herrings.
 
-A Metal probe additionally verified that the swapchain texture itself contained magenta pixels while composited capture remained black. This demonstrates that “projection layer accepted” and “rendered pixels visible in compositor output” are separate gates.
+So the Vulkan host path is necessary **and** sufficient for this simulator — provided view poses are located, not fabricated.
 
 ## Required architecture
 
@@ -42,7 +39,7 @@ Add a host simulator path:
 - Enumerate runtime swapchain formats and select a supported color format rather than assuming the Quest GLES sRGB format.
 - Allocate one projection swapchain per view initially; multiview optimization can follow after correctness.
 - Enforce acquire -> wait -> render -> release for every submitted image.
-- Submit a projection layer only when view pose/orientation are valid and `shouldRender` is true.
+- Submit a projection layer only when `shouldRender` is true, and populate every `XrCompositionLayerProjectionView.pose` and `.fov` from `xrLocateViews` at that frame's `predictedDisplayTime`. Fabricated view poses are silently discarded by this runtime — the layer is accepted but never composited, producing black output that looks exactly like a compositor failure.
 - Keep passthrough/environment blend behavior capability-driven.
 
 ## Black-frame diagnostic gates
@@ -60,17 +57,20 @@ Do not assume `vkCmdClearColorImage` worked: if the runtime did not grant `TRANS
 
 ### Gate B — the runtime accepted the projection layer
 
-5. release the rendered image;
-6. submit `XrCompositionLayerProjection`;
-7. assert successful frame completion, advancing frames/FPS, valid views, `shouldRender=true`, and that the simulator layer inspector reports the expected projection layer.
+5. call `xrLocateViews` with the frame's `predictedDisplayTime` and copy the returned `pose`/`fov` into every submitted projection view — never fabricate them;
+6. release the rendered image;
+7. submit `XrCompositionLayerProjection`;
+8. assert successful frame completion, advancing frames/FPS, `shouldRender=true`, and that the simulator layer inspector reports the expected projection layer.
 
-This gate is necessary but **not sufficient**.
+This gate is necessary but **not sufficient** — and it can pass while views are being silently discarded. An accepted projection layer with fabricated poses is the known false-positive for this gate: the layer inspector reports it and `xrEndFrame` succeeds, but the compositor never samples the swapchain.
 
 ### Gate C — the compositor produced visible pixels
 
-8. capture the composited simulator output using Meta XR Operator `openxr_capture_composited_image` or `XR_METAX1_simulator_compositor_output_capture`;
-9. run a pixel assertion over the captured image and require a non-black/non-zero result matching the smoke-test color/triangle;
-10. compare that result with the in-process eye/debug viewport and RemoteFrameObservation output.
+9. capture the composited simulator output using Meta XR Operator `openxr_capture_composited_image` or `XR_METAX1_simulator_compositor_output_capture`;
+10. run a pixel assertion over the captured image and require a non-black/non-zero result matching the smoke-test color/triangle;
+11. compare that result with the in-process eye/debug viewport and RemoteFrameObservation output.
+
+Proven working on this simulator: with located views, `openxr_capture_composited_image` returns the submitted swapchain content (840×880 capture of a magenta-cleared 1680×1760 swapchain, all pixels `ff00ff`) on both Vulkan and Metal paths.
 
 The smoke test passes only when **A + B + C** pass. A layer appearing in the Graphics panel alone is not a success condition.
 
@@ -82,6 +82,7 @@ Accordingly:
 - Gate A independently proves whether rendered pixels reached the application's acquired swapchain image.
 - Gate B proves whether the runtime accepted the submitted projection layer.
 - Gate C proves whether the simulator's observable compositor/capture path exposes those pixels.
+- Before classifying a Gate C failure as compositor-side, verify Gate B's view-pose requirement: this runtime silently drops projection views whose pose/FOV were not produced by `xrLocateViews`, and that discard is indistinguishable from a compositor defect at the capture layer.
 - Unanimous black Gate C results do **not**, by themselves, prove that a physical HMD would display black.
 
 When possible, validate the same minimal scene on physical hardware before classifying an accepted-but-black simulator result as a renderer defect. Preserve the A/B/C evidence separately so a simulator capture defect cannot be mistaken for a Viro rendering failure.
