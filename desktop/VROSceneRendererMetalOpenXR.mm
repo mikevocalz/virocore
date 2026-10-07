@@ -68,70 +68,9 @@ namespace {
         }                                                                      \
     } while (0)
 
-PFN_xrVoidFunction xrExt(XrInstance inst, const char *name) {
-    PFN_xrVoidFunction fn = nullptr;
-    xrGetInstanceProcAddr(inst, name, &fn);
-    return fn;
-}
-
-// ---- Optional XR_EXT_hand_tracking -------------------------------------------
-// The sim's operator layer flags sessions that never observe tracking state;
-// every step is guarded so unsupported runtimes degrade silently.
-
-struct HandTrackers {
-    PFN_xrLocateHandJointsEXT locate = nullptr;
-    PFN_xrDestroyHandTrackerEXT destroy = nullptr;
-    XrHandTrackerEXT left = XR_NULL_HANDLE;
-    XrHandTrackerEXT right = XR_NULL_HANDLE;
-    bool ok = false;
-};
-
-void handTrackersInit(HandTrackers &ht, XrInstance instance, XrSession session,
-                      bool extEnabled) {
-    if (!extEnabled) { std::puts("hand_tracking ext: absent"); return; }
-    std::puts("hand_tracking ext: enabled");
-    auto create = (PFN_xrCreateHandTrackerEXT)xrExt(instance, "xrCreateHandTrackerEXT");
-    ht.destroy = (PFN_xrDestroyHandTrackerEXT)xrExt(instance, "xrDestroyHandTrackerEXT");
-    ht.locate = (PFN_xrLocateHandJointsEXT)xrExt(instance, "xrLocateHandJointsEXT");
-    if (!create || !ht.destroy || !ht.locate) {
-        std::puts("hand_tracking: entry points missing");
-        return;
-    }
-    XrHandTrackerCreateInfoEXT ci{XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
-    ci.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
-    ci.hand = XR_HAND_LEFT_EXT;
-    XrResult rl = create(session, &ci, &ht.left);
-    ci.hand = XR_HAND_RIGHT_EXT;
-    XrResult rr = create(session, &ci, &ht.right);
-    ht.ok = XR_SUCCEEDED(rl) || XR_SUCCEEDED(rr);
-    std::printf("hand trackers: L=%d R=%d\n", (int)rl, (int)rr);
-}
-
-void handTrackersPoll(const HandTrackers &ht, XrSpace space, XrTime time) {
-    if (!ht.ok) return;
-    int active[2] = {-1, -1};
-    XrHandJointLocationEXT joints[XR_HAND_JOINT_COUNT_EXT];
-    XrHandTrackerEXT t[2] = {ht.left, ht.right};
-    for (int h = 0; h < 2; ++h) {
-        if (t[h] == XR_NULL_HANDLE) continue;
-        XrHandJointsLocateInfoEXT li{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
-        li.baseSpace = space;
-        li.time = time;
-        XrHandJointLocationsEXT loc{XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
-        loc.jointCount = XR_HAND_JOINT_COUNT_EXT;
-        loc.jointLocations = joints;
-        if (XR_SUCCEEDED(ht.locate(t[h], &li, &loc))) active[h] = loc.isActive ? 1 : 0;
-    }
-    std::printf("hand L active=%d R active=%d\n", active[0], active[1]);
-}
-
-void handTrackersDestroy(HandTrackers &ht) {
-    if (ht.destroy) {
-        if (ht.left != XR_NULL_HANDLE) ht.destroy(ht.left);
-        if (ht.right != XR_NULL_HANDLE) ht.destroy(ht.right);
-    }
-    ht = HandTrackers{};
-}
+// Hand tracking, gaze and pinch live in VROInputControllerXR — see
+// desktop/VROInputControllerXR.mm. The session/renderer code here only feeds
+// it session state + predicted display time.
 
 // ---- Minimal Metal draw ------------------------------------------------------
 // One vertex format for both render modes: interleaved position+color, plus a
@@ -212,6 +151,37 @@ VROMatrix4f xrFovToProjectionMetal(const XrFovf &fov,
     m[14] =  qn;
     return VROMatrix4f(m);
 }
+
+// Scene-side of the input milestone: a Viro event delegate on the box node
+// that toggles the material diffuse color blue <-> orange on ClickDown
+// (a pinch landed while the pointer ray hit the box). Hover transitions are
+// logged so the gaze hit-test path is observable in the run log.
+class VROSimBoxDelegate : public VROEventDelegate {
+public:
+    VROSimBoxDelegate(std::shared_ptr<VROMaterial> material) :
+        _material(material) {
+        setEnabledEvent(VROEventDelegate::EventAction::OnClick, true);
+        setEnabledEvent(VROEventDelegate::EventAction::OnHover, true);
+    }
+    void onClick(int source, std::shared_ptr<VRONode> node,
+                 ClickState clickState, std::vector<float> position) override {
+        if (clickState == ClickState::ClickDown) {
+            _orange = !_orange;
+            _material->getDiffuse().setColor(
+                _orange ? VROVector4f(1.0f, 0.55f, 0.05f, 1.0f)
+                        : VROVector4f(0.15f, 0.65f, 1.0f, 1.0f));
+            std::printf("input-xr: BOX CLICK -> %s\n",
+                        _orange ? "ORANGE" : "BLUE");
+        }
+    }
+    void onHover(int source, std::shared_ptr<VRONode> node, bool isHovering,
+                 std::vector<float> position) override {
+        std::printf("input-xr: box hover %s\n", isHovering ? "ENTER" : "EXIT");
+    }
+private:
+    std::shared_ptr<VROMaterial> _material;
+    bool _orange = false;
+};
 #endif
 
 } // namespace
@@ -224,7 +194,6 @@ struct VROSceneRendererMetalOpenXR::Impl {
     XrSession session = XR_NULL_HANDLE;
     XrSpace stageSpace = XR_NULL_HANDLE;
     XrEnvironmentBlendMode blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    HandTrackers hands;
 
     struct EyeSwapchain {
         XrSwapchain handle = XR_NULL_HANDLE;
@@ -257,6 +226,8 @@ struct VROSceneRendererMetalOpenXR::Impl {
     std::shared_ptr<VROInputControllerXR> _inputController;
     std::shared_ptr<VROSceneController> _sceneController;
     std::shared_ptr<VRONode> _boxNode;
+    // VRONode holds its event delegate weakly; this keeps it alive.
+    std::shared_ptr<VROEventDelegate> _boxDelegate;
 
     bool buildViroRendererScene() {
         _driver = std::make_shared<VRODriverMetalOpenXR>(device, queue);
@@ -285,9 +256,18 @@ struct VROSceneRendererMetalOpenXR::Impl {
         _boxNode = std::make_shared<VRONode>();
         _boxNode->setGeometry(box);
         _boxNode->setPosition(VROVector3f(0, 0, -1.5f));
+        // Click (pinch-while-gazing) toggles diffuse color — the visible
+        // scene response for the input milestone.
+        _boxDelegate = std::make_shared<VROSimBoxDelegate>(material);
+        _boxNode->setEventDelegate(_boxDelegate);
         scene->getRootNode()->addChildNode(_boxNode);
 
         _renderer->setSceneController(_sceneController, _driver);
+
+        // Attach happens while the session is still IDLE (spec requirement
+        // for xrAttachSessionActionSets): action set + eye-gaze binding +
+        // pinch bindings + gaze action space + hand trackers.
+        _inputController->bindXR(instance, session, stageSpace);
 
         // Per-eye depth targets (the swapchain supplies color only).
         for (uint32_t v = 0; v < eyes.size() && v < 8; ++v) {
@@ -344,9 +324,6 @@ struct VROSceneRendererMetalOpenXR::Impl {
             std::printf("ext %s: %s\n", w, found ? "yes" : "NO");
             if (found) enabled.push_back(w);
         }
-        bool handExtEnabled = false;
-        for (auto *e : enabled)
-            if (!std::strcmp(e, XR_EXT_HAND_TRACKING_EXTENSION_NAME)) handExtEnabled = true;
 
         XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
         std::strcpy(createInfo.applicationInfo.applicationName, "viro-sim-host");
@@ -397,8 +374,6 @@ struct VROSceneRendererMetalOpenXR::Impl {
         sessionInfo.next = &binding;
         XR_CHECK(xrCreateSession(instance, &sessionInfo, &session));
         std::puts("session created (Metal-bound)");
-
-        handTrackersInit(hands, instance, session, handExtEnabled);
 
         // Blend modes: a see-through glasses profile may not support OPAQUE;
         // take the runtime's preferred (first) mode.
@@ -636,6 +611,10 @@ struct VROSceneRendererMetalOpenXR::Impl {
                 if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
                     auto *sc = (XrEventDataSessionStateChanged *)&ev;
                     std::printf("session state -> %d\n", (int)sc->state);
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+                    // The input controller gates xrSyncActions on FOCUSED.
+                    if (_inputController) _inputController->setSessionState(sc->state);
+#endif
                     if (sc->state == XR_SESSION_STATE_READY && !running) {
                         xrBeginSession(session, &beginInfo);
                         running = true;
@@ -693,10 +672,11 @@ struct VROSceneRendererMetalOpenXR::Impl {
 #endif
                     }
                 }
-                if (frames % 60 == 0)
-                    handTrackersPoll(hands, stageSpace, frameState.predictedDisplayTime);
-
 #if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+                // Hand the frame's predicted display time to the input
+                // controller; prepareFrame() -> onProcess(camera) then uses
+                // it for xrSyncActions/xrLocateSpace/xrLocateHandJointsEXT.
+                _inputController->setFrameTime(frameState.predictedDisplayTime);
                 if (viewsValid) {
                     prepareViroFrame();
                 }
@@ -801,10 +781,14 @@ struct VROSceneRendererMetalOpenXR::Impl {
     }
 
     void teardown() {
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+        // Input controller owns hand trackers, the gaze action space and the
+        // action set — all session-scoped, so shut down before xrDestroySession.
+        if (_inputController) _inputController->shutdownXR();
+#endif
         for (auto &e : eyes)
             if (e.handle != XR_NULL_HANDLE) xrDestroySwapchain(e.handle);
         eyes.clear();
-        handTrackersDestroy(hands);
         if (stageSpace != XR_NULL_HANDLE) xrDestroySpace(stageSpace);
         if (session != XR_NULL_HANDLE) xrDestroySession(session);
         if (instance != XR_NULL_HANDLE) xrDestroyInstance(instance);
