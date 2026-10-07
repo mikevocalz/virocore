@@ -84,7 +84,9 @@ void VROVectorizer::processContours(unsigned short bezierSteps) {
 
     for(int i = 0; i < ftContourCount; ++i) {
         FT_Vector *pointList = &outline.points[startIndex];
-        char *tagList = &outline.tags[startIndex];
+        // FT_Outline::tags is char in freetype < 2.13 and unsigned char after.
+        // VROContour reads the tag bits only, so either signedness is fine.
+        char *tagList = reinterpret_cast<char *>(&outline.tags[startIndex]);
 
         endIndex = outline.contours[i];
         contourLength =  (endIndex - startIndex) + 1;

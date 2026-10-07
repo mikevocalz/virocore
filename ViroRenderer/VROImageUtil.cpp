@@ -115,10 +115,31 @@ void initPointCloudTexture() {
 
 #include "VROImageMacOS.h"
 
+// A 1x1 opaque white image. Used when the ViroKit bundle is absent, as it is
+// for the standalone desktop OpenXR host (desktop/), which links the renderer
+// sources directly.
+static NSImage *VROMakeBlankImageMacOS() {
+    unsigned char pixel[4] = { 255, 255, 255, 255 };
+    unsigned char *planes = pixel;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:&planes
+                      pixelsWide:1 pixelsHigh:1
+                   bitsPerSample:8 samplesPerPixel:4
+                        hasAlpha:YES isPlanar:NO
+                  colorSpaceName:NSCalibratedRGBColorSpace
+                     bytesPerRow:4 bitsPerPixel:32];
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
+    [image addRepresentation:rep];
+    return image;
+}
+
 void initBlankTexture(const VRORenderContext &context) {
     NSBundle *bundle = [NSBundle bundleWithIdentifier:@"com.viro.ViroKit"];
     NSString *path = [bundle pathForResource:@"blank" ofType:@"png"];
-    NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
+    NSImage *image = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+    if (!image) {
+        image = VROMakeBlankImageMacOS();
+    }
 
     std::shared_ptr<VROImage> wrapper = std::make_shared<VROImageMacOS>(image, VROTextureInternalFormat::RGBA8);
     staticBlankTexture = std::make_shared<VROTexture>(true, VROMipmapMode::None, wrapper);

@@ -13,7 +13,9 @@
 // VRODefines.h must precede the platform guard so VRO_PLATFORM_VISION is defined.
 #include "VRODefines.h"
 
-#if VRO_PLATFORM_VISION
+// The desktop OpenXR host (desktop/) builds the same Metal stack on macOS and
+// needs these implementations too. iOS never compiles this file.
+#if VRO_PLATFORM_VISION || (VRO_PLATFORM_MACOS && VRO_METAL)
 
 // ── IBL / Shadow preprocesses ─────────────────────────────────────────────────
 
@@ -975,4 +977,4 @@ void VROARShadow::remove(std::shared_ptr<VROMaterial> material) {}
 // and stubbing it left visionOS with no aim indicator at all, which made the head-through-hand
 // ray impossible to use because nothing showed where it pointed.
 
-#endif  // VRO_PLATFORM_VISION
+#endif  // VRO_PLATFORM_VISION || (VRO_PLATFORM_MACOS && VRO_METAL)
