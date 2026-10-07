@@ -74,6 +74,18 @@ This gate is necessary but **not sufficient**.
 
 The smoke test passes only when **A + B + C** pass. A layer appearing in the Graphics panel alone is not a success condition.
 
+### Gate C interpretation caveat
+
+Treat the available simulator-side Gate C readers as correlated observations, not guaranteed independent proof of final display output. Meta XR Operator composited capture, the in-process debug eye viewport, and the RemoteFrameObservation frontend stream may share compositor/readback infrastructure and can therefore fail together if that observation path is stale, disconnected, or sampling a different image.
+
+Accordingly:
+- Gate A independently proves whether rendered pixels reached the application's acquired swapchain image.
+- Gate B proves whether the runtime accepted the submitted projection layer.
+- Gate C proves whether the simulator's observable compositor/capture path exposes those pixels.
+- Unanimous black Gate C results do **not**, by themselves, prove that a physical HMD would display black.
+
+When possible, validate the same minimal scene on physical hardware before classifying an accepted-but-black simulator result as a renderer defect. Preserve the A/B/C evidence separately so a simulator capture defect cannot be mistaken for a Viro rendering failure.
+
 When GPU interop/capture is suspected, also test the simulator session texture transport configuration in both `gpu_handle` and `jpg`/CPU-copy modes. Record whether the failure follows the GPU-handle path or remains black in CPU-copy transport.
 
 Only after these gates pass should Viro scene rendering be blamed or enabled as the next diagnostic layer.
