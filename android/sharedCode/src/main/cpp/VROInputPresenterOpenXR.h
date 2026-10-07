@@ -21,6 +21,7 @@
 #ifndef ANDROID_VROINPUTPRESENTEROPENXR_H
 #define ANDROID_VROINPUTPRESENTEROPENXR_H
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -108,38 +109,15 @@ public:
 
     }
 
-    /**
-     * Load the bundled neutral controller GLB once and create a hidden per-hand
-     * node for each controller source, parented to the presenter root. The mesh
-     * is X-symmetric (grip + ring tilt only about the X axis), so both hands use
-     * it as-authored with no left/right mirror. Async: the geometry populates
-     * each node a few frames after this returns; the nodes exist immediately so
-     * updateControllerMesh() can position/hide them meanwhile.
+    /*
+     * Create one hidden node per controller source, parented to the presenter
+     * root. No geometry yet: VROInputControllerOpenXR decides per hand whether
+     * the runtime supplies a render model (XR_FB_render_model on Meta Quest) or
+     * the fallback GLB is used, then calls loadControllerMeshFile().
      */
-    // Resolve the GLB for a controller source. Prefer the REAL model the PICO
-    // runtime itself renders — shipped in the system image, world-readable, and
-    // authored per hand (left/right are distinct files, so no mirror). Fall back
-    // to the bundled neutral GLB on Quest, older PICO models, or if the read is
-    // denied.
-    //
-    // ponytail: hardcoded PICO 4 Ultra ("sparrow") path — the shortest route to the
-    // correct model on this device. The portable upgrade is XR_EXT_render_model /
-    // XR_EXT_interaction_render_model, which the PICO runtime implements: ask it for
-    // the model bytes per interaction profile instead of knowing the file layout.
-    static std::string controllerGlbPath(int source) {
-        const char *real = (source == ViroOculus::LeftController)
-            ? "/system/media/PvrRes/controller/PICO4U/o_com_sparrow_left_01.glb"
-            : "/system/media/PvrRes/controller/PICO4U/o_com_sparrow_right_01.glb";
-        if (access(real, R_OK) == 0) {
-            return std::string(real);
-        }
-        return VROPlatformCopyAssetToFile("controller_neutral.glb");
-    }
-
-    void loadControllerMesh(std::shared_ptr<VRODriver> driver) {
-        if (!driver || _meshLoadStarted) return;
-        _meshLoadStarted = true;
-
+    void createControllerMeshNodes(std::shared_ptr<VRODriver> driver) {
+        if (!driver || !_meshNodes.empty()) return;
+        _driver = driver;
         const int sources[] = { ViroOculus::Controller, ViroOculus::LeftController };
         for (int source : sources) {
             auto node = std::make_shared<VRONode>();
@@ -149,16 +127,61 @@ public:
             node->setIgnoreEventHandling(true);
             _rootNode->addChildNode(node);
             _meshNodes[source] = node;
-
-            std::string glbPath = controllerGlbPath(source);
-            VROGLTFLoader::loadGLTFFromResource(
-                glbPath, {}, VROResourceType::LocalFile, node, /*isGLTFBinary=*/true, driver,
-                [source](std::shared_ptr<VRONode> n, bool success) {
-                    if (!success) {
-                        pwarn("[VROInputOpenXR] controller mesh load failed for source %d", source);
-                    }
-                });
         }
+    }
+
+    /*
+     * GLB used when the runtime has no render model for this controller. Prefers
+     * the model the PICO runtime itself renders (system image, world-readable,
+     * one file per hand), else the bundled neutral GLB.
+     *
+     * ponytail: hardcoded PICO 4 Ultra ("sparrow") path. The portable upgrade is
+     * XR_EXT_render_model / XR_EXT_interaction_render_model, which the PICO
+     * runtime implements.
+     */
+    static std::string fallbackControllerGlbPath(int source) {
+        const char *real = (source == ViroOculus::LeftController)
+            ? "/system/media/PvrRes/controller/PICO4U/o_com_sparrow_left_01.glb"
+            : "/system/media/PvrRes/controller/PICO4U/o_com_sparrow_right_01.glb";
+        if (access(real, R_OK) == 0) {
+            return std::string(real);
+        }
+        return VROPlatformCopyAssetToFile("controller_neutral.glb");
+    }
+
+    /*
+     * Load a binary glTF from a local file into `source`'s controller node. Each
+     * load goes into its own child container that replaces the previous one, so
+     * a superseded load that finishes late lands in a detached node and never
+     * doubles up the model. The model's origin is expected at the grip pose.
+     */
+    void loadControllerMeshFile(int source, const std::string &glbPath,
+                                std::function<void(bool)> onLoaded) {
+        auto it = _meshNodes.find(source);
+        std::shared_ptr<VRODriver> driver = _driver.lock();
+        if (it == _meshNodes.end() || !driver || glbPath.empty()) return;
+
+        for (const auto &child : it->second->getChildNodes()) {
+            child->removeFromParentNode();
+        }
+        auto container = std::make_shared<VRONode>();
+        container->setSelectable(false);
+        container->setIgnoreEventHandling(true);
+        it->second->addChildNode(container);
+
+        VROGLTFLoader::loadGLTFFromResource(
+            glbPath, {}, VROResourceType::LocalFile, container, /*isGLTFBinary=*/true, driver,
+            [source, glbPath, onLoaded](std::shared_ptr<VRONode> n, bool success) {
+                if (!success) {
+                    pwarn("[VROInputOpenXR] controller mesh load failed for source %d (%s)",
+                          source, glbPath.c_str());
+                }
+                if (onLoaded) {
+                    // Parse failures report from a background thread; state
+                    // belongs to the render thread.
+                    VROPlatformDispatchAsyncRenderer([onLoaded, success] { onLoaded(success); });
+                }
+            });
     }
 
     /**
@@ -237,10 +260,10 @@ private:
 
     std::unordered_map<int, Laser> _lasers;
 
-    // Per-hand controller mesh nodes (source id → node). Populated by
-    // loadControllerMesh(); positioned each frame by updateControllerMesh().
+    // Per-hand controller mesh nodes (source id → node). Created by
+    // createControllerMeshNodes(), filled by loadControllerMeshFile(), positioned each frame by updateControllerMesh().
     std::unordered_map<int, std::shared_ptr<VRONode>> _meshNodes;
-    bool _meshLoadStarted = false;
+    std::weak_ptr<VRODriver> _driver;
 };
 
 #endif // ANDROID_VROINPUTPRESENTEROPENXR_H
