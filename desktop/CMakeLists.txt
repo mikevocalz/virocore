@@ -43,6 +43,8 @@ set(VIRO_RENDERER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../ViroRenderer)
 add_executable(viro_sim_host
   main.mm
   VROSceneRendererMetalOpenXR.mm
+  VROPassthroughXR.mm
+  VROSimSceneContent.mm
 )
 
 if(VIRO_DESKTOP_SCENE)

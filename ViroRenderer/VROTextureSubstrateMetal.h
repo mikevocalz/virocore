@@ -47,8 +47,8 @@ enum class VROFilterMode;
 
 /*
  Minimal Metal texture substrate. Uploads 2D RGBA8 data into an MTLTexture;
- all other formats currently produce a null texture with a logged warning
- (sampling a null texture is legal in Metal and returns black).
+ all other formats currently produce a null texture with a logged warning;
+ materials then render their plain diffuse color.
  */
 class VROTextureSubstrateMetal : public VROTextureSubstrate {
 
@@ -66,17 +66,25 @@ public:
                              VRODriverMetal &driver);
     virtual ~VROTextureSubstrateMetal();
 
-    void updateWrapMode(VROWrapMode wrapModeS, VROWrapMode wrapModeT) override {
-        // Wrap modes are baked into sampler states in Metal; no-op for now.
-    }
+    void updateWrapMode(VROWrapMode wrapModeS, VROWrapMode wrapModeT) override;
 
     id <MTLTexture> getTexture() const {
         return _texture;
     }
+    // Sampler built from the texture's wrap and filter modes.
+    id <MTLSamplerState> getSampler() const {
+        return _sampler;
+    }
 
 private:
 
+    void buildSampler(VROWrapMode wrapS, VROWrapMode wrapT);
+
     id <MTLTexture> _texture;
+    id <MTLSamplerState> _sampler;
+    id <MTLDevice> _device;
+    VROFilterMode _minFilter;
+    VROFilterMode _magFilter;
 
 };
 

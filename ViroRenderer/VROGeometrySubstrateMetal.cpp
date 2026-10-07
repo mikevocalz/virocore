@@ -435,6 +435,8 @@ void VROGeometrySubstrateMetal::renderElement(const VROGeometry &geometry,
     [encoder setFragmentBytes:&substrate->getMaterialUniforms()
                        length:sizeof(VROMetalMaterialUniforms)
                       atIndex:0];
+    [encoder setFragmentTexture:substrate->getDiffuseTexture() atIndex:0];
+    [encoder setFragmentSamplerState:substrate->getDiffuseSampler() atIndex:0];
 
     [encoder drawIndexedPrimitives:element.primitiveType
                         indexCount:element.indexCount

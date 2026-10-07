@@ -44,10 +44,15 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type,
                                                  VROFilterMode minFilter, VROFilterMode magFilter,
                                                  VROFilterMode mipFilter,
                                                  VRODriverMetal &driver) :
-    _texture(nil) {
+    _texture(nil),
+    _sampler(nil),
+    _device(driver.getDevice()),
+    _minFilter(minFilter),
+    _magFilter(magFilter) {
+    buildSampler(wrapS, wrapT);
     if (type != VROTextureType::Texture2D || data.empty() || data[0] == nullptr) {
         pwarn("VROTextureSubstrateMetal: only flat 2D textures with data are supported "
-              "(type %d, images %zu) — texture will sample black", (int)type, data.size());
+              "(type %d, images %zu) — material renders its diffuse color", (int)type, data.size());
         return;
     }
     if (width <= 0 || height <= 0) {
@@ -59,7 +64,8 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type,
     int bytesPerPixel;
     switch (format) {
         case VROTextureFormat::RGBA8:
-            pixelFormat = MTLPixelFormatRGBA8Unorm;
+            // sRGB data decodes to linear on sample, matching the GL path.
+            pixelFormat = sRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
             bytesPerPixel = 4;
             break;
         case VROTextureFormat::R8:
@@ -71,7 +77,7 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type,
             bytesPerPixel = 4;
             break;
         default:
-            pwarn("VROTextureSubstrateMetal: unsupported texture format %d — texture will sample black",
+            pwarn("VROTextureSubstrateMetal: unsupported texture format %d — material renders its diffuse color",
                   (int)format);
             return;
     }
@@ -95,6 +101,36 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type,
 
 VROTextureSubstrateMetal::~VROTextureSubstrateMetal() {
     _texture = nil;
+    _sampler = nil;
+}
+
+static MTLSamplerAddressMode toMTLAddressMode(VROWrapMode mode) {
+    switch (mode) {
+        case VROWrapMode::Clamp:         return MTLSamplerAddressModeClampToEdge;
+        case VROWrapMode::Repeat:        return MTLSamplerAddressModeRepeat;
+        case VROWrapMode::ClampToBorder: return MTLSamplerAddressModeClampToZero;
+        case VROWrapMode::Mirror:        return MTLSamplerAddressModeMirrorRepeat;
+    }
+    return MTLSamplerAddressModeClampToEdge;
+}
+
+static MTLSamplerMinMagFilter toMTLFilter(VROFilterMode mode) {
+    return mode == VROFilterMode::Nearest ? MTLSamplerMinMagFilterNearest
+                                          : MTLSamplerMinMagFilterLinear;
+}
+
+void VROTextureSubstrateMetal::buildSampler(VROWrapMode wrapS, VROWrapMode wrapT) {
+    MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+    sd.sAddressMode = toMTLAddressMode(wrapS);
+    sd.tAddressMode = toMTLAddressMode(wrapT);
+    sd.minFilter = toMTLFilter(_minFilter);
+    sd.magFilter = toMTLFilter(_magFilter);
+    _sampler = [_device newSamplerStateWithDescriptor:sd];
+}
+
+void VROTextureSubstrateMetal::updateWrapMode(VROWrapMode wrapModeS, VROWrapMode wrapModeT) {
+    // Sampler states are immutable in Metal, so wrap changes rebuild it.
+    buildSampler(wrapModeS, wrapModeT);
 }
 
 #endif // VRO_METAL

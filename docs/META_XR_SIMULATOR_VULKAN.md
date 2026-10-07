@@ -136,28 +136,36 @@ The Eskiu migration should consume the same backend contract rather than creatin
 
 ### Status (2026-10-07, macOS, Meta XR Simulator 207.0.0, Metal path)
 
-`desktop/tools/xr_sim_gates.py` runs the gates below against a live simulator for each device profile and both `ses_texture_format` transports, and exits non-zero on a failure. Last run: Meta VR Glasses and Meta Quest 3, `gpu_handle` and `jpg`, all passing.
+`desktop/tools/xr_sim_gates.py` runs the gates below against a live simulator for each device profile: render and input gates on both `ses_texture_format` transports, the three display modes, and `hello_xr`. It exits non-zero on a failure. Last run: Meta VR Glasses and Meta Quest 3, all passing.
 
 | Gate | Status |
 |---|---|
 | Swapchain pixels (A) | Verified. Host reads back eye 0 and counts lit pixels; 232,812 of 2,956,800 on Glasses. |
 | Accepted layer (B) | Verified. Views come from `xrLocateViews`; frames advance at FOCUSED. |
-| Composited pixels (C) | Verified through `openxr_capture_composited_image`, both eyes, both transports. Not compared against RemoteFrameObservation or the Graphics panel. |
+| Composited pixels (C) | Verified through `openxr_capture_composited_image`, both eyes, both transports. |
+| Simulator window (eye viewport, Graphics panel, RemoteFrameObservation stream) | Blocked by the simulator. The window drops every session 5 s after connecting (`Frontend is disconnected. XrSession synchronization ... cancelled`), for `hello_xr` as well as `viro_sim_host`, and it crashed once in `RuntimeOrchestrator::transferToNewState` while handling a disconnect (`MetaXRSimulator-2026-10-07-113737.ips`, SIGSEGV). The operator capture is the Gate C evidence until Meta fixes the window. |
 | Viro scene in both eyes | Verified, with left/right centroid disparity. |
 | Head pose updates view matrices | Verified. A 20° yaw left moves the box about 200 px right in the left eye. |
 | Restart after profile change | Verified, Glasses to Quest 3 and back. |
 | No GL/GLES extension requested | Verified. |
 | Input | Verified. Controller aim + trigger hits the box on both profiles; gaze + pinch hits it on Glasses. Quest 3 reports no eye gaze (`XR_ERROR_PATH_UNSUPPORTED` on the eye-gaze profile), and the host falls back to the aim pose. |
-| `hello_xr` on the same runtime | Not run. |
-| Quest/Horizon GLES path still green | CI `androidBuild` passes; not run on a headset. |
-| Passthrough-off scene, MR/passthrough degradation | Not tested. |
-| Vulkan backend (Windows parity) | Not built. macOS uses the Metal backend. |
+| `hello_xr` on the same runtime | Verified on both profiles. Metal plugin, session reaches FOCUSED, both eyes show the cubes, no XR errors. The simulator composites Metal through its Vulkan compositor (`RenderingMetalOnVulkan`). |
+| Quest/Horizon GLES path still green | CI `androidBuild` passes. Needs a Quest on USB to run; none was connected. |
+| Passthrough-off immersive scene | Verified. Default mode is immersive: blend OPAQUE, black background. |
+| Passthrough | Verified. `VIRO_PASSTHROUGH=1` creates an `XR_FB_passthrough` reconstruction layer under the projection layer, selects ALPHA_BLEND and clears to transparent; the simulator room shows behind the box. |
+| Passthrough degradation | Verified. With the extension hidden (`VIRO_XR_DISABLE_EXT=XR_FB_passthrough`) the host logs `passthrough unavailable: XR_FB_passthrough not enabled; falling back to immersive`, selects OPAQUE and clears to slate, so the fallback never looks like a black frame. A system without ALPHA_BLEND takes the same path with its own reason. |
 
 Simulator traps the script handles, both of which silently produce the wrong device:
 - The config env var is `META_XRSIM_CONFIG_JSON`. Any other name is ignored and the simulator runs on its bundled `config/sim_core_configuration.json`.
 - `device_profile` in `~/Library/Application Support/MetaXR/MetaXrSimulator/persistent_data.json` overrides the config file. The script writes the profile there per run and restores the file afterwards.
 
+The simulator's Meta VR Glasses profile squashes everything horizontally to about 0.85. It locates a ±37°×±34° FOV (tangent span 1.507×1.349, ratio 1.117) but recommends a 1680×1760 swapchain (ratio 0.955), so each pixel covers 0.855 times as much angle horizontally as vertically. `hello_xr` shows the same squash, and both apps draw square shapes on Quest 3, whose FOV and swapchain agree. Apps render correctly per spec. The inconsistency is in the profile. The host logs `eye N fov ... tan span ... vs swapchain ...` at startup so a mismatch is visible.
+
 Quest 3's eye FOVs are asymmetric, so the box sits off-center in each eye. A center-pixel check reads black there on a correct frame; the readback gate counts lit pixels across the whole image instead.
+
+## Future: Vulkan backend for Windows
+
+macOS uses the Metal backend (`XR_KHR_metal_enable`), and every gate above passes on it. A Vulkan host backend matters only for running the simulator on Windows, which this project doesn't do today. When it does, the requirements in "Required architecture" still apply: `XR_KHR_vulkan_enable2`, graphics requirements before `xrCreateSession`, runtime-chosen swapchain format, and located view poses. The gate runner's checks carry over unchanged; only the host binary differs.
 
 ## Non-goals
 
