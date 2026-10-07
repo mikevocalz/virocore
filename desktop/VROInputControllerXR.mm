@@ -181,6 +181,30 @@ void VROInputControllerXR::bindXR(XrInstance instance, XrSession session,
         }
     }
 
+    // Touch controllers: the trigger drives the same pinch actions, so the
+    // simulator's default controller profile can select without hand tracking.
+    for (const char *profileStr : {"/interaction_profiles/oculus/touch_controller",
+                                   "/interaction_profiles/meta/touch_controller_plus"}) {
+        XrPath profile, tl, tr;
+        if (toPath(profileStr, &profile) &&
+            toPath("/user/hand/left/input/trigger/value", &tl) &&
+            toPath("/user/hand/right/input/trigger/value", &tr) &&
+            _pinchAction[0] != XR_NULL_HANDLE && _pinchAction[1] != XR_NULL_HANDLE) {
+            XrActionSuggestedBinding bindings[] = {
+                {_pinchAction[0], tl},
+                {_pinchAction[1], tr},
+            };
+            XrInteractionProfileSuggestedBinding s{
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            s.interactionProfile = profile;
+            s.suggestedBindings = bindings;
+            s.countSuggestedBindings = 2;
+            XrResult r = xrSuggestInteractionProfileBindings(instance, &s);
+            std::printf("input-xr: %s trigger binding suggest -> %d\n",
+                        profileStr, (int)r);
+        }
+    }
+
     // ---- Attach + action space ----------------------------------------------
     XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attach.actionSets = &_actionSet;

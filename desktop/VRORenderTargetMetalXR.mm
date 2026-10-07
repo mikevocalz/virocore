@@ -151,9 +151,6 @@ void VRORenderTargetMetalXR::bind() {
     [encoder setViewport:(MTLViewport){
         (double)_viewport.getX(), (double)_viewport.getY(),
         (double)_viewport.getWidth(), (double)_viewport.getHeight(), 0.0, 1.0 }];
-    // Viro geometry is GL-wound (CCW front faces); Metal defaults to CW, so
-    // back-face culling would drop the near faces and show the box inside-out.
-    [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     driver->setActiveRenderEncoder(encoder);
 }
 
