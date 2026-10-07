@@ -199,6 +199,42 @@ bool VROSceneRendererOpenXR::initOpenXR() {
     xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount,
                                             availableExts.data());
 
+    // This renderer is intentionally the Android/Horizon GLES backend.
+    // A desktop Meta XR Simulator runtime exposes Vulkan/Metal rather than
+    // XR_KHR_opengl_es_enable. Fail loudly here instead of continuing into a
+    // misleading all-black viewport. Desktop simulator support belongs in the
+    // separate host OpenXR renderer described in docs/META_XR_SIMULATOR_VULKAN.md.
+    bool hasOpenGLES = false;
+    bool hasVulkan = false;
+    bool hasMetal = false;
+    for (const auto &ext : availableExts) {
+        if (strcmp(ext.extensionName, XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME) == 0) {
+            hasOpenGLES = true;
+        }
+#ifdef XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME
+        if (strcmp(ext.extensionName, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME) == 0) {
+            hasVulkan = true;
+        }
+#endif
+#ifdef XR_KHR_VULKAN_ENABLE_EXTENSION_NAME
+        if (strcmp(ext.extensionName, XR_KHR_VULKAN_ENABLE_EXTENSION_NAME) == 0) {
+            hasVulkan = true;
+        }
+#endif
+#ifdef XR_KHR_METAL_ENABLE_EXTENSION_NAME
+        if (strcmp(ext.extensionName, XR_KHR_METAL_ENABLE_EXTENSION_NAME) == 0) {
+            hasMetal = true;
+        }
+#endif
+    }
+    if (!hasOpenGLES) {
+        ALOGE("OpenXR runtime is incompatible with VROSceneRendererOpenXR Android/GLES backend "
+              "(XR_KHR_opengl_es_enable absent; Vulkan=%s Metal=%s). "
+              "Do not route the desktop Meta XR Simulator through the Quest GLES renderer.",
+              hasVulkan ? "yes" : "no", hasMetal ? "yes" : "no");
+        return false;
+    }
+
     // Verify required extensions are present
     for (uint32_t i = 0; i < kRequiredExtensionCount; ++i) {
         bool found = false;
