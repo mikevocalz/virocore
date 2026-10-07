@@ -134,6 +134,31 @@ The Eskiu migration should consume the same backend contract rather than creatin
 - Passthrough-off immersive scene works before MR/passthrough is enabled.
 - MR/passthrough failure degrades visibly and logs the capability/format failure rather than returning an unexplained black frame.
 
+### Status (2026-10-07, macOS, Meta XR Simulator 207.0.0, Metal path)
+
+`desktop/tools/xr_sim_gates.py` runs the gates below against a live simulator for each device profile and both `ses_texture_format` transports, and exits non-zero on a failure. Last run: Meta VR Glasses and Meta Quest 3, `gpu_handle` and `jpg`, all passing.
+
+| Gate | Status |
+|---|---|
+| Swapchain pixels (A) | Verified. Host reads back eye 0 and counts lit pixels; 232,812 of 2,956,800 on Glasses. |
+| Accepted layer (B) | Verified. Views come from `xrLocateViews`; frames advance at FOCUSED. |
+| Composited pixels (C) | Verified through `openxr_capture_composited_image`, both eyes, both transports. Not compared against RemoteFrameObservation or the Graphics panel. |
+| Viro scene in both eyes | Verified, with left/right centroid disparity. |
+| Head pose updates view matrices | Verified. A 20° yaw left moves the box about 200 px right in the left eye. |
+| Restart after profile change | Verified, Glasses to Quest 3 and back. |
+| No GL/GLES extension requested | Verified. |
+| Input | Verified. Controller aim + trigger hits the box on both profiles; gaze + pinch hits it on Glasses. Quest 3 reports no eye gaze (`XR_ERROR_PATH_UNSUPPORTED` on the eye-gaze profile), and the host falls back to the aim pose. |
+| `hello_xr` on the same runtime | Not run. |
+| Quest/Horizon GLES path still green | CI `androidBuild` passes; not run on a headset. |
+| Passthrough-off scene, MR/passthrough degradation | Not tested. |
+| Vulkan backend (Windows parity) | Not built. macOS uses the Metal backend. |
+
+Simulator traps the script handles, both of which silently produce the wrong device:
+- The config env var is `META_XRSIM_CONFIG_JSON`. Any other name is ignored and the simulator runs on its bundled `config/sim_core_configuration.json`.
+- `device_profile` in `~/Library/Application Support/MetaXR/MetaXrSimulator/persistent_data.json` overrides the config file. The script writes the profile there per run and restores the file afterwards.
+
+Quest 3's eye FOVs are asymmetric, so the box sits off-center in each eye. A center-pixel check reads black there on a correct frame; the readback gate counts lit pixels across the whole image instead.
+
 ## Non-goals
 
 Do not solve this with CSS/DOM/WebGL fallbacks, screen capture, or a separate Unity/Unreal application. This is a native Viro/OpenXR backend correction.

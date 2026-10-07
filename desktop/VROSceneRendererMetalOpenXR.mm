@@ -340,6 +340,11 @@ struct VROSceneRendererMetalOpenXR::Impl {
                     XR_VERSION_MAJOR(props.runtimeVersion),
                     XR_VERSION_MINOR(props.runtimeVersion),
                     XR_VERSION_PATCH(props.runtimeVersion));
+        std::printf("openxr api: %u.%u.%u  host: %s  backend: Metal (XR_KHR_metal_enable)\n",
+                    XR_VERSION_MAJOR(XR_CURRENT_API_VERSION),
+                    XR_VERSION_MINOR(XR_CURRENT_API_VERSION),
+                    XR_VERSION_PATCH(XR_CURRENT_API_VERSION),
+                    [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
 
         XrSystemGetInfo sysInfo{XR_TYPE_SYSTEM_GET_INFO};
         sysInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -423,8 +428,9 @@ struct VROSceneRendererMetalOpenXR::Impl {
             eyes[v].images.assign(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_METAL_KHR});
             XR_CHECK(xrEnumerateSwapchainImages(eyes[v].handle, imgCount, &imgCount,
                 (XrSwapchainImageBaseHeader *)eyes[v].images.data()));
-            std::printf("eye %u swapchain: %ux%u x%u images\n",
-                        v, scInfo.width, scInfo.height, imgCount);
+            std::printf("eye %u swapchain: %ux%u x%u images, format %lld (of %u views)\n",
+                        v, scInfo.width, scInfo.height, imgCount,
+                        (long long)scInfo.format, viewCount);
         }
 
         XrReferenceSpaceCreateInfo refSpace{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
@@ -725,8 +731,15 @@ struct VROSceneRendererMetalOpenXR::Impl {
                                 fromRegion:MTLRegionMake2D(0, 0, tex.width, tex.height)
                                 mipmapLevel:0];
                             size_t off = (tex.height / 2) * bpr + (tex.width / 2) * 4;
-                            std::printf("eye %u readback center pixel = %02x %02x %02x %02x\n",
-                                        v, px[off], px[off + 1], px[off + 2], px[off + 3]);
+                            // Asymmetric FOVs (Quest 3) put content off-center,
+                            // so count lit pixels across the whole image too.
+                            size_t lit = 0;
+                            for (size_t i = 0; i < px.size(); i += 4) {
+                                if (px[i] > 20 || px[i + 1] > 20 || px[i + 2] > 20) ++lit;
+                            }
+                            std::printf("eye %u readback center pixel = %02x %02x %02x %02x lit=%zu/%zu\n",
+                                        v, px[off], px[off + 1], px[off + 2], px[off + 3],
+                                        lit, px.size() / 4);
                         }
                     }
                     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};

@@ -99,6 +99,8 @@ private:
     XrAction     _gazeAction = XR_NULL_HANDLE;   // pose, eye-gaze profile
     XrAction     _pinchAction[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE}; // float, L/R
     XrSpace      _gazeSpace  = XR_NULL_HANDLE;
+    XrAction     _aimAction  = XR_NULL_HANDLE;   // pose, right controller/hand aim
+    XrSpace      _aimSpace   = XR_NULL_HANDLE;
     bool         _actionsAttached = false;
 
     // ---- Hand tracking (XR_EXT_hand_tracking) -------------------------------
