@@ -324,6 +324,7 @@ private:
     XrBoundaryVisibilityMETA _boundaryVisibility = XR_BOUNDARY_VISIBILITY_NOT_SUPPRESSED_META;
     uint32_t        _boundaryRequestCooldown = 0;  // frames until the next request
     bool            _handInteractionAvailable = false;  // XR_EXT_hand_interaction present (Android XR)
+    bool            _renderModelAvailable     = false;  // XR_FB_render_model enabled + supportsRenderModelLoading
     bool            _alphaBlendAvailable      = false;  // view config supports ALPHA_BLEND env blend
 
     // Per-eye swapchains (index 0 = left, 1 = right)

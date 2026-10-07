@@ -8,6 +8,7 @@
 #include "VROInputButtonState.h"
 #include <android/log.h>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #ifndef NDEBUG
 #include <sys/system_properties.h>
@@ -359,6 +360,13 @@ void VROInputControllerOpenXR::logActiveInteractionProfiles(XrSession session) {
         if (XR_FAILED(xrStringToPath(_instance, hand, &handPath))) {
             continue;
         }
+        const int handIndex = (hand == kHands[0]) ? 0 : 1;
+        // A rebind can mean a different controller (Touch → Touch Plus) or a
+        // reconnect after the model was unavailable: query the key again.
+        _controllerModel[handIndex]->recheck          = true;
+        _controllerModel[handIndex]->nextAttemptFrame = 0;
+
+        _handProfileBound[handIndex] = false;  // never left stale by a failed query
         XrInteractionProfileState state = { XR_TYPE_INTERACTION_PROFILE_STATE };
         if (XR_FAILED(xrGetCurrentInteractionProfile(session, handPath, &state))) {
             continue;
@@ -371,6 +379,7 @@ void VROInputControllerOpenXR::logActiveInteractionProfiles(XrSession session) {
         uint32_t len = 0;
         if (XR_SUCCEEDED(xrPathToString(_instance, state.interactionProfile,
                                         sizeof(buf), &len, buf))) {
+            _handProfileBound[handIndex] = strstr(buf, "/hand_interaction") != nullptr;
             ALOGI("[XR-DIAG] active profile %s: %s", hand, buf);
         }
     }
@@ -759,6 +768,7 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     // Controller meshes follow the grip pose (independent of the aim/beam path
     // above). Hidden automatically when the grip pose action is inactive — i.e.
     // the controller is set down and the hand takes over.
+    ++_meshFrame;
     updateControllerMeshViz(ViroOculus::Controller, session, baseSpace, time,
                             _rightGripPoseAction, _rightGripSpace);
     updateControllerMeshViz(ViroOculus::LeftController, session, baseSpace, time,
@@ -1158,10 +1168,9 @@ bool VROInputControllerOpenXR::stickyPose(PersistentAim &state, bool currentVali
 std::shared_ptr<VROInputPresenter>
 VROInputControllerOpenXR::createPresenter(std::shared_ptr<VRODriver> driver) {
     auto presenter = std::make_shared<VROInputPresenterOpenXR>();
-    // Load the bundled controller mesh now that a driver exists (needed by the
-    // GLTF loader). Async — the mesh populates a few frames later; the nodes are
-    // created hidden immediately so updateControllerMeshViz can drive them.
-    presenter->loadControllerMesh(driver);
+    // Nodes only; which GLB fills each one is decided per hand in
+    // resolveControllerModel() once that hand's grip pose is active.
+    presenter->createControllerMeshNodes(driver);
     return presenter;
 }
 
@@ -1189,6 +1198,24 @@ void VROInputControllerOpenXR::updateControllerMeshViz(int source, XrSession ses
         return;
     }
 
+    // A hand-tracking profile can drive the grip pose too; no controller is in
+    // that hand, so draw none.
+    const int hand = (source == ViroOculus::LeftController) ? 0 : 1;
+    if (_handProfileBound[hand]) {
+        presenter->updateControllerMesh(source, {}, {}, false);
+        return;
+    }
+
+    // Hidden until this hand has a model: never flash the fallback mesh while
+    // the runtime model is still being fetched.
+    resolveControllerModel(hand, source, presenter);
+    if (!_controllerModel[hand]->hasModel) {
+        presenter->updateControllerMesh(source, {}, {}, false);
+        return;
+    }
+
+    // XR_FB_render_model controller models have their origin at the grip pose,
+    // as does the fallback GLB, so the grip pose places either one directly.
     XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
     if (XR_FAILED(xrLocateSpace(gripSpace, baseSpace, time, &loc)) ||
         !(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
@@ -1199,6 +1226,197 @@ void VROInputControllerOpenXR::updateControllerMeshViz(int source, XrSession ses
 
     presenter->updateControllerMesh(source, xrVec3ToVRO(loc.pose.position),
                                     xrQuatToVRO(loc.pose.orientation), true);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Controller models (XR_FB_render_model → fallback GLB)
+// ──────────────────────────────────────────────────────────────────────────────
+
+namespace {
+// ~1 s at 72-90 Hz between attempts while a model is unavailable or failing.
+constexpr uint64_t kModelRetryFrames = 90;
+// Hard failures (not "unavailable") before a hand gives up on the runtime model.
+constexpr uint8_t  kMaxModelFailures = 3;
+
+const char *handName(int hand) { return hand == 0 ? "left" : "right"; }
+}  // namespace
+
+bool VROInputControllerOpenXR::initRenderModels(XrInstance instance, XrSession session) {
+    auto models = std::unique_ptr<VROOpenXRRenderModels>(new VROOpenXRRenderModels());
+    if (!models->init(instance, session)) {
+        return false;
+    }
+    _renderModels = std::move(models);
+    ALOGI("XR_FB_render_model enabled; controller models come from the runtime");
+    return true;
+}
+
+void VROInputControllerOpenXR::destroyRenderModels() {
+    if (_renderModels) {
+        _renderModels->invalidate();
+    }
+}
+
+void VROInputControllerOpenXR::applyFallbackModel(
+        const std::shared_ptr<ControllerModelState> &state, int hand, int source,
+        const char *reason, const std::shared_ptr<VROInputPresenterOpenXR> &presenter) {
+    state->phase    = ControllerModelState::Phase::Fallback;
+    state->recheck  = false;
+    state->hasModel = true;
+    const std::string path = VROInputPresenterOpenXR::fallbackControllerGlbPath(source);
+    ALOGI("[XR-DIAG] controller model: neutral fallback %s for %s (%s)", path.c_str(),
+          handName(hand), reason);
+    presenter->loadControllerMeshFile(source, path, nullptr);
+}
+
+void VROInputControllerOpenXR::onRuntimeModelFailure(
+        const std::shared_ptr<ControllerModelState> &state, int hand, int source,
+        const char *reason, const std::shared_ptr<VROInputPresenterOpenXR> &presenter) {
+    ++state->loadFailures;
+    ALOGW("controller model: %s runtime model failed (%s), attempt %u/%u", handName(hand),
+          reason, (unsigned)state->loadFailures, (unsigned)kMaxModelFailures);
+    if (state->loadFailures >= kMaxModelFailures && presenter) {
+        applyFallbackModel(state, hand, source, "runtime model kept failing", presenter);
+        return;
+    }
+    state->phase      = ControllerModelState::Phase::Unresolved;
+    state->key        = XR_NULL_RENDER_MODEL_KEY_FB;
+    state->hasModel   = false;
+    state->retryLater = true;
+}
+
+void VROInputControllerOpenXR::resolveControllerModel(
+        int hand, int source, const std::shared_ptr<VROInputPresenterOpenXR> &presenter) {
+    using Phase = ControllerModelState::Phase;
+    std::shared_ptr<ControllerModelState> statePtr = _controllerModel[hand];
+    ControllerModelState &state = *statePtr;
+
+    if (state.retryLater) {
+        state.retryLater       = false;
+        state.nextAttemptFrame = _meshFrame + kModelRetryFrames;
+    }
+    if (state.phase == Phase::Loading || state.phase == Phase::Fallback) return;
+    if (state.phase == Phase::Runtime && !state.recheck) return;
+    if (_meshFrame < state.nextAttemptFrame) return;
+
+    if (!_renderModels) {
+        applyFallbackModel(statePtr, hand, source, "XR_FB_render_model not enabled", presenter);
+        return;
+    }
+    const auto rmHand = (hand == 0) ? VROOpenXRRenderModels::Hand::Left
+                                    : VROOpenXRRenderModels::Hand::Right;
+    switch (_renderModels->pathState(rmHand)) {
+        case VROOpenXRRenderModels::PathState::Unknown:
+            state.nextAttemptFrame = _meshFrame + kModelRetryFrames;  // enumeration failed; retry
+            return;
+        case VROOpenXRRenderModels::PathState::NotListed:
+            applyFallbackModel(statePtr, hand, source,
+                               "runtime lists no controller render model", presenter);
+            return;
+        case VROOpenXRRenderModels::PathState::Listed:
+            break;
+    }
+
+    const VROOpenXRRenderModels::Properties props = _renderModels->getProperties(rmHand);
+    if (props.result == XR_RENDER_MODEL_UNAVAILABLE_FB ||
+        (props.result == XR_SUCCESS && props.key == XR_NULL_RENDER_MODEL_KEY_FB)) {
+        // No device behind the path yet. Keep what is shown (nothing, or the
+        // model of the controller that was there) and ask again later.
+        state.nextAttemptFrame = _meshFrame + kModelRetryFrames;
+        if (!state.loggedUnavailable) {
+            state.loggedUnavailable = true;
+            ALOGI("[XR-DIAG] controller model: %s unavailable from runtime, retrying",
+                  VROOpenXRRenderModels::pathString(rmHand));
+        }
+        return;
+    }
+    if (XR_FAILED(props.result)) {
+        if (state.phase == Phase::Runtime) {
+            state.recheck = false;  // keep the model already loaded
+            return;
+        }
+        char reason[64];
+        snprintf(reason, sizeof(reason), "xrGetRenderModelPropertiesFB: %d", (int)props.result);
+        if (props.result == XR_ERROR_PATH_INVALID || props.result == XR_ERROR_PATH_UNSUPPORTED) {
+            applyFallbackModel(statePtr, hand, source, reason, presenter);  // no model for this path
+        } else {
+            onRuntimeModelFailure(statePtr, hand, source, reason, presenter);  // maybe transient
+        }
+        return;
+    }
+
+    state.recheck           = false;
+    state.loggedUnavailable = false;
+    if (state.phase == Phase::Runtime && props.key == state.key) return;
+
+    if (_renderModelCacheDir.empty()) {
+        // Render thread, scene running: the platform JNI bridge is up by now.
+        _renderModelCacheDir = VROPlatformGetCacheDirectory();
+    }
+
+    // Load off the render thread (the spec allows xrLoadRenderModelFB to be
+    // slow), then hand the file to the presenter back on the render thread. The
+    // hand keeps showing its current model, if any, until the new one arrives.
+    state.phase = Phase::Loading;
+    state.key   = props.key;
+    const uint32_t generation = ++state.generation;
+    const char *rmPath = VROOpenXRRenderModels::pathString(rmHand);
+    ALOGI("controller model: loading %s \"%s\" (key %llu, v%u, flags 0x%llx)", rmPath,
+          props.modelName.c_str(), (unsigned long long)props.key, (unsigned)props.version,
+          (unsigned long long)props.flags);
+
+    std::shared_ptr<VROOpenXRRenderModelLoader> loader = _renderModels->loader();
+    std::weak_ptr<VROInputPresenterOpenXR> weakPresenter = presenter;
+    const std::string cacheDir = _renderModelCacheDir;
+    const XrRenderModelKeyFB key = props.key;
+    const uint32_t version = props.version;
+    VROPlatformDispatchAsyncBackground(
+        [loader, weakPresenter, statePtr, cacheDir, key, version, generation, hand, source,
+         rmPath] {
+        XrResult result = XR_SUCCESS;
+        const std::vector<uint8_t> glb = loader->load(key, &result);
+        const bool basisu = VROOpenXRRenderModels::usesBasisuTextures(glb);
+        const std::string file = glb.empty()
+            ? std::string()
+            : VROOpenXRRenderModels::writeModelFile(cacheDir, key, version, glb);
+
+        VROPlatformDispatchAsyncRenderer(
+            [weakPresenter, statePtr, file, key, generation, hand, source, rmPath, result,
+             basisu] {
+            if (statePtr->generation != generation) return;  // superseded by a newer load
+            std::shared_ptr<VROInputPresenterOpenXR> p = weakPresenter.lock();
+            if (file.empty()) {
+                if (result == XR_RENDER_MODEL_UNAVAILABLE_FB) {
+                    // Controller went away between properties and load: not a failure.
+                    statePtr->phase      = ControllerModelState::Phase::Unresolved;
+                    statePtr->key        = XR_NULL_RENDER_MODEL_KEY_FB;
+                    statePtr->retryLater = true;
+                    return;
+                }
+                char reason[64];
+                snprintf(reason, sizeof(reason),
+                         result == XR_SUCCESS ? "cache write failed" : "xrLoadRenderModelFB: %d",
+                         (int)result);
+                onRuntimeModelFailure(statePtr, hand, source, reason, p);
+                return;
+            }
+            if (!p) return;
+            statePtr->phase    = ControllerModelState::Phase::Runtime;
+            statePtr->hasModel = true;
+            p->loadControllerMeshFile(source, file,
+                [weakPresenter, statePtr, generation, hand, source](bool ok) {
+                    if (ok || statePtr->generation != generation) {
+                        if (ok) statePtr->loadFailures = 0;
+                        return;
+                    }
+                    onRuntimeModelFailure(statePtr, hand, source, "glTF parse failed",
+                                          weakPresenter.lock());
+                });
+            ALOGI("[XR-DIAG] controller model: runtime render model %s (key %llu)%s", rmPath,
+                  (unsigned long long)key,
+                  basisu ? " [KHR_texture_basisu textures not decoded; base colour only]" : "");
+        });
+    });
 }
 
 void VROInputControllerOpenXR::updateLaserViz(int source,

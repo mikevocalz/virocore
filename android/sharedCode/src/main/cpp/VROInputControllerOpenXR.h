@@ -33,6 +33,9 @@
 #include <vector>
 #include <openxr/openxr.h>
 #include "VROInputControllerBase.h"
+#include "VROOpenXRRenderModel.h"
+
+class VROInputPresenterOpenXR;
 
 class VROInputControllerOpenXR : public VROInputControllerBase {
 public:
@@ -71,6 +74,20 @@ public:
     void destroyHandTrackers();
 
     /*
+     * Enable runtime controller models (XR_FB_render_model). Call after
+     * createActionSet() when the extension was enabled and the system reports
+     * supportsRenderModelLoading. Without this call every hand uses the
+     * fallback GLB. Render thread.
+     */
+    bool initRenderModels(XrInstance instance, XrSession session);
+
+    /*
+     * Stop render-model loads from touching the session. Blocks until a load in
+     * flight returns. Call before xrDestroySession.
+     */
+    void destroyRenderModels();
+
+    /*
      * Called every frame after prepareFrame (VRORenderer already set camera).
      * Syncs actions and emits Viro input events.
      *
@@ -90,11 +107,13 @@ public:
                        float amplitude = 0.5f, float durationSec = 0.05f);
 
     /*
-     * One-shot diagnostics: log the interaction profile the runtime has bound to
-     * /user/hand/left and /user/hand/right (ALOGI, "[XR-DIAG]" prefix), or
-     * "none bound yet" when unbound. Pure logging; no state change. Meaningful
-     * only once the session is focused. Uses the instance captured in
-     * createActionSet() for xrPathToString.
+     * Read the interaction profile the runtime has bound to /user/hand/left and
+     * /user/hand/right and log it (ALOGI, "[XR-DIAG]" prefix), or "none bound
+     * yet" when unbound. Also records whether each hand is bound to a hand
+     * (not controller) profile, which hides that hand's controller model, and
+     * asks the render-model path to re-check the connected controller. Call on
+     * FOCUSED and on XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED. Uses the
+     * instance captured in createActionSet() for xrPathToString.
      */
     void logActiveInteractionProfiles(XrSession session);
 
@@ -352,6 +371,49 @@ public:
     void setControllerMeshEnabled(bool enabled) { _controllerMeshEnabled = enabled; }
 private:
     bool _controllerMeshEnabled = true;
+
+    // ── Controller model source, per hand (0 = left, 1 = right) ───────────────
+    // Order: the runtime render model (XR_FB_render_model) → the fallback GLB,
+    // and the fallback only when the runtime has no model path for that hand.
+    // A runtime that lists the path but reports the model unavailable keeps the
+    // hand hidden and is retried; it never gets the fallback mesh.
+    struct ControllerModelState {
+        enum class Phase { Unresolved, Loading, Runtime, Fallback };
+        Phase              phase      = Phase::Unresolved;
+        XrRenderModelKeyFB key        = XR_NULL_RENDER_MODEL_KEY_FB;
+        uint32_t           generation = 0;     // bumps per load; stale completions drop
+        uint64_t           nextAttemptFrame = 0;
+        bool               recheck    = false; // profile changed: re-query the key
+        bool               retryLater = false; // set by a failed async load
+        bool               loggedUnavailable = false;
+        bool               hasModel   = false; // a GLB was handed to the presenter: draw it
+        uint8_t            loadFailures = 0;   // hard failures; kMaxModelFailures → fallback
+    };
+    // Shared so an async load's completion (render thread) can update the state
+    // without holding the controller alive.
+    std::shared_ptr<ControllerModelState> _controllerModel[2] = {
+        std::make_shared<ControllerModelState>(), std::make_shared<ControllerModelState>()
+    };
+    std::unique_ptr<VROOpenXRRenderModels> _renderModels;  // null: extension off
+    std::string _renderModelCacheDir;
+    uint64_t    _meshFrame = 0;
+    // True while the hand is bound to a hand-tracking profile
+    // (ext/hand_interaction_ext): the controller is not in that hand.
+    bool _handProfileBound[2] = { false, false };
+
+    /*
+     * Decide (or re-check) where `hand`'s controller model comes from and start
+     * loading it. Cheap when already resolved. Render thread.
+     */
+    void resolveControllerModel(int hand, int source,
+                                const std::shared_ptr<VROInputPresenterOpenXR> &presenter);
+    // Static: also called from async completions that must not touch `this`.
+    static void applyFallbackModel(const std::shared_ptr<ControllerModelState> &state,
+                                   int hand, int source, const char *reason,
+                                   const std::shared_ptr<VROInputPresenterOpenXR> &presenter);
+    static void onRuntimeModelFailure(const std::shared_ptr<ControllerModelState> &state,
+                                      int hand, int source, const char *reason,
+                                      const std::shared_ptr<VROInputPresenterOpenXR> &presenter);
     /*
      Wall-clock of the last camera-transform event handed to JS. The pose is
      consumed as a placement latch and a "pose alive" heartbeat — both work at

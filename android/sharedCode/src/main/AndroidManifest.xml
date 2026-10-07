@@ -19,6 +19,12 @@
     <uses-permission android:name="com.oculus.permission.EYE_TRACKING" />
     <uses-feature android:name="oculus.software.eye_tracking" android:required="false" />
 
+    <!-- Controller render models (Meta Quest): XR_FB_render_model hands back the
+         GLB of the connected Touch / Touch Plus / Touch Pro controller. Meta's
+         runtime requires this permission and feature for the extension. -->
+    <uses-permission android:name="com.oculus.permission.RENDER_MODEL" />
+    <uses-feature android:name="com.oculus.feature.RENDER_MODEL" android:required="false" />
+
     <!-- Required to detect viewer insertion. -->
     <uses-permission android:name="android.permission.NFC"/>
     <!-- Required to load remote content -->

@@ -74,6 +74,7 @@ static constexpr const char *const kOptionalExtensions[] = {
     XR_FB_SPACE_WARP_EXTENSION_NAME,                  // ASW motion-vector reprojection (flagged; loop TODO)
     XR_EXT_LOCAL_FLOOR_EXTENSION_NAME,                // floor-level reference space (PICO 4 Ultra; OpenXR 1.1 core)
     XR_META_BOUNDARY_VISIBILITY_EXTENSION_NAME, // hide the boundary while passthrough shows the room
+    XR_FB_RENDER_MODEL_EXTENSION_NAME,          // real controller GLBs from the runtime (Quest Touch / Touch Plus / Touch Pro)
 
     // CL-H: co-location. All three are needed and none of them is optional to
     // each other — an anchor has to be STORABLE before it can be SHARABLE, and
@@ -237,6 +238,11 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
     _inputController->createActionSet(_instance, _session, _eyeGazeSupported,
                                       _handInteractionAvailable);
     initHandTracking();  // no-op if XR_EXT_hand_tracking not available on this device
+    if (_renderModelAvailable) {
+        // Real controller models from the runtime; without this every hand
+        // falls back to the bundled / PICO system GLB.
+        _inputController->initRenderModels(_instance, _session);
+    }
 
     // Wire the B/Menu button back to Android's back-press so React Native's
     // BackHandler fires in VRActivity. The callback runs on the render thread;
@@ -402,6 +408,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                     _boundaryVisibilityAvailable = true;
                 if (strcmp(optExt, "XR_EXT_hand_interaction") == 0)
                     _handInteractionAvailable = true;
+                if (strcmp(optExt, XR_FB_RENDER_MODEL_EXTENSION_NAME) == 0)
+                    _renderModelAvailable = true;
                 break;
             }
         }
@@ -544,6 +552,20 @@ bool VROSceneRendererOpenXR::initOpenXR() {
             boundaryProps.supportsBoundaryVisibility == XR_TRUE;
     }
     ALOGV("Boundary visibility: supported=%d", (int)_boundaryVisibilityAvailable);
+
+    // XR_FB_render_model: the extension can be enabled on a system that still
+    // cannot load models; the system property is the authority.
+    if (_renderModelAvailable) {
+        XrSystemRenderModelPropertiesFB renderModelProps = {
+            XR_TYPE_SYSTEM_RENDER_MODEL_PROPERTIES_FB
+        };
+        XrSystemProperties systemProps = { XR_TYPE_SYSTEM_PROPERTIES };
+        systemProps.next = &renderModelProps;
+        _renderModelAvailable =
+            XR_SUCCEEDED(xrGetSystemProperties(_instance, _systemId, &systemProps)) &&
+            renderModelProps.supportsRenderModelLoading == XR_TRUE;
+    }
+    ALOGI("[XR-DIAG] XR_FB_render_model: supported=%d", (int)_renderModelAvailable);
 
     return true;
 }
@@ -1618,6 +1640,7 @@ void VROSceneRendererOpenXR::onDestroy() {
     if (_inputController) {
         _inputController->destroyHandTrackers();
         _inputController->destroySpaces();
+        _inputController->destroyRenderModels();  // waits out a background xrLoadRenderModelFB
     }
     destroySession();
     destroyEGLContext();
