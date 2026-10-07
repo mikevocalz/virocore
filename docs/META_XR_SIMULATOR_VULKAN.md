@@ -6,7 +6,24 @@ The current Horizon OpenXR renderer is an Android/Quest renderer. It requires `X
 
 The standalone Meta XR Simulator is a desktop OpenXR runtime. The Meta VR Glasses profile must not be routed through the Android/GLES renderer. Meta XR Simulator supports Vulkan on Windows and macOS (and platform-specific D3D/Metal paths), and does not support OpenGL/OpenGL ES.
 
-A black simulator viewport must therefore be treated as a backend-selection / frame-submission failure, not hidden with clear-color or shader workarounds.
+A black simulator viewport must therefore be classified across three independent failure boundaries, not hidden with clear-color or shader workarounds:
+
+1. **Backend / render-target failure** — wrong graphics API, invalid swapchain usage, or pixels never land in the acquired image.
+2. **Frame-submission failure** — the projection layer is not validly submitted/accepted.
+3. **Accepted-but-black compositor/output failure** — swapchain pixels and an accepted projection layer exist, but the simulator compositor, capture path, or RemoteFrameObservation output is still black.
+
+A Vulkan backend removes the known GLES incompatibility, but it does **not** by itself prove visible simulator output.
+
+## Reproduced accepted-but-black case
+
+A live simulator probe has already exercised the intended Vulkan path with `XR_KHR_vulkan_enable2`, runtime-mediated Vulkan instance/device creation, a 1680×1760×3 swapchain, RUNNING→FOCUSED session state, `shouldRender=true`, OPAQUE blend mode, and a projection layer accepted at approximately 60 fps.
+
+Despite that, all observed compositor outputs remained black:
+- Meta XR Operator MCP `openxr_capture_composited_image`: 840×880 PNG, zero non-black pixels;
+- in-process debug eye viewport: black;
+- standalone MetaXRSimulator RemoteFrameObservation viewport: black.
+
+A Metal probe additionally verified that the swapchain texture itself contained magenta pixels while composited capture remained black. This demonstrates that “projection layer accepted” and “rendered pixels visible in compositor output” are separate gates.
 
 ## Required architecture
 
@@ -28,18 +45,38 @@ Add a host simulator path:
 - Submit a projection layer only when view pose/orientation are valid and `shouldRender` is true.
 - Keep passthrough/environment blend behavior capability-driven.
 
-## Black-frame diagnostic gate
+## Black-frame diagnostic gates
 
-Before Viro scene rendering, the host backend must support a deterministic compositor smoke test:
+Before Viro scene rendering, the host backend must prove all three stages independently.
+
+### Gate A — pixels reached the swapchain
 
 1. create OpenXR instance/system/session/reference space;
-2. create Vulkan swapchains;
-3. render distinct opaque colors or a minimal unlit triangle per eye;
-4. release images;
-5. submit `XrCompositionLayerProjection`;
-6. verify the simulator Graphics panel reports projection layers and advancing FPS.
+2. create Vulkan swapchains with usage flags compatible with the chosen test path;
+3. render distinct opaque colors or, preferably, a minimal unlit triangle through a graphics pipeline;
+4. verify pixels actually landed in the acquired swapchain image before release.
 
-Only after that gate passes should Viro scene rendering be enabled.
+Do not assume `vkCmdClearColorImage` worked: if the runtime did not grant `TRANSFER_DST` usage, a clear-based test can silently produce a misleading result. Prefer graphics-pipeline rendering and add readback when the image/format/usage permits it.
+
+### Gate B — the runtime accepted the projection layer
+
+5. release the rendered image;
+6. submit `XrCompositionLayerProjection`;
+7. assert successful frame completion, advancing frames/FPS, valid views, `shouldRender=true`, and that the simulator layer inspector reports the expected projection layer.
+
+This gate is necessary but **not sufficient**.
+
+### Gate C — the compositor produced visible pixels
+
+8. capture the composited simulator output using Meta XR Operator `openxr_capture_composited_image` or `XR_METAX1_simulator_compositor_output_capture`;
+9. run a pixel assertion over the captured image and require a non-black/non-zero result matching the smoke-test color/triangle;
+10. compare that result with the in-process eye/debug viewport and RemoteFrameObservation output.
+
+The smoke test passes only when **A + B + C** pass. A layer appearing in the Graphics panel alone is not a success condition.
+
+When GPU interop/capture is suspected, also test the simulator session texture transport configuration in both `gpu_handle` and `jpg`/CPU-copy modes. Record whether the failure follows the GPU-handle path or remains black in CPU-copy transport.
+
+Only after these gates pass should Viro scene rendering be blamed or enabled as the next diagnostic layer.
 
 Log at startup:
 - runtime name/version
@@ -72,11 +109,11 @@ The Eskiu migration should consume the same backend contract rather than creatin
 ## Acceptance gates
 
 - `hello_xr` renders against the same active Meta XR Simulator runtime.
-- Meta VR Glasses profile renders the compositor smoke test with no black frame.
+- Meta VR Glasses profile passes swapchain-pixel, accepted-layer, and composited-pixel gates with no black frame.
 - Minimal Viro scene renders in both eyes.
 - Head pose updates view matrices.
 - Restart after changing simulator device profile works.
-- Projection layer is visible in the simulator Graphics panel.
+- Projection layer is visible in the simulator Graphics panel **and** compositor capture contains the expected non-black pixels.
 - No GL/GLES graphics extension is requested on the desktop simulator path.
 - Existing physical Quest/Horizon GLES path remains green.
 - Passthrough-off immersive scene works before MR/passthrough is enabled.
