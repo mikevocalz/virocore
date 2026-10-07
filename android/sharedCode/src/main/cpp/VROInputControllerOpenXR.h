@@ -196,6 +196,25 @@ private:
     bool     _handInteractionEnabled = false;
     bool     _prevHandPinchLeft    = false;
     bool     _prevHandPinchRight   = false;
+    // ── Select ownership (look to target, pinch to select) ────────────────────
+    // Controller-less devices with an eye tracker (Meta VR glasses) send no
+    // hover and no controller: with no aim action active and a located gaze,
+    // a pinch on either hand selects what the eyes are on (EyeGaze source).
+    // Without gaze (Quest 3/3S, tracking lost) the hand-aim ray keeps it.
+    enum class SelectOwner { None, Controller, Hand, Gaze };
+    SelectOwner _selectOwner   = SelectOwner::None;  // last logged, for change logs
+    bool        _prevPinchGaze = false;              // merged two-hand pinch edge
+    // Hands pinching in the current gaze press [left, right]; one leaving
+    // tracking cancels the press instead of releasing it as a click.
+    bool        _gazePressHand[2] = { false, false };
+    // False while a pinch begun under gaze is still held, so it cannot fire a
+    // fresh ClickDown on the hand ray when select falls back to the hand.
+    bool        _pinchArmedLeft  = true;
+    bool        _pinchArmedRight = true;
+    // debug.viro.fake_gaze=1 (debug builds only): head pose stands in for a
+    // located gaze so the gaze-select branch runs without an eye tracker.
+    // Unconditional member so the class layout does not depend on NDEBUG.
+    bool        _fakeGaze      = false;
 
     // ── Back button callback ──────────────────────────────────────────────────
     std::function<void()> _backButtonCallback;
@@ -250,6 +269,9 @@ private:
     PersistentAim _leftCtrlAim;
     PersistentAim _rightHandAim;
     PersistentAim _leftHandAim;
+    // Bridges blinks, which drop the gaze pose for a few frames; without it a
+    // blink would hand selection to the hand ray in the middle of a look.
+    PersistentAim _eyeGazeAim;
 
     /**
      * Apply hysteresis to a single source's pose. If `currentValid`, refreshes
@@ -276,9 +298,16 @@ private:
      * `skipRight` / `skipLeft` are true when the matching controller already
      * produced a valid aim this frame — in that case we still run gesture
      * detection (pinch, grab) but do not collect the hand's aim pose.
+     *
+     * `gazeOwnsSelect` stops pinches from clicking on the hand rays; each
+     * hand's pinch goes to `gazePinchOut[hand]` (0 = left, 1 = right) for the
+     * merged EyeGaze edge instead. `gazeHandTrackedOut[hand]` is false when
+     * that hand did not reach pinch detection this frame.
      */
     void processHands(XrSpace baseSpace, XrTime time, const VROCamera &camera,
                       bool skipRight, bool skipLeft,
+                      bool gazeOwnsSelect, bool (&gazePinchOut)[2],
+                      bool (&gazeHandTrackedOut)[2],
                       bool &rightAimValidOut,
                       VROVector3f &rightAimPosOut,
                       VROQuaternion &rightAimRotOut,

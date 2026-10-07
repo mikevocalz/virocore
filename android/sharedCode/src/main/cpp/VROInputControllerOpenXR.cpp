@@ -8,6 +8,10 @@
 #include "VROInputButtonState.h"
 #include <android/log.h>
 #include <cmath>
+#include <cstring>
+#ifndef NDEBUG
+#include <sys/system_properties.h>
+#endif
 #include "VROLog.h"
 #include "VROInputPresenterOpenXR.h"
 #include "VROVector3f.h"
@@ -57,6 +61,16 @@ static VROVector3f xrAimForward(const XrPosef &pose) {
     return fwd;
 }
 
+// True while the runtime reports this pose action bound to an active device.
+static bool isPoseActionActive(XrSession session, XrAction action) {
+    if (action == XR_NULL_HANDLE) return false;
+    XrActionStateGetInfo info = { XR_TYPE_ACTION_STATE_GET_INFO };
+    info.action = action;
+    XrActionStatePose state = { XR_TYPE_ACTION_STATE_POSE };
+    return XR_SUCCEEDED(xrGetActionStatePose(session, &info, &state)) &&
+           state.isActive == XR_TRUE;
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Lifecycle
 // ──────────────────────────────────────────────────────────────────────────────
@@ -75,6 +89,19 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     _eyeGazeEnabled        = eyeGazeSupported;
     _handInteractionEnabled = handInteractionSupported;
     _instance       = instance;  // captured for logActiveInteractionProfiles()
+
+#ifndef NDEBUG
+    // Debug builds only: lets the gaze-select branch run on a Quest 3/3S, which
+    // has no eye tracker. Read once per session; never compiled into release.
+    {
+        char value[PROP_VALUE_MAX] = {0};
+        _fakeGaze = __system_property_get("debug.viro.fake_gaze", value) > 0 &&
+                    strcmp(value, "1") == 0;
+        if (_fakeGaze) {
+            ALOGW("VIRO_DEBUG_FAKE_GAZE active: head pose stands in for eye gaze");
+        }
+    }
+#endif
 
     // ── 1. Create action set ──────────────────────────────────────────────────
     XrActionSetCreateInfo asInfo = { XR_TYPE_ACTION_SET_CREATE_INFO };
@@ -584,6 +611,63 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         }
     }
 
+    const bool controllerAimActive = isPoseActionActive(session, _rightAimPoseAction) ||
+                                     isPoseActionActive(session, _leftAimPoseAction);
+
+    // ── Eye gaze pose — located here because it decides who owns select ─────
+    bool          gazeLocated = false;
+    VROVector3f   gazePos;
+    VROQuaternion gazeRot;
+    VROVector3f   gazeForward;
+    if (_eyeGazeEnabled && _eyeGazeSpace != XR_NULL_HANDLE) {
+        XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+        XrResult r = xrLocateSpace(_eyeGazeSpace, baseSpace, time, &loc);
+        if (XR_SUCCEEDED(r) &&
+            (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+            (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+            gazePos     = xrVec3ToVRO(loc.pose.position);
+            gazeRot     = xrQuatToVRO(loc.pose.orientation);
+            gazeForward = xrAimForward(loc.pose);
+            gazeLocated = true;
+        }
+        gazeLocated = stickyPose(_eyeGazeAim, gazeLocated, gazePos, gazeRot, gazeForward);
+    }
+#ifndef NDEBUG
+    // Not with a controller in hand: onMove(EyeGaze) on the head pose every
+    // frame would steer fuse and the shared last-known pose to the head.
+    if (!gazeLocated && _fakeGaze && !controllerAimActive) {
+        gazePos     = camera.getPosition();
+        gazeRot     = camera.getRotation();
+        gazeForward = camera.getForward();
+        gazeLocated = true;
+    }
+#endif
+
+    // ── Select owner ─────────────────────────────────────────────────────────
+    // An active controller aim keeps today's behaviour. Otherwise a located
+    // gaze takes select (glasses: look, then pinch). A press in flight keeps
+    // its owner until release, so a blink or a gaze reacquire mid-pinch can't
+    // move one press onto a second pointer.
+    bool gazeOwnsSelect;
+    if (controllerAimActive) {
+        gazeOwnsSelect = false;
+    } else if (_prevPinchGaze) {
+        gazeOwnsSelect = true;
+    } else if (_prevPinchLeft || _prevPinchRight) {
+        gazeOwnsSelect = false;
+    } else {
+        gazeOwnsSelect = gazeLocated;
+    }
+    const SelectOwner owner = controllerAimActive ? SelectOwner::Controller
+                            : gazeOwnsSelect      ? SelectOwner::Gaze
+                                                  : SelectOwner::Hand;
+    if (owner != _selectOwner) {
+        _selectOwner = owner;
+        ALOGI("Select pointer: %s",
+              owner == SelectOwner::Controller ? "controller"
+              : owner == SelectOwner::Gaze     ? "gaze" : "hand");
+    }
+
     // ── Hand tracking — gestures + fill missing-side aim from joints ────────
     bool          rightHandValid = false;
     VROVector3f   rightHandPos;
@@ -593,10 +677,40 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     VROVector3f   leftHandPos;
     VROQuaternion leftHandRot;
     VROVector3f   leftHandForward;
+    bool          gazePinch[2]       = { false, false };
+    bool          gazeHandTracked[2] = { false, false };
     processHands(baseSpace, time, camera,
                  /*skipRight=*/rightValid, /*skipLeft=*/leftValid,
+                 gazeOwnsSelect, gazePinch, gazeHandTracked,
                  rightHandValid, rightHandPos, rightHandRot, rightHandForward,
                  leftHandValid,  leftHandPos,  leftHandRot,  leftHandForward);
+
+    // One edge for both hands. A press is cancelled, never completed, when a
+    // hand in it stops tracking, the gaze is lost past the blink window, or a
+    // controller takes select.
+    const bool pressHandLost = (_gazePressHand[0] && !gazeHandTracked[0]) ||
+                               (_gazePressHand[1] && !gazeHandTracked[1]);
+    const bool gazeSelectActive = gazeOwnsSelect && gazeLocated && !pressHandLost &&
+                                  (gazeHandTracked[0] || gazeHandTracked[1]);
+    const bool anyGazePinch = gazePinch[0] || gazePinch[1];
+    const VROInputButtonEdge gazeEdge =
+        updateInputButton(gazeSelectActive, anyGazePinch, _prevPinchGaze);
+    if (_prevPinchGaze) {
+        // A hand joining mid-press counts as part of it.
+        _gazePressHand[0] = _gazePressHand[0] || gazePinch[0];
+        _gazePressHand[1] = _gazePressHand[1] || gazePinch[1];
+    } else {
+        _gazePressHand[0] = _gazePressHand[1] = false;
+    }
+    switch (gazeEdge) {
+        case VROInputButtonEdge::Down:
+            queueButtonEvent(ViroOculus::EyeGaze, VROEventDelegate::ClickDown); break;
+        case VROInputButtonEdge::Up:
+            queueButtonEvent(ViroOculus::EyeGaze, VROEventDelegate::ClickUp); break;
+        case VROInputButtonEdge::Cancel:
+            VROInputControllerBase::cancelSource(ViroOculus::EyeGaze); break;
+        case VROInputButtonEdge::None: break;
+    }
 
     // Hysteresis on hand-tracking poses too — they flicker more than
     // controllers (joint visibility depends on hand orientation).
@@ -624,14 +738,16 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     // state is tracked separately in VROInputControllerBase. Button edges
     // polled earlier this frame are flushed after this, so they resolve
     // against these hits rather than the previous frame's.
-    auto dispatchSide = [this, &camera](
+    // While gaze owns select the hand ray selects nothing, so its laser would
+    // point at the wrong target; the reticle stays on the gaze hit.
+    auto dispatchSide = [this, &camera, gazeOwnsSelect](
         bool valid, int source,
         const VROVector3f &pos, const VROQuaternion &rot, const VROVector3f &fwd) {
         if (valid) {
             VROInputControllerBase::updateHitNode(source, camera, pos, fwd);
             VROInputControllerBase::onMove(source, pos, rot, fwd);
             VROInputControllerBase::processGazeEvent(source);
-            updateLaserViz(source, pos, fwd, /*visible=*/true);
+            updateLaserViz(source, pos, fwd, /*visible=*/!gazeOwnsSelect);
         } else {
             VROInputControllerBase::cancelSource(source);
             updateLaserViz(source, {}, {}, /*visible=*/false);
@@ -649,27 +765,14 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
                             _leftGripPoseAction, _leftGripSpace);
 
     // ── Gaze — eye tracking where available, head pose everywhere else ─────
-    bool eyeGazeLocated = false;
-    // ── Eye gaze (Quest Pro) — additive onHover source ──────────────────────
-    // Locate the eye-gaze pose and feed it through the same hit-test/onHover path
-    // as the controllers, under its own source id. No laser line is drawn (a gaze
-    // ray shouldn't render a beam); the reticle still follows via processGazeEvent.
-    if (_eyeGazeEnabled && _eyeGazeSpace != XR_NULL_HANDLE) {
-        XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
-        XrResult r = xrLocateSpace(_eyeGazeSpace, baseSpace, time, &loc);
-        if (XR_SUCCEEDED(r) &&
-            (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
-            (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
-            VROVector3f   gazePos     = xrVec3ToVRO(loc.pose.position);
-            VROQuaternion gazeRot     = xrQuatToVRO(loc.pose.orientation);
-            VROVector3f   gazeForward = xrAimForward(loc.pose);
-            VROInputControllerBase::updateHitNode(ViroOculus::EyeGaze, camera, gazePos, gazeForward);
-            VROInputControllerBase::onMove(ViroOculus::EyeGaze, gazePos, gazeRot, gazeForward);
-            VROInputControllerBase::processGazeEvent(ViroOculus::EyeGaze);
-            eyeGazeLocated = true;
-        }
-    }
-    if (!eyeGazeLocated) {
+    // Eye gaze (located above) feeds the same hit-test/onHover path as the
+    // controllers under its own source id, with no laser. onMove here is what
+    // seeds and moves an EyeGaze drag when gaze owns select.
+    if (gazeLocated) {
+        VROInputControllerBase::updateHitNode(ViroOculus::EyeGaze, camera, gazePos, gazeForward);
+        VROInputControllerBase::onMove(ViroOculus::EyeGaze, gazePos, gazeRot, gazeForward);
+        VROInputControllerBase::processGazeEvent(ViroOculus::EyeGaze);
+    } else {
         // Head pose, when there is no eye tracker or it lost the eyes this frame.
         // The camera holds this frame's HMD pose, already in the reference space
         // the controller rays above were located in.
@@ -700,8 +803,10 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         // hand (B on the right and Menu on the left share the source id, so
         // rayForSource returns neither controller), and its callback finishes the
         // VR activity, so the pulse would be cut off or land after the scene is gone.
+        // EyeGaze is excluded too: gaze owns select only with no controller in hand.
         if (edge.second == VROEventDelegate::ClickState::ClickDown &&
-            edge.first != ViroOculus::BackButton) {
+            edge.first != ViroOculus::BackButton &&
+            edge.first != ViroOculus::EyeGaze) {
             const bool leftHand = rayForSource(edge.first) == ViroOculus::LeftController;
             triggerHaptic(session, leftHand ? 0 : 1);
         }
@@ -786,6 +891,8 @@ void VROInputControllerOpenXR::destroyHandTrackers() {
 void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                                               const VROCamera &camera,
                                               bool skipRight, bool skipLeft,
+                                              bool gazeOwnsSelect, bool (&gazePinchOut)[2],
+                                              bool (&gazeHandTrackedOut)[2],
                                               bool &rightAimValidOut,
                                               VROVector3f &rightAimPosOut,
                                               VROQuaternion &rightAimRotOut,
@@ -794,8 +901,10 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                                               VROVector3f &leftAimPosOut,
                                               VROQuaternion &leftAimRotOut,
                                               VROVector3f &leftAimForwardOut) {
-    rightAimValidOut = false;
-    leftAimValidOut  = false;
+    rightAimValidOut   = false;
+    leftAimValidOut    = false;
+    gazePinchOut[0]       = gazePinchOut[1]       = false;
+    gazeHandTrackedOut[0] = gazeHandTrackedOut[1] = false;
 
     auto updateMenuGesture = [this](bool pressed) {
         if (pressed && !_prevMenuGestureLeft) {
@@ -951,11 +1060,26 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                                 XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB))) {
             pinched = false;
         }
-        if (pinched && !prevPinch)
-            queueButtonEvent(source, VROEventDelegate::ClickState::ClickDown);
-        else if (!pinched && prevPinch)
-            queueButtonEvent(source, VROEventDelegate::ClickState::ClickUp);
-        prevPinch = pinched;
+        // Gaze owns select: this hand's pinch feeds the merged EyeGaze edge in
+        // onProcess. prevPinch stays false, as the owner rule there requires.
+        // A pinch held across the handback to the hand ray stays disarmed
+        // until released, so it cannot click a second target.
+        bool &pinchArmed = (hand == 0) ? _pinchArmedLeft : _pinchArmedRight;
+        if (gazeOwnsSelect) {
+            gazeHandTrackedOut[hand] = true;
+            gazePinchOut[hand] = pinched;
+            pinchArmed = !pinched;
+        } else {
+            if (!pinchArmed) {
+                pinchArmed = !pinched;
+                pinched = false;
+            }
+            if (pinched && !prevPinch)
+                queueButtonEvent(source, VROEventDelegate::ClickState::ClickDown);
+            else if (!pinched && prevPinch)
+                queueButtonEvent(source, VROEventDelegate::ClickState::ClickUp);
+            prevPinch = pinched;
+        }
 
         // ── Grab detection (middle tip to palm distance) ──────────────────────
         auto &palm      = jointLocs[XR_HAND_JOINT_PALM_EXT];
