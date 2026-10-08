@@ -108,9 +108,10 @@ public:
                                       uint32_t version, const std::vector<uint8_t> &bytes);
 
     /*
-     True when the GLB's JSON chunk names KHR_texture_basisu. VROGLTFLoader cannot
-     decode KTX2/Basis textures, so such a model renders with its base colour
-     factor only; the caller logs this so the device log explains a grey model.
+     True when the GLB's JSON chunk names KHR_texture_basisu (KTX2 / Basis
+     Universal textures; Meta's Touch Plus models use UASTC + Zstd). The caller
+     tags its log line with it; VROGLTFLoader logs whether each KTX2 image was
+     transcoded or, if not, why the material fell back to its base colour.
      */
     static bool usesBasisuTextures(const std::vector<uint8_t> &glb);
 

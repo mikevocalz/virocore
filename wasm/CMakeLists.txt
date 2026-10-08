@@ -116,6 +116,7 @@ SET( VIRO_CORE_SRC
      ${VIRO_RENDERER_SRC}/VROTaskQueue.cpp
      ${VIRO_RENDERER_SRC}/VROFBXLoader.cpp
      ${VIRO_RENDERER_SRC}/VROGLTFLoader.cpp
+     ${VIRO_RENDERER_SRC}/VROKTX2Texture.cpp
      ${VIRO_RENDERER_SRC}/VROCompress.cpp
      ${VIRO_RENDERER_SRC}/VROSparseBitSet.cpp
      ${VIRO_RENDERER_SRC}/gzip_stream.cpp
@@ -324,6 +325,9 @@ SET( VIRO_TEST_SRC
 # Full source list for the legacy SDL test executables.
 SET(VIRO_RENDERER_SRC ${VIRO_CORE_SRC} ${VIRO_TEST_SRC})
 
+# Basis Universal KTX2 transcoder for glTF KHR_texture_basisu. Linking it
+# defines VRO_HAS_BASISU=1; on the web every KTX2 image decodes to RGBA8.
+ADD_SUBDIRECTORY(${CMAKE_SOURCE_DIR}/../ViroRenderer/basisu ${CMAKE_BINARY_DIR}/basisu)
 ADD_SUBDIRECTORY(libs/bullet/src/LinearMath)
 ADD_SUBDIRECTORY(libs/bullet/src/BulletSoftBody)
 ADD_SUBDIRECTORY(libs/bullet/src/BulletDynamics)
@@ -337,6 +341,7 @@ LIST(APPEND VIRO_LINK_LIBS bullet_linearmath)
 LIST(APPEND VIRO_LINK_LIBS bullet_softbody)
 LIST(APPEND VIRO_LINK_LIBS bullet_dynamics)
 LIST(APPEND VIRO_LINK_LIBS bullet_collision)
+LIST(APPEND VIRO_LINK_LIBS viro_basisu)
 
 # Legacy SDL test-executable link flags. Modernized to the emsdk 3.x/4.x
 # "-sNAME=VALUE" attached form (the space-separated "-s NAME=VALUE" form is

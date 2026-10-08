@@ -8,7 +8,7 @@
 #
 # SOT-KEYWORDS: cmake, openxr, metal, macos, simulator
 cmake_minimum_required(VERSION 3.24)
-project(viro_sim_host CXX OBJCXX)
+project(viro_sim_host C CXX OBJCXX)  # C: the zstd decoder under ViroRenderer/basisu
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -121,6 +121,12 @@ if(VIRO_DESKTOP_SCENE)
   # whether or not a scene uses them.
   file(GLOB_RECURSE BULLET_SOURCES CONFIGURE_DEPENDS ${VIRO_ROOT}/wasm/libs/bullet/src/*.cpp)
   target_sources(viro_sim_host PRIVATE ${BULLET_SOURCES})
+
+  # Basis Universal KTX2 transcoder for glTF KHR_texture_basisu; links as plain
+  # C++ (not through the objective-c++ flags above) and defines VRO_HAS_BASISU=1.
+  # VROKTX2Texture.cpp itself comes in through the ViroRenderer glob.
+  add_subdirectory(${VIRO_RENDERER_DIR}/basisu ${CMAKE_CURRENT_BINARY_DIR}/basisu)
+  target_link_libraries(viro_sim_host PRIVATE viro_basisu)
 
   # VRODriverMetal compiles the shader library at runtime from
   # ViroShadersSource.txt next to the executable when no ViroKit bundle or
