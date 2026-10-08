@@ -129,6 +129,11 @@ private:
                   int width, int height,
                   const std::vector<uint32_t> &mipSizes);
     
+    void loadCompressedFace(GLenum target, GLenum compressedFormat,
+                            VROMipmapMode mipmapMode,
+                            std::shared_ptr<VROData> &faceData,
+                            int width, int height,
+                            const std::vector<uint32_t> &mipSizes);
     GLuint getInternalFormat(VROTextureInternalFormat format, bool sRGB);
     GLenum convertWrapMode(VROWrapMode wrapMode);
     GLenum convertMagFilter(VROFilterMode magFilter);

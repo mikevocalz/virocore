@@ -168,6 +168,10 @@ private:
     static std::shared_ptr<VROTexture> getTexture(const  tinygltf::Model &gModel, std::map<std::string, tinygltf::Parameter> gPropMap,
                                                   std::string targetedTextureName, bool srgb);
     static std::shared_ptr<VROTexture> getTexture(const tinygltf::Model &gModel, const tinygltf::Texture &texture, bool srgb);
+    static std::shared_ptr<VROTexture> getKTX2Texture(const tinygltf::Model &gModel, const tinygltf::Texture &texture,
+                                                      int imageIndex, bool srgb, bool hasFallback);
+    static void applySampler(const tinygltf::Model &gModel, const tinygltf::Texture &texture,
+                             std::shared_ptr<VROTexture> &vroTexture);
     static void processPBR(const tinygltf::Model &gModel, std::shared_ptr<VROMaterial> &texture, const tinygltf::Material &gMat);
 
     // Conversion of GLTF Semantics to VRO Semantics

@@ -248,6 +248,7 @@ add_library( # Sets the name of the library.
              ${VIRO_RENDERER_SRC}/VROPlatformUtil.cpp
              ${VIRO_RENDERER_SRC}/VROFBXLoader.cpp
              ${VIRO_RENDERER_SRC}/VROGLTFLoader.cpp
+             ${VIRO_RENDERER_SRC}/VROKTX2Texture.cpp
              ${VIRO_RENDERER_SRC}/VROModelIOUtil.cpp
              ${VIRO_RENDERER_SRC}/VROOBJLoader.cpp
              ${VIRO_RENDERER_SRC}/VROHDRLoader.cpp
@@ -495,6 +496,10 @@ add_library( # Sets the name of the library.
              ${VIRO_RENDERER_SRC}/VROBodyMesherTest.cpp
              )
 
+# Basis Universal KTX2 transcoder for glTF KHR_texture_basisu (static, hidden
+# symbols). Linking it defines VRO_HAS_BASISU=1 for viro_renderer.
+add_subdirectory(${VIRO_RENDERER_SRC}/basisu ${CMAKE_CURRENT_BINARY_DIR}/basisu)
+
 # Add pre-built libraries
 add_library( lib-gvr
              SHARED
@@ -630,6 +635,7 @@ target_link_libraries( # Specifies the target library.
                        ${OPENXR_LINK_LIB}
 
                        cpufeatures
+                       viro_basisu
                        ${lib-z}
                        "-Wl,-z,max-page-size=16384"
         )

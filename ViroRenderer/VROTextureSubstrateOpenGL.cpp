@@ -29,6 +29,7 @@
 #include "VROData.h"
 #include "VRODriverOpenGL.h"
 #include "VROLog.h"
+#include <algorithm>
 
 VROTextureSubstrateOpenGL::VROTextureSubstrateOpenGL(VROTextureType type,
                                                      VROTextureFormat format,
@@ -133,40 +134,15 @@ void VROTextureSubstrateOpenGL::loadFace(GLenum target,
                                          int width, int height,
                                          const std::vector<uint32_t> &mipSizes) {
     
-    if (format == VROTextureFormat::ETC2_RGBA8_EAC) {
+    if (format == VROTextureFormat::ETC2_RGBA8_EAC || format == VROTextureFormat::ASTC_4x4_LDR) {
         passert (mipmapMode != VROMipmapMode::Runtime);
-        
-        if (mipmapMode == VROMipmapMode::Pregenerated) {
-            uint32_t offset = 0;
-            
-            GLenum internalFormat = sRGB ? GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC : GL_COMPRESSED_RGBA8_ETC2_EAC;
-            for (int level = 0; level < mipSizes.size(); level++) {
-                uint32_t mipSize = mipSizes[level];
-                GL( glCompressedTexImage2D(target, level, internalFormat,
-                                           width >> level, height >> level, 0,
-                                           mipSize, ((const char *)faceData->getData()) + offset) );
-                offset += mipSize;
-            }
+        GLenum compressedFormat;
+        if (format == VROTextureFormat::ETC2_RGBA8_EAC) {
+            compressedFormat = sRGB ? GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC : GL_COMPRESSED_RGBA8_ETC2_EAC;
+        } else {
+            compressedFormat = sRGB ? GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR : GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
         }
-        else { // VROMipmapMode::None
-            // Note the data received may have mipmaps, we just might not be using them
-            // If no mipsizes are provided, though, then we just use the full data length
-            GLenum internalFormat = sRGB ? GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC : GL_COMPRESSED_RGBA8_ETC2_EAC;
-            if (!mipSizes.empty()) {
-                GL( glCompressedTexImage2D(target, 0, internalFormat, width, height, 0,
-                                           mipSizes.front(), faceData->getData()) );
-            }
-            else {
-                GL( glCompressedTexImage2D(target, 0, GL_COMPRESSED_RGBA8_ETC2_EAC, width, height, 0,
-                                           faceData->getDataLength(), faceData->getData()) );
-            }
-        }
-    }
-    else if (format == VROTextureFormat::ASTC_4x4_LDR) {
-        passert (mipmapMode == VROMipmapMode::None);
-        GLenum internalFormat = sRGB ? GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR : GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
-        GL( glCompressedTexImage2D(target, 0, internalFormat, width, height, 0,
-                                   faceData->getDataLength(), faceData->getData()) );
+        loadCompressedFace(target, compressedFormat, mipmapMode, faceData, width, height, mipSizes);
     }
     else if (format == VROTextureFormat::RGBA8 || format == VROTextureFormat::RGB8) {
         // We write format RGB8 into internal format RGBA8, because sRGB8 does not work
@@ -235,6 +211,46 @@ void VROTextureSubstrateOpenGL::loadFace(GLenum target,
          */
         pwarn("Unsupported texture format [%d]; leaving this face undefined",
               (int) format);
+    }
+}
+
+void VROTextureSubstrateOpenGL::loadCompressedFace(GLenum target, GLenum compressedFormat,
+                                                   VROMipmapMode mipmapMode,
+                                                   std::shared_ptr<VROData> &faceData,
+                                                   int width, int height,
+                                                   const std::vector<uint32_t> &mipSizes) {
+    const char *bytes = (const char *) faceData->getData();
+    if (mipmapMode == VROMipmapMode::Pregenerated && !mipSizes.empty()) {
+        // Levels are packed back to back. Each level is max(1, size >> level) on
+        // each axis: a non-square texture keeps halving its long side after the
+        // short side reaches 1 (256x64 ends 4x1, 2x1, 1x1), and GL rejects a 0.
+        uint32_t offset = 0;
+        for (size_t level = 0; level < mipSizes.size(); level++) {
+            uint32_t mipSize = mipSizes[level];
+            if ((uint64_t) offset + mipSize > (uint64_t) faceData->getDataLength()) {
+                pwarn("Compressed texture data ends before mip level %d; truncating the chain",
+                      (int) level);
+                if (target == GL_TEXTURE_2D && level > 0) {
+                    GL( glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint) level - 1) );
+                }
+                return;
+            }
+            GL( glCompressedTexImage2D(target, (GLint) level, compressedFormat,
+                                       std::max(1, width >> level), std::max(1, height >> level), 0,
+                                       mipSize, bytes + offset) );
+            offset += mipSize;
+        }
+        // A chain shorter than log2(size) + 1 is only complete if GL is told
+        // where it ends; otherwise mipmapped sampling reads an incomplete texture.
+        if (target == GL_TEXTURE_2D) {
+            GL( glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint) mipSizes.size() - 1) );
+        }
+    }
+    else {
+        // VROMipmapMode::None. The data may still hold mips we are not using; if
+        // no mip sizes are provided, the whole buffer is level 0.
+        GLsizei size = mipSizes.empty() ? (GLsizei) faceData->getDataLength() : (GLsizei) mipSizes.front();
+        GL( glCompressedTexImage2D(target, 0, compressedFormat, width, height, 0, size, bytes) );
     }
 }
 

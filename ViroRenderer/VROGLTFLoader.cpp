@@ -59,7 +59,9 @@
 #include "VROMorpher.h"
 #include "VRONodeCamera.h"
 #include "VROLight.h"
+#include "VROKTX2Texture.h"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <set>
 
@@ -3132,10 +3134,51 @@ std::shared_ptr<VROTexture> VROGLTFLoader::getTexture(const tinygltf::Model &gMo
     return getTexture(gModel, gTexture, srgb);
 }
 
+namespace {
+
+// KHR_texture_basisu: textures[i].extensions.KHR_texture_basisu.source is the
+// index of a KTX2 image. Returns -1 when the texture does not use the extension.
+int getBasisuImageIndex(const tinygltf::Texture &gTexture) {
+    auto it = gTexture.extensions.find("KHR_texture_basisu");
+    if (it == gTexture.extensions.end() || !it->second.IsObject()) {
+        return -1;
+    }
+    const tinygltf::Value &source = it->second.Get("source");
+    if (source.IsInt()) {
+        return source.Get<int>();
+    }
+    if (source.IsNumber()) {
+        const double index = source.Get<double>();
+        if (std::isfinite(index) && index >= 0 && index <= (double) std::numeric_limits<int>::max()) {
+            return (int) index;
+        }
+    }
+    return -1;
+}
+
+// A KTX2 file starts with «KTX 20», whatever the glTF says its mimeType is.
+bool isKTX2(const std::vector<unsigned char> &bytes) {
+    static const unsigned char kMagic[12] = { 0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n' };
+    return bytes.size() >= sizeof(kMagic) && memcmp(bytes.data(), kMagic, sizeof(kMagic)) == 0;
+}
+
+} // namespace
+
 std::shared_ptr<VROTexture> VROGLTFLoader::getTexture(const tinygltf::Model &gModel, const tinygltf::Texture &gTexture, bool srgb){
-    std::shared_ptr<VROTexture> texture = nullptr;
+    // Prefer the KTX2 image of KHR_texture_basisu. texture.source, when present
+    // beside it, is the fallback the extension defines for loaders that cannot
+    // transcode, so it is used only if the KTX2 image fails.
+    const int basisuIndex = getBasisuImageIndex(gTexture);
+    if (basisuIndex >= 0) {
+        std::shared_ptr<VROTexture> texture = getKTX2Texture(gModel, gTexture, basisuIndex, srgb,
+                                                             gTexture.source >= 0);
+        if (texture != nullptr || gTexture.source < 0) {
+            return texture;
+        }
+    }
+
     int imageIndex = gTexture.source;
-    if (imageIndex < 0){
+    if (imageIndex < 0 || imageIndex >= (int) gModel.images.size()){
         perr("Attempted to grab an invalid GTLF texture source.");
         return nullptr;
     }
@@ -3151,6 +3194,12 @@ std::shared_ptr<VROTexture> VROGLTFLoader::getTexture(const tinygltf::Model &gMo
     const tinygltf::Image &gImg = gModel.images[imageIndex];
     const std::string &imgName = gImg.name;
 
+    // A KTX2 image named directly by texture.source (no extension) still goes
+    // through the transcoder: the platform image decoders cannot read it.
+    if (isKTX2(gImg.rawByteVec)) {
+        return getKTX2Texture(gModel, gTexture, imageIndex, srgb, false);
+    }
+
     // Decode the GLTF image data / raw bytes into a VROImage data.
     std::shared_ptr<VROImage> image = VROPlatformLoadImageWithBufferedData(gImg.rawByteVec, VROTextureInternalFormat::RGBA8);
     if (image == nullptr){
@@ -3159,10 +3208,57 @@ std::shared_ptr<VROTexture> VROGLTFLoader::getTexture(const tinygltf::Model &gMo
     }
 
     // Use the VROImage data to create a VROTexture, with parsed GLTF Sampler properties.
-    texture = std::make_shared<VROTexture>(srgb, VROMipmapMode::Runtime, image);
+    std::shared_ptr<VROTexture> texture = std::make_shared<VROTexture>(srgb, VROMipmapMode::Runtime, image);
+    applySampler(gModel, gTexture, texture);
+
+    // Cache a copy of the created texture as other elements may also refer to it.
+    std::string key = VROStringUtil::toString(imageIndex);
+    VROGLTFLoader::_textureCache[key] = texture;
+    return texture;
+}
+
+std::shared_ptr<VROTexture> VROGLTFLoader::getKTX2Texture(const tinygltf::Model &gModel, const tinygltf::Texture &gTexture,
+                                                          int imageIndex, bool srgb, bool hasFallback) {
+    if (imageIndex >= (int) gModel.images.size()) {
+        pwarn("glTF KHR_texture_basisu: image %d does not exist (%d images)%s", imageIndex,
+              (int) gModel.images.size(), hasFallback ? "; using the fallback image" : "");
+        return nullptr;
+    }
+
+    // The colour space is part of the decoded texture, so the same image used as
+    // both sRGB and linear (unusual, but legal) gets one entry per space.
+    const std::string key = "ktx2:" + VROStringUtil::toString(imageIndex) + (srgb ? ":srgb" : ":linear");
+    auto cached = VROGLTFLoader::_textureCache.find(key);
+    if (cached != VROGLTFLoader::_textureCache.end()) {
+        return cached->second;
+    }
+
+    const tinygltf::Image &gImg = gModel.images[imageIndex];
+    const VROKTX2Target target = VROKTX2Texture::chooseTarget();
+    std::string summary;
+    std::string error;
+    std::shared_ptr<VROTexture> texture = VROKTX2Texture::createTexture(gImg.rawByteVec, srgb, target,
+                                                                        &summary, &error);
+    if (texture == nullptr) {
+        pwarn("glTF KHR_texture_basisu: image %d '%s' not decoded: %s; %s", imageIndex, gImg.name.c_str(),
+              error.c_str(), hasFallback ? "using the fallback image" : "material keeps its base colour only");
+        // Cache the failure too, so other slots using this image neither
+        // transcode it again nor repeat the warning.
+        VROGLTFLoader::_textureCache[key] = nullptr;
+        return nullptr;
+    }
+    pinfo("glTF KHR_texture_basisu: image %d '%s' decoded: %s", imageIndex, gImg.name.c_str(), summary.c_str());
+
+    applySampler(gModel, gTexture, texture);
+    VROGLTFLoader::_textureCache[key] = texture;
+    return texture;
+}
+
+void VROGLTFLoader::applySampler(const tinygltf::Model &gModel, const tinygltf::Texture &gTexture,
+                                 std::shared_ptr<VROTexture> &texture) {
     int samplerIndex = gTexture.sampler;
-    if (samplerIndex >=0) {
-        tinygltf::Sampler sampler = gModel.samplers[samplerIndex];
+    if (samplerIndex >= 0 && samplerIndex < (int) gModel.samplers.size()) {
+        const tinygltf::Sampler &sampler = gModel.samplers[samplerIndex];
         texture->setWrapS(getWrappingMode(sampler.wrapS));
         texture->setWrapT(getWrappingMode(sampler.wrapT));
         texture->setMagnificationFilter(getFilterMode(sampler.magFilter));
@@ -3175,11 +3271,6 @@ std::shared_ptr<VROTexture> VROGLTFLoader::getTexture(const tinygltf::Model &gMo
         texture->setMinificationFilter(VROFilterMode::Linear);
         texture->setMipFilter(VROFilterMode::Linear);
     }
-
-    // Cache a copy of the created texture as other elements may also refer to it.
-    std::string key = VROStringUtil::toString(imageIndex);
-    VROGLTFLoader::_textureCache[key] = texture;
-    return texture;
 }
 
 VROMatrix4f VROGLTFLoader::getTransformOfNode(const tinygltf::Model &gModel, int nodeIndex) {

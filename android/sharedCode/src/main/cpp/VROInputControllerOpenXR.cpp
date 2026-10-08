@@ -1489,7 +1489,7 @@ void VROInputControllerOpenXR::resolveControllerModel(
                 });
             ALOGI("[XR-DIAG] controller model: runtime render model %s (key %llu)%s", rmPath,
                   (unsigned long long)key,
-                  basisu ? " [KHR_texture_basisu textures not decoded; base colour only]" : "");
+                  basisu ? " [KHR_texture_basisu: per-image decode result in the glTF loader log]" : "");
         });
     });
 }
