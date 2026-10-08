@@ -6,13 +6,9 @@
 
 #include "VROInputControllerOpenXR.h"
 #include "VROInputButtonState.h"
-#include <android/log.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#ifndef NDEBUG
-#include <sys/system_properties.h>
-#endif
 #include "VROLog.h"
 #include "VROInputPresenterOpenXR.h"
 #include "VROVector3f.h"
@@ -22,10 +18,7 @@
 
 #undef  LOG_TAG
 #define LOG_TAG "VROInputOpenXR"
-#define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR,   LOG_TAG, __VA_ARGS__)
-#define ALOGW(...) __android_log_print(ANDROID_LOG_WARN,    LOG_TAG, __VA_ARGS__)
-#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO,    LOG_TAG, __VA_ARGS__)
-#define ALOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
+#include "VROOpenXRPlatform.h"
 
 static constexpr float kTriggerThreshold   = 0.5f;
 static constexpr float kGripThreshold      = 0.5f;
@@ -95,9 +88,7 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     // Debug builds only: lets the gaze-select branch run on a Quest 3/3S, which
     // has no eye tracker. Read once per session; never compiled into release.
     {
-        char value[PROP_VALUE_MAX] = {0};
-        _fakeGaze = __system_property_get("debug.viro.fake_gaze", value) > 0 &&
-                    strcmp(value, "1") == 0;
+        _fakeGaze = VROOpenXRDebugFlag("debug.viro.fake_gaze");
         if (_fakeGaze) {
             ALOGW("VIRO_DEBUG_FAKE_GAZE active: head pose stands in for eye gaze");
         }
@@ -1425,8 +1416,7 @@ void VROInputControllerOpenXR::resolveControllerModel(
     if (state.phase == Phase::Runtime && props.key == state.key) return;
 
     if (_renderModelCacheDir.empty()) {
-        // Render thread, scene running: the platform JNI bridge is up by now.
-        _renderModelCacheDir = VROPlatformGetCacheDirectory();
+        _renderModelCacheDir = VROOpenXRCacheDirectory();
     }
 
     // Load off the render thread (the spec allows xrLoadRenderModelFB to be

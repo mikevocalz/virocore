@@ -15,6 +15,21 @@ immersive, passthrough and passthrough-fallback display modes; and Khronos
 hello_xr (Metal) on the same runtime, built from the OpenXR source CMake
 already fetched into desktop/build/_deps.
 
+The input gates drive VROInputControllerOpenXR, the controller that ships on
+Quest, PICO and Android XR (the host compiles it from android/sharedCode), so
+they test the device input logic, not a desktop stand-in:
+  * Glasses, hands only: eye gaze + pinch bind ext/hand_interaction_ext, the
+    gaze owns select, a pinch on the box clicks it through the EyeGaze source,
+    a pinch while looking away clicks nothing, a held pinch drags the box.
+  * Glasses with controllers: select moves to the controller, the trigger
+    clicks along the aim ray, and releasing the controllers hands select back
+    to the gaze.
+  * Quest 3 (no eye tracker): controllers select along the aim ray, and with
+    the controllers released a hand pinch selects along the hand ray.
+  * Controller models: whatever XR_FB_render_model reports, the log must show
+    the runtime model or the documented fallback; runtime models must load,
+    and KTX2 (KHR_texture_basisu) textures in them must decode.
+
 Two simulator traps this script handles:
   * The config env var is META_XRSIM_CONFIG_JSON. Any other name is ignored
     silently and the simulator runs on its bundled defaults.
@@ -98,6 +113,49 @@ def lit(img):
     return len(xs), (sum(xs) / len(xs) if xs else None)
 
 
+# ViroOculus source ids (ViroRenderer/VROInputType.h).
+SRC_CONTROLLER = 1
+SRC_EYE_GAZE = 12
+
+# Unit quaternions [x, y, z, w] for a yaw (about +Y) of the given degrees.
+def yaw(deg):
+    import math
+    h = math.radians(deg) / 2
+    return [0.0, math.sin(h), 0.0, math.cos(h)]
+
+
+def mark(log):
+    return len(open(log).read())
+
+
+def since(log, at):
+    return open(log).read()[at:]
+
+
+def clicks(text, source):
+    return re.findall(rf"^input-xr: BOX CLICK source={source} ", text, re.M)
+
+
+def bound_profile(op, hand):
+    for c in op.call("openxr_get_active_interaction_profile", hand=hand):
+        if c.get("type") == "text":
+            try:
+                return (json.loads(c["text"]).get(hand) or {}).get("profile")
+            except ValueError:
+                return None
+    return None
+
+
+def box_x(img):
+    """Centroid x of the box's orange checker texels. Only the box is orange;
+    the controller models (white/black) and the laser (cyan) are excluded, so
+    they cannot shift the stereo and head-yaw measurements."""
+    w = img.size[0]
+    xs = [i % w for i, (r, g, b) in enumerate(img.getdata())
+          if r > 150 and 60 < g < 160 and b < 90]
+    return sum(xs) / len(xs) if xs else None
+
+
 def wait_for(log, pattern, timeout=20):
     end = time.time() + timeout
     while time.time() < end:
@@ -127,7 +185,8 @@ def launch(profile, transport, workdir, tag, extra_env=None):
                META_XRSIM_CONFIG_JSON=cfg_path,
                XR_API_LAYER_PATH=OPERATOR,
                XR_ENABLE_API_LAYERS="XR_APILAYER_METAX_operator",
-               VIRO_FRAMES="216000", **(extra_env or {}))
+               VIRO_FRAMES="216000")
+    env.update(extra_env or {})
     host = subprocess.Popen([HOST], cwd=os.path.dirname(HOST), env=env,
                             stdout=open(log, "w"), stderr=subprocess.STDOUT)
     return host, log
@@ -156,13 +215,23 @@ def run(profile, transport, op_ok, workdir):
               not re.search(r"opengl", "\n".join(l for l in text.splitlines()
                                                  if not l.startswith("[Meta XR Simulator]")), re.I))
         check("XR_KHR_metal_enable", "ext XR_KHR_metal_enable: yes" in text)
-        binds = re.findall(r"^input-xr: (.*?) -> (-?\d+)$", text, re.M)
-        check("input bindings + attach succeed", binds and all(r == "0" for _, r in binds),
-              ", ".join(f"{n}={r}" for n, r in binds if r != "0"))
+        has_gaze = re.search(r"^eye gaze interaction: extension=1 supported=1$", text, re.M) is not None
+        suggests = dict(re.findall(r"\[XR-DIAG\] suggest (\S+) -> (\S+)$", text, re.M))
+        wanted = ["/interaction_profiles/oculus/touch_controller",
+                  "/interaction_profiles/ext/hand_interaction_ext"]
+        if has_gaze:
+            wanted.append("/interaction_profiles/ext/eye_gaze_interaction")
+        check("shared OpenXR controller: bindings accepted",
+              all(suggests.get(w) == "XR_SUCCESS" for w in wanted),
+              ", ".join(f"{w}={suggests.get(w)}" for w in wanted))
+        check("shared OpenXR controller: action set attached",
+              "OpenXR action set created and attached" in text and
+              "createActionSet failed" not in text)
+        check("Metal shaders compile (incl. pointer laser)",
+              "Failed to compile dynamic shader library" not in text)
         px = re.search(r"^eye 0 readback .* lit=(\d+)/(\d+)", text, re.M)
         check("Gate A: swapchain readback non-black", px and int(px.group(1)) > 1000,
               f"lit {px.group(1)}/{px.group(2)}" if px else "no readback line")
-        has_gaze = "eye gaze not supported" not in text
         if not op_ok:
             return
 
@@ -185,7 +254,8 @@ def run(profile, transport, op_ok, workdir):
             check("Gate C: both eyes non-black",
                   all(n > 1000 for n, _ in stats.values()),
                   " ".join(f"{e}={n}" for e, (n, _) in stats.items()))
-            (_, lx), (_, rx) = stats["left"], stats["right"]
+            lx = box_x(eyes["left"]) if eyes["left"] else None
+            rx = box_x(eyes["right"]) if eyes["right"] else None
             check("stereo disparity (left centroid right of right's)",
                   lx is not None and rx is not None and lx > rx, f"L={lx} R={rx}")
 
@@ -194,40 +264,176 @@ def run(profile, transport, op_ok, workdir):
             time.sleep(1)
             yawed = op.capture("left")
             op.call("openxr_set_head_pose", position=[0, 1.7, 0], orientation=[0, 0, 0, 1])
-            yx = lit(yawed)[1] if yawed else None
+            yx = box_x(yawed) if yawed else None
             check("head yaw left moves scene right", yx is not None and lx is not None and yx > lx + 50,
                   f"x {lx} -> {yx}")
 
-            # Aim the right controller straight ahead from eye height. The
-            # box sits on that ray, so the trigger must click it even on
-            # devices without eye gaze.
-            op.call("openxr_set_controller_pose", hand="right", pose_type="aim",
-                    position=[0.0, 0.0, 0.0], orientation=[0, 0, 0, 1], base_space="view")
-            time.sleep(1)
-            mark = len(open(log).read())
-            op.call("openxr_set_controller_input", hand="right", component="Trigger", value=1.0)
-            time.sleep(1)
-            op.call("openxr_set_controller_input", hand="right", component="Trigger", value=0.0)
-            time.sleep(1)
-            check("controller aim + trigger hits the box",
-                  re.search(r"PINCH DOWN .*hit=node", open(log).read()[mark:]) is not None)
-
-            op.call("openxr_release_input_devices")
             if has_gaze:
-                time.sleep(2)
-                mark = len(open(log).read())
-                op.call("openxr_gaze_and_pinch", gaze_orientation=[0, 0, 0, 1], hand="right",
-                        hold_seconds=0.6)
-                time.sleep(3)
-                check("gaze+pinch hits the box",
-                      re.search(r"PINCH DOWN .*hit=node", open(log).read()[mark:]) is not None)
+                glasses_input(op, log)
             else:
-                print("  [SKIP] gaze+pinch: device has no eye gaze")
+                print("  [SKIP] gaze gates: device has no eye gaze")
+                quest_input(op, log)
+            controller_models(log)
         finally:
             op.close()
         check("host survives input", host.poll() is None)
     finally:
         stop(host)
+
+
+def controller_select(op, log, label):
+    """A controller aimed at the box from the head selects it on trigger."""
+    at = mark(log)
+    op.call("openxr_set_controller_pose", hand="right", pose_type="aim",
+            position=[0.0, 0.0, 0.0], orientation=[0, 0, 0, 1], base_space="view")
+    time.sleep(1.5)
+    check(f"{label}: controller profile bound",
+          (bound_profile(op, "right") or "").endswith("touch_controller_plus") or
+          (bound_profile(op, "right") or "").endswith("touch_controller"),
+          str(bound_profile(op, "right")))
+    op.call("openxr_set_controller_input", hand="right", component="Trigger", value=1.0)
+    time.sleep(0.8)
+    op.call("openxr_set_controller_input", hand="right", component="Trigger", value=0.0)
+    time.sleep(1)
+    text = since(log, at)
+    # The simulator starts with its own controllers bound, so the owner may
+    # already be the controller: accept the log line or no change since start.
+    owner = re.findall(r"Select pointer: (\w+)", open(log).read())
+    check(f"{label}: select owner is the controller", owner and owner[-1] == "controller",
+          owner[-1] if owner else "no owner line")
+    check(f"{label}: trigger clicks the box via the aim ray",
+          len(clicks(text, SRC_CONTROLLER)) >= 1, f"{len(clicks(text, SRC_CONTROLLER))} clicks")
+
+
+def glasses_input(op, log):
+    # Hands only: eye gaze + pinch. The simulator binds hand_interaction_ext
+    # once gaze/hand automation starts.
+    at = mark(log)
+    op.call("openxr_set_eye_gaze_pose", orientation=[0, 0, 0, 1], base_space="local")
+    op.call("openxr_hand_gesture", hand="right", gesture="open")
+    time.sleep(1.5)
+    profile = bound_profile(op, "right")
+    check("glasses hands: active profile hand_interaction_ext",
+          profile == "/interaction_profiles/ext/hand_interaction_ext", str(profile))
+    text = since(log, at)
+    check("glasses hands: app sees hand_interaction_ext bound",
+          "active profile /user/hand/right: /interaction_profiles/ext/hand_interaction_ext" in text)
+    check("glasses hands: Select pointer: gaze", "Select pointer: gaze" in text)
+
+    at = mark(log)
+    op.call("openxr_hand_gesture", hand="right", gesture="pinch")
+    time.sleep(0.8)
+    op.call("openxr_hand_gesture", hand="right", gesture="open")
+    time.sleep(1)
+    text = since(log, at)
+    check("glasses hands: gaze at box + pinch clicks it (EyeGaze source)",
+          len(clicks(text, SRC_EYE_GAZE)) == 1,
+          f"EyeGaze clicks={len(clicks(text, SRC_EYE_GAZE))} other="
+          f"{len(re.findall(r'BOX CLICK', text)) - len(clicks(text, SRC_EYE_GAZE))}")
+
+    at = mark(log)
+    op.call("openxr_set_eye_gaze_pose", orientation=yaw(60), base_space="local")
+    time.sleep(1)
+    op.call("openxr_hand_gesture", hand="right", gesture="pinch")
+    time.sleep(0.8)
+    op.call("openxr_hand_gesture", hand="right", gesture="open")
+    time.sleep(1)
+    text = since(log, at)
+    check("glasses hands: gaze away + pinch clicks nothing",
+          not re.search(r"BOX CLICK", text), f"{len(re.findall(r'BOX CLICK', text))} clicks")
+
+    # Drag: pinch on the box, look 10 degrees left while holding, release.
+    op.call("openxr_set_eye_gaze_pose", orientation=[0, 0, 0, 1], base_space="local")
+    time.sleep(1)
+    at = mark(log)
+    op.call("openxr_hand_gesture", hand="right", gesture="pinch")
+    time.sleep(0.6)
+    op.call("openxr_set_eye_gaze_pose", orientation=yaw(10), base_space="local")
+    time.sleep(1.2)
+    op.call("openxr_hand_gesture", hand="right", gesture="open")
+    time.sleep(1)
+    drags = re.findall(r"^input-xr: box drag source=12 -> \((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)",
+                       since(log, at), re.M)
+    last = tuple(float(v) for v in drags[-1]) if drags else None
+    # FixedDistance at 1.5 m: a 10 degree look-left moves the box ~0.26 m to -x.
+    check("glasses hands: held pinch drags the box with the gaze",
+          last is not None and last[0] < -0.15, f"last drag position {last}")
+    # Drag it back so the controller gates aim at a centred box.
+    at = mark(log)
+    op.call("openxr_hand_gesture", hand="right", gesture="pinch")
+    time.sleep(0.6)
+    op.call("openxr_set_eye_gaze_pose", orientation=[0, 0, 0, 1], base_space="local")
+    time.sleep(1.2)
+    op.call("openxr_hand_gesture", hand="right", gesture="open")
+    time.sleep(1)
+    drags = re.findall(r"^input-xr: box drag source=12 -> \((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)",
+                       since(log, at), re.M)
+    last = tuple(float(v) for v in drags[-1]) if drags else None
+    check("glasses hands: drag back recentres the box",
+          last is not None and abs(last[0]) < 0.05, f"last drag position {last}")
+
+    # Controllers enabled: select moves to the controller.
+    controller_select(op, log, "glasses controllers")
+
+    # Releasing the controllers hands select back to the gaze.
+    at = mark(log)
+    op.call("openxr_release_input_devices")
+    time.sleep(1.5)
+    op.call("openxr_gaze_and_pinch", gaze_orientation=[0, 0, 0, 1], hand="right",
+            hold_duration=0.5, base_space="local")
+    time.sleep(2)
+    text = since(log, at)
+    owners = re.findall(r"Select pointer: (\w+)", text)
+    check("glasses controllers released: select back to gaze", "gaze" in owners,
+          " -> ".join(owners))
+    check("glasses controllers released: gaze+pinch clicks the box",
+          len(clicks(text, SRC_EYE_GAZE)) >= 1, f"{len(clicks(text, SRC_EYE_GAZE))} clicks")
+
+
+def quest_input(op, log):
+    controller_select(op, log, "quest controllers")
+
+    # Controllers released: the hand ray selects. Wrist 10 cm right of the
+    # head, pointing ahead; the box is 0.5 m wide at 1.5 m.
+    at = mark(log)
+    op.call("openxr_release_input_devices")
+    time.sleep(1.5)
+    op.call("openxr_hand_gesture", hand="right", gesture="aim", wrist_position=[0.1, 0.0, -0.3],
+            wrist_orientation=[0, 0, 0, 1], base_space="local")
+    time.sleep(1)
+    op.call("openxr_hand_gesture", hand="right", gesture="pinch")
+    time.sleep(0.8)
+    op.call("openxr_hand_gesture", hand="right", gesture="open")
+    time.sleep(1)
+    text = since(log, at)
+    owners = re.findall(r"Select pointer: (\w+)", text)
+    check("quest hands: Select pointer: hand", "hand" in owners, " -> ".join(owners))
+    check("quest hands: pinch clicks the box via the hand ray",
+          len(clicks(text, SRC_CONTROLLER)) >= 1, f"{len(clicks(text, SRC_CONTROLLER))} clicks")
+
+
+def controller_models(log):
+    text = open(log).read()
+    rm = re.search(r"^\[XR-DIAG\] XR_FB_render_model: extension=(\d) supported=(\d)$", text, re.M)
+    if not rm:
+        check("controller models: XR_FB_render_model reported", False, "no line")
+        return
+    supported = rm.group(2) == "1"
+    print(f"  [INFO] XR_FB_render_model extension={rm.group(1)} supported={rm.group(2)}")
+    if not supported:
+        check("controller models: documented fallback used",
+              re.search(r"controller model: neutral fallback .*controller_neutral\.glb", text) is not None)
+        return
+    runtime = set(re.findall(r"controller model: runtime render model /model_fb/controller/(left|right)", text))
+    check("controller models: runtime models for both hands", runtime == {"left", "right"},
+          ", ".join(sorted(runtime)) or "none")
+    check("controller models: glTF loads", "controller mesh load failed" not in text and
+          "runtime model failed" not in text)
+    if "KHR_texture_basisu" in text:
+        decoded = re.findall(r"glTF KHR_texture_basisu: image \d+ '[^']*' decoded: (.*?)\"?$", text, re.M)
+        failed = re.findall(r"glTF KHR_texture_basisu: .*(fail|error)", text, re.I)
+        check("controller models: KTX2 textures decode", decoded and not failed,
+              f"{len(decoded)} decoded, e.g. {decoded[0] if decoded else '-'}")
 
 
 # Display modes. The box is the only scene content, so the frame corner shows
@@ -239,6 +445,18 @@ MODES = [
     ("passthrough-fallback", {"VIRO_PASSTHROUGH": "1", "VIRO_XR_DISABLE_EXT": "XR_FB_passthrough"},
      1, "immersive (passthrough fallback)"),
 ]
+
+
+def background(img):
+    """The colour most of the four frame corners agree on. The runtime's
+    controller models can sit in one corner (the left controller rests top
+    left on both profiles), so a single corner is not the background."""
+    w, h = img.size
+    corners = [img.getpixel(p) for p in ((20, 20), (w - 21, 20), (20, h - 21), (w - 21, h - 21))]
+    buckets = {}
+    for c in corners:
+        buckets.setdefault(tuple(v // 16 for v in c), []).append(c)
+    return max(buckets.values(), key=len)[0]
 
 
 def run_modes(profile, workdir):
@@ -266,7 +484,7 @@ def run_modes(profile, workdir):
                 check(f"{tag}: capture", False)
                 continue
             img.save(os.path.join(workdir, f"{profile.replace(' ', '_')}-{tag}-left.png"))
-            r, g, b = img.getpixel((20, 20))
+            r, g, b = background(img)
             if tag == "immersive":
                 check(f"{tag}: background black", r + g + b < 30, f"corner {r},{g},{b}")
             elif tag == "passthrough":
@@ -292,6 +510,24 @@ def build_hello_xr():
     if cfg.returncode != 0:
         print(cfg.stdout[-2000:], cfg.stderr[-2000:])
     return os.access(HELLO, os.X_OK)
+
+
+def run_shutdown(profile, workdir):
+    """A short frame budget ends the session the normal way: the host must tear
+    the input controller down before xrDestroySession and exit 0."""
+    print(f"\n### {profile} / clean shutdown")
+    host, log = launch(profile, "gpu_handle", workdir, "shutdown", {"VIRO_FRAMES": "400"})
+    try:
+        rc = host.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        host.kill()
+        rc = None
+    text = open(log).read()
+    check("shutdown: host exits 0 after its frame budget", rc == 0 and "viro_sim_host ok" in text,
+          f"exit {rc}")
+    check("shutdown: input controller released before the session",
+          "controller still owned at teardown" not in text)
+    time.sleep(2)
 
 
 def run_hello_xr(profile, workdir):
@@ -367,6 +603,7 @@ def main():
         for profile in args.profiles.split(","):
             for transport in args.transports.split(","):
                 run(profile.strip(), transport.strip(), op_ok, workdir)
+            run_shutdown(profile.strip(), workdir)
             if op_ok and not args.skip_modes:
                 run_modes(profile.strip(), workdir)
             if op_ok and not args.skip_hello_xr:

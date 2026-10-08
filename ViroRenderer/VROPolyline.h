@@ -88,7 +88,8 @@ public:
 
 private:
     
-    float _thickness;
+    // Zero until set: the default constructor's setMaterials reads it.
+    float _thickness = 0.0f;
     std::vector<std::vector<VROVector3f>> _paths;
     VROPolylineJoinStyle _joinStyle;
     

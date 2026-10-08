@@ -28,8 +28,11 @@
 #include "VROLog.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <atomic>
 #include <fstream>
 #include <cstring>
+#include <mutex>
+#include <vector>
 #include "VROOpenGL.h"
 
 static VROPlatformType sPlatformType = VROPlatformType::Unknown;
@@ -373,7 +376,34 @@ VRORenderingThreadContext *VROPlatformGetRenderingThreadContext() {
     return context;
 }
 
+// Direct renderer queue: a host that owns its render loop instead of a
+// VROViewScene (the OpenXR simulator host under desktop/) turns this on and
+// drains the queue once per frame, as the Android OpenXR renderer does.
+static std::atomic<bool> sUseDirectRendererQueue { false };
+static std::mutex sDirectRendererQueueMutex;
+static std::vector<std::function<void()>> sDirectRendererQueue;
+
+void VROPlatformSetUseDirectRendererQueue(bool use) {
+    sUseDirectRendererQueue.store(use);
+}
+
+void VROPlatformDrainRendererQueue() {
+    std::vector<std::function<void()>> tasks;
+    {
+        std::lock_guard<std::mutex> guard(sDirectRendererQueueMutex);
+        tasks.swap(sDirectRendererQueue);
+    }
+    for (auto &task : tasks) {
+        task();
+    }
+}
+
 void VROPlatformDispatchAsyncRenderer(std::function<void()> fcn) {
+    if (sUseDirectRendererQueue.load()) {
+        std::lock_guard<std::mutex> guard(sDirectRendererQueueMutex);
+        sDirectRendererQueue.push_back(std::move(fcn));
+        return;
+    }
     VRORenderingThreadContext *context = VROPlatformGetRenderingThreadContext();
     passert (context != nullptr);
     [context->view queueRendererTask:fcn];
@@ -386,8 +416,11 @@ void VROPlatformDispatchAsyncApplication(std::function<void()> fcn) {
 }
 
 void VROPlatformDispatchAsyncBackground(std::function<void()> fcn) {
-    passert (_context != nullptr);
-    dispatch_async(_context->backgroundQueue, ^{
+    // Without a VROViewScene there is no context queue; any concurrent queue
+    // serves, since background work never touches renderer state directly.
+    dispatch_queue_t queue = _context ? _context->backgroundQueue
+                                      : dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
+    dispatch_async(queue, ^{
         fcn();
     });
 }

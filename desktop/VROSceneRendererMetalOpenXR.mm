@@ -56,7 +56,8 @@
 #include "VROViewport.h"
 #include "VROFieldOfView.h"
 #include "VRODriverMetalOpenXR.h"
-#include "VROInputControllerXR.h"
+#include "VROInputControllerOpenXR.h"
+#include "VROPlatformUtil.h"
 #endif
 #endif
 
@@ -71,9 +72,11 @@ namespace {
         }                                                                      \
     } while (0)
 
-// Hand tracking, gaze and pinch live in VROInputControllerXR — see
-// desktop/VROInputControllerXR.mm. The session/renderer code here only feeds
-// it session state + predicted display time.
+// Input is VROInputControllerOpenXR, the controller that ships on Quest, PICO
+// and Android XR (android/sharedCode/src/main/cpp), driven in the same order
+// VROSceneRendererOpenXR drives it: createActionSet / initHandTracking /
+// initRenderModels while IDLE, logActiveInteractionProfiles on FOCUSED and on
+// profile changes, onProcess once per frame after prepareFrame.
 
 // ---- Minimal Metal draw ------------------------------------------------------
 // One vertex format for both render modes: interleaved position+color, plus a
@@ -165,6 +168,7 @@ public:
         _material(material) {
         setEnabledEvent(VROEventDelegate::EventAction::OnClick, true);
         setEnabledEvent(VROEventDelegate::EventAction::OnHover, true);
+        setEnabledEvent(VROEventDelegate::EventAction::OnDrag, true);
     }
     void onClick(int source, std::shared_ptr<VRONode> node,
                  ClickState clickState, std::vector<float> position) override {
@@ -173,13 +177,19 @@ public:
             _material->getDiffuse().setColor(
                 _orange ? VROVector4f(1.0f, 0.55f, 0.05f, 1.0f)
                         : VROVector4f(0.15f, 0.65f, 1.0f, 1.0f));
-            std::printf("input-xr: BOX CLICK -> %s\n",
+            std::printf("input-xr: BOX CLICK source=%d -> %s\n", source,
                         _orange ? "ORANGE" : "BLUE");
         }
     }
     void onHover(int source, std::shared_ptr<VRONode> node, bool isHovering,
                  std::vector<float> position) override {
-        std::printf("input-xr: box hover %s\n", isHovering ? "ENTER" : "EXIT");
+        std::printf("input-xr: box hover %s source=%d\n", isHovering ? "ENTER" : "EXIT",
+                    source);
+    }
+    void onDrag(int source, std::shared_ptr<VRONode> node, VROVector3f position) override {
+        // Throttled by VROInputControllerBase; every report is a real move.
+        std::printf("input-xr: box drag source=%d -> (%.3f, %.3f, %.3f)\n", source,
+                    position.x, position.y, position.z);
     }
 private:
     std::shared_ptr<VROMaterial> _material;
@@ -233,7 +243,14 @@ struct VROSceneRendererMetalOpenXR::Impl {
     // Real VRORenderer path: driver + renderer + a one-node scene.
     std::shared_ptr<VRODriverMetalOpenXR> _driver;
     std::shared_ptr<VRORenderer> _renderer;
-    std::shared_ptr<VROInputControllerXR> _inputController;
+    std::shared_ptr<VROInputControllerOpenXR> _inputController;
+    bool _handTrackingExt = false;
+    bool _handAimExt = false;
+    bool _eyeGazeExt = false;
+    bool _eyeGazeSupported = false;
+    bool _handInteractionExt = false;
+    bool _renderModelExt = false;
+    bool _renderModelSupported = false;
     std::shared_ptr<VROSceneController> _sceneController;
     std::shared_ptr<VRONode> _boxNode;
     // VRONode holds its event delegate weakly; this keeps it alive.
@@ -241,7 +258,10 @@ struct VROSceneRendererMetalOpenXR::Impl {
 
     bool buildViroRendererScene() {
         _driver = std::make_shared<VRODriverMetalOpenXR>(device);
-        _inputController = std::make_shared<VROInputControllerXR>(_driver);
+        _inputController = std::make_shared<VROInputControllerOpenXR>(_driver);
+        // Async work (glTF controller models) comes back to this loop, which
+        // drains it each frame; there is no VROViewScene to queue it on.
+        VROPlatformSetUseDirectRendererQueue(true);
 
         // Optional passes off: the scene renders straight to the display target.
         VRORendererConfiguration config;
@@ -266,6 +286,8 @@ struct VROSceneRendererMetalOpenXR::Impl {
         _boxNode = std::make_shared<VRONode>();
         _boxNode->setGeometry(box);
         _boxNode->setPosition(VROVector3f(0, 0, -1.5f));
+        // Pinch-and-hold drags it at a fixed distance along the select ray.
+        _boxNode->setDragType(VRODragType::FixedDistance);
         // Click (pinch-while-gazing) toggles diffuse color — the visible
         // scene response for the input milestone.
         _boxDelegate = std::make_shared<VROSimBoxDelegate>(material);
@@ -285,9 +307,21 @@ struct VROSceneRendererMetalOpenXR::Impl {
         _driver->setDisplayClearColor(clearColor);
 
         // Attach happens while the session is still IDLE (spec requirement
-        // for xrAttachSessionActionSets): action set + eye-gaze binding +
-        // pinch bindings + gaze action space + hand trackers.
-        _inputController->bindXR(instance, session, stageSpace);
+        // for xrAttachSessionActionSets). Same calls, same order as
+        // VROSceneRendererOpenXR's constructor.
+        if (!_inputController->createActionSet(instance, session, _eyeGazeSupported,
+                                               _handInteractionExt)) {
+            std::puts("input-xr: createActionSet failed");
+        }
+        if (_handTrackingExt) {
+            std::printf("input-xr: hand tracking init -> %s (aim ext: %s)\n",
+                        _inputController->initHandTracking(instance, session, _handAimExt)
+                            ? "ok" : "FAILED",
+                        _handAimExt ? "yes" : "no");
+        }
+        if (_renderModelSupported) {
+            _inputController->initRenderModels(instance, session);
+        }
 
         // Per-eye depth targets (the swapchain supplies color only).
         for (uint32_t v = 0; v < eyes.size() && v < 8; ++v) {
@@ -331,6 +365,8 @@ struct VROSceneRendererMetalOpenXR::Impl {
             XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME,
             XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
             XR_EXT_HAND_TRACKING_EXTENSION_NAME,
+            XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME,
+            XR_FB_RENDER_MODEL_EXTENSION_NAME,
         };
         uint32_t extCount = 0;
         XR_CHECK(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr));
@@ -367,8 +403,15 @@ struct VROSceneRendererMetalOpenXR::Impl {
                 std::printf("ext %s: %s\n", w, found ? "yes" : "NO");
             }
             if (found) enabled.push_back(w);
-            if (found && std::strcmp(w, XR_FB_PASSTHROUGH_EXTENSION_NAME) == 0)
-                passthroughExt = true;
+            if (!found) continue;
+            if (std::strcmp(w, XR_FB_PASSTHROUGH_EXTENSION_NAME) == 0) passthroughExt = true;
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+            if (std::strcmp(w, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0) _handTrackingExt = true;
+            if (std::strcmp(w, XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME) == 0) _handAimExt = true;
+            if (std::strcmp(w, XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME) == 0) _eyeGazeExt = true;
+            if (std::strcmp(w, XR_EXT_HAND_INTERACTION_EXTENSION_NAME) == 0) _handInteractionExt = true;
+            if (std::strcmp(w, XR_FB_RENDER_MODEL_EXTENSION_NAME) == 0) _renderModelExt = true;
+#endif
         }
 
         XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -398,6 +441,29 @@ struct VROSceneRendererMetalOpenXR::Impl {
         XrSystemProperties sysProps{XR_TYPE_SYSTEM_PROPERTIES};
         XR_CHECK(xrGetSystemProperties(instance, system, &sysProps));
         std::printf("system: %s\n", sysProps.systemName);
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+        // The extensions alone do not mean the system has the hardware; the
+        // system properties decide, exactly as on Android.
+        if (_eyeGazeExt) {
+            XrSystemEyeGazeInteractionPropertiesEXT eyeProps{
+                XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT};
+            XrSystemProperties p{XR_TYPE_SYSTEM_PROPERTIES};
+            p.next = &eyeProps;
+            _eyeGazeSupported = XR_SUCCEEDED(xrGetSystemProperties(instance, system, &p)) &&
+                                eyeProps.supportsEyeGazeInteraction == XR_TRUE;
+        }
+        std::printf("eye gaze interaction: extension=%d supported=%d\n",
+                    (int)_eyeGazeExt, (int)_eyeGazeSupported);
+        if (_renderModelExt) {
+            XrSystemRenderModelPropertiesFB rmProps{XR_TYPE_SYSTEM_RENDER_MODEL_PROPERTIES_FB};
+            XrSystemProperties p{XR_TYPE_SYSTEM_PROPERTIES};
+            p.next = &rmProps;
+            _renderModelSupported = XR_SUCCEEDED(xrGetSystemProperties(instance, system, &p)) &&
+                                    rmProps.supportsRenderModelLoading == XR_TRUE;
+        }
+        std::printf("[XR-DIAG] XR_FB_render_model: extension=%d supported=%d\n",
+                    (int)_renderModelExt, (int)_renderModelSupported);
+#endif
 
         // Metal graphics requirements + binding (XR_KHR_metal_enable).
         PFN_xrGetMetalGraphicsRequirementsKHR pfnGetMetalReqs = nullptr;
@@ -716,8 +782,10 @@ struct VROSceneRendererMetalOpenXR::Impl {
                     auto *sc = (XrEventDataSessionStateChanged *)&ev;
                     std::printf("session state -> %d\n", (int)sc->state);
 #if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
-                    // The input controller gates xrSyncActions on FOCUSED.
-                    if (_inputController) _inputController->setSessionState(sc->state);
+                    // Profiles bind once the app is focused.
+                    if (sc->state == XR_SESSION_STATE_FOCUSED && _inputController) {
+                        _inputController->logActiveInteractionProfiles(session);
+                    }
 #endif
                     if (sc->state == XR_SESSION_STATE_READY && !running) {
                         xrBeginSession(session, &beginInfo);
@@ -727,6 +795,11 @@ struct VROSceneRendererMetalOpenXR::Impl {
                         i = 100000;
                     }
                 }
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+                if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED && _inputController) {
+                    _inputController->logActiveInteractionProfiles(session);
+                }
+#endif
                 ev = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
             }
             @autoreleasepool {
@@ -739,6 +812,9 @@ struct VROSceneRendererMetalOpenXR::Impl {
                 [NSApp updateWindows];
             }
             if (!running) { usleep(1000); continue; }
+#if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
+            VROPlatformDrainRendererQueue();
+#endif
 
             XrFrameWaitInfo waitInfo{XR_TYPE_FRAME_WAIT_INFO};
             XrFrameState frameState{XR_TYPE_FRAME_STATE};
@@ -792,12 +868,14 @@ struct VROSceneRendererMetalOpenXR::Impl {
                     }
                 }
 #if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
-                // Hand the frame's predicted display time to the input
-                // controller; prepareFrame() -> onProcess(camera) then uses
-                // it for xrSyncActions/xrLocateSpace/xrLocateHandJointsEXT.
-                _inputController->setFrameTime(frameState.predictedDisplayTime);
                 if (viewsValid) {
                     prepareViroFrame();
+                    // After prepareFrame, so the camera is valid for hit tests.
+                    if (_renderer->hasRenderContext()) {
+                        _inputController->onProcess(session, stageSpace,
+                                                    frameState.predictedDisplayTime,
+                                                    _renderer->getCamera());
+                    }
                 }
 #endif
                 for (uint32_t v = 0; v < viewCount && viewsValid; ++v) {
@@ -908,9 +986,27 @@ struct VROSceneRendererMetalOpenXR::Impl {
 
     void teardown() {
 #if VIRO_DESKTOP_SCENE && !VRO_BRIDGE_FALLBACK
-        // Input controller owns hand trackers, the gaze action space and the
-        // action set — all session-scoped, so shut down before xrDestroySession.
-        if (_inputController) _inputController->shutdownXR();
+        // Hand trackers, action spaces and the action set are session-scoped:
+        // release them before xrDestroySession. The action set goes with the
+        // controller's destructor, so drop every owner of the controller.
+        if (_inputController) {
+            _inputController->destroyHandTrackers();
+            _inputController->destroySpaces();
+            _inputController->destroyRenderModels();
+        }
+        std::weak_ptr<VROInputControllerOpenXR> controller = _inputController;
+        _boxNode.reset();
+        _boxDelegate.reset();
+        _sceneController.reset();
+        _renderer.reset();
+        _inputController.reset();
+        // Runs after the owners are gone, so a late model-load result finds
+        // its presenter expired and does nothing.
+        VROPlatformDrainRendererQueue();
+        if (!controller.expired()) {
+            // Its destructor would call xrDestroyActionSet after the session.
+            std::puts("input-xr: controller still owned at teardown");
+        }
 #endif
         passthrough.reset();  // session-scoped: before xrDestroySession
         for (auto &e : eyes)

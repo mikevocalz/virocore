@@ -36,6 +36,7 @@
 #include "VROPlatformUtil.h"
 #include "VROInputType.h"
 #include "VROLog.h"
+#include "VROOpenXRPlatform.h"
 
 class VROInputPresenterOpenXR : public VROInputPresenter {
 public:
@@ -146,7 +147,7 @@ public:
         if (access(real, R_OK) == 0) {
             return std::string(real);
         }
-        return VROPlatformCopyAssetToFile("controller_neutral.glb");
+        return VROOpenXRBundledAssetPath("controller_neutral.glb");
     }
 
     /*
