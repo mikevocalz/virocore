@@ -32,6 +32,16 @@
 
 #include <simd/simd.h>
 
+/*
+ Fragment binding contract for material textures. VROMaterialSubstrateMetal
+ lists a material's textures in order; VROGeometrySubstrateMetal binds texture
+ n at [[ texture(n) ]] and that texture's own MTLSamplerState (wrap and filter
+ modes from its VROTexture) at [[ sampler(n) ]]. Slots 0..3 are material
+ textures; 4 is the shadow map and 5..7 the IBL maps, which sample through
+ shader-constant samplers.
+ */
+#define VRO_MATERIAL_TEXTURE_SLOTS 4
+
 typedef struct {
     int type;
     vector_float3 position;

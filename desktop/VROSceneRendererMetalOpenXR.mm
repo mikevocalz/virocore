@@ -277,7 +277,21 @@ struct VROSceneRendererMetalOpenXR::Impl {
         std::shared_ptr<VROMaterial> material = std::make_shared<VROMaterial>();
         // Lit and textured, so captures cover texture sampling and lighting.
         material->setLightingModel(VROLightingModel::Lambert);
-        material->getDiffuse().setTexture(VROSimMakeCheckerTexture(256, 8));
+        // VIRO_TEXTURE_FILTER=nearest|linear swaps in an 8x8 checker (one texel
+        // per cell) magnified ~30x, so the texture's own filter mode decides
+        // whether cell edges are hard or blended. The sampler gate reads that.
+        std::shared_ptr<VROTexture> checker;
+        if (const char *filter = getenv("VIRO_TEXTURE_FILTER")) {
+            const VROFilterMode mode = std::strcmp(filter, "nearest") == 0
+                ? VROFilterMode::Nearest : VROFilterMode::Linear;
+            checker = VROSimMakeCheckerTexture(8, 8);
+            checker->setMinificationFilter(mode);
+            checker->setMagnificationFilter(mode);
+            std::printf("texture filter: %s\n", mode == VROFilterMode::Nearest ? "nearest" : "linear");
+        } else {
+            checker = VROSimMakeCheckerTexture(256, 8);
+        }
+        material->getDiffuse().setTexture(checker);
         material->getDiffuse().setColor(VROVector4f(1, 1, 1, 1));
 
         std::shared_ptr<VROBox> box = VROBox::createBox(0.5f, 0.5f, 0.5f);

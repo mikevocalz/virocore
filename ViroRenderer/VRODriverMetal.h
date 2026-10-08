@@ -157,7 +157,10 @@ public:
                                               VROWrapMode wrapS, VROWrapMode wrapT,
                                               VROFilterMode minFilter, VROFilterMode magFilter, VROFilterMode mipFilter) override {
         std::shared_ptr<VRODriver> self(static_cast<VRODriver *>(this), [](VRODriver *) {});
-        return new VROTextureSubstrateMetal(type, format, data.front(), width, height, self);
+        VROTextureSubstrateMetal *substrate =
+            new VROTextureSubstrateMetal(type, format, data.front(), width, height, self);
+        substrate->setSamplerModes(wrapS, wrapT, minFilter, magFilter, mipFilter);
+        return substrate;
     }
     std::shared_ptr<VROSound> newSound(std::shared_ptr<VROSoundData> data, VROSoundType type) override { return nullptr; }
     std::shared_ptr<VROAudioPlayer> newAudioPlayer(std::shared_ptr<VROSoundData> data) override { return nullptr; }

@@ -29,6 +29,10 @@ they test the device input logic, not a desktop stand-in:
   * Controller models: whatever XR_FB_render_model reports, the log must show
     the runtime model or the documented fallback; runtime models must load,
     and KTX2 (KHR_texture_basisu) textures in them must decode.
+  * Per-texture Metal samplers: a magnified checker with a nearest filter
+    keeps hard cell edges and with a linear filter blends them.
+  * Clean shutdown: the host exits 0 and releases the input controller
+    before xrDestroySession.
 
 Two simulator traps this script handles:
   * The config env var is META_XRSIM_CONFIG_JSON. Any other name is ignored
@@ -512,6 +516,45 @@ def build_hello_xr():
     return os.access(HELLO, os.X_OK)
 
 
+def run_sampler(profile, workdir):
+    """Per-texture Metal samplers. The host swaps in an 8x8 checker magnified
+    ~30x and sets its filter mode on the VROTexture; nearest must keep the
+    cell edges hard, linear must blend them. Both run through the texture's
+    own MTLSamplerState, so a shared shader-constant sampler fails one side."""
+    print(f"\n### {profile} / per-texture sampler")
+    blend = {}
+    for mode in ("nearest", "linear"):
+        host, log = launch(profile, "gpu_handle", workdir, f"sampler-{mode}",
+                           {"VIRO_TEXTURE_FILTER": mode})
+        try:
+            if not wait_for(log, r"^session state -> 5"):
+                check(f"sampler {mode}: session reaches FOCUSED", False, f"see {log}")
+                return
+            time.sleep(2.5)
+            check(f"sampler {mode}: host applied the filter",
+                  f"texture filter: {mode}" in open(log).read())
+            op = Operator()
+            try:
+                img = op.capture("left")
+            finally:
+                op.close()
+        finally:
+            stop(host)
+        if img is None:
+            check(f"sampler {mode}: capture", False)
+            return
+        img.save(os.path.join(workdir, f"{profile.replace(' ', '_')}-sampler-{mode}-left.png"))
+        # Warm but between the orange cell (g~120) and the white cell: only a
+        # filtered cell edge produces these. r - b keeps a shaded white face
+        # (grey, r ~ b) from counting as a blend.
+        blend[mode] = sum(1 for r, g, b in img.getdata()
+                          if r > 150 and 160 <= g <= 200 and 60 <= b <= 180
+                          and r - b >= 60)
+    check("sampler: nearest keeps cell edges hard, linear blends them",
+          blend["linear"] > 2000 and blend["linear"] > 10 * max(blend["nearest"], 1),
+          f"blend pixels nearest={blend['nearest']} linear={blend['linear']}")
+
+
 def run_shutdown(profile, workdir):
     """A short frame budget ends the session the normal way: the host must tear
     the input controller down before xrDestroySession and exit 0."""
@@ -604,6 +647,8 @@ def main():
             for transport in args.transports.split(","):
                 run(profile.strip(), transport.strip(), op_ok, workdir)
             run_shutdown(profile.strip(), workdir)
+            if op_ok:
+                run_sampler(profile.strip(), workdir)
             if op_ok and not args.skip_modes:
                 run_modes(profile.strip(), workdir)
             if op_ok and not args.skip_hello_xr:

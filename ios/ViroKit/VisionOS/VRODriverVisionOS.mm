@@ -253,7 +253,11 @@ VROTextureSubstrate *VRODriverVisionOS::newTextureSubstrate(
     // sRGB colour texture has to decode on sample. Without it the texture's
     // already-encoded values were encoded a second time and came out washed out.
     std::shared_ptr<VRODriver> driverPtr = std::static_pointer_cast<VRODriver>(shared_from_this());
-    return new VROTextureSubstrateMetal(type, format, data[0], width, height, driverPtr, sRGB);
+    VROTextureSubstrateMetal *substrate =
+        new VROTextureSubstrateMetal(type, format, data[0], width, height, driverPtr, sRGB);
+    // The texture's own wrap and filter modes, as GL applies them.
+    substrate->setSamplerModes(wrapS, wrapT, minFilter, magFilter, mipFilter);
+    return substrate;
 }
 
 // ── Typeface ──────────────────────────────────────────────────────────────────

@@ -891,8 +891,15 @@ void VROGeometrySubstrateMetal::drawSilhouette(const VROGeometry &geometry,
         if (!textures.empty() && textures[0]) {
             VROTextureSubstrateMetal *textureSubstrate =
                 (VROTextureSubstrateMetal *)textures[0]->getSubstrate(0, driver, true);
+            if (!textureSubstrate || textureSubstrate->getTexture() == nil) {
+                // Same placeholder as renderMaterial: the textured silhouette
+                // shader declares texture(0) and sampler(0).
+                std::shared_ptr<VROTexture> blank = getBlankTexture(VROTextureType::Texture2D);
+                textureSubstrate = (VROTextureSubstrateMetal *)blank->getSubstrate(0, driver, true);
+            }
             if (textureSubstrate) {
                 [renderEncoder setFragmentTexture:textureSubstrate->getTexture() atIndex:0];
+                [renderEncoder setFragmentSamplerState:textureSubstrate->getSampler() atIndex:0];
             }
         }
     }
@@ -972,14 +979,18 @@ void VROGeometrySubstrateMetal::renderMaterial(VROMaterialSubstrateMetal *materi
     const std::vector<std::shared_ptr<VROTexture>> &textures = material->getTextures();
     for (int j = 0; j < textures.size(); ++j) {
         VROTextureSubstrateMetal *substrate = (VROTextureSubstrateMetal *) textures[j]->getSubstrate(0, driver, true);
-        if (!substrate) {
+        if (!substrate || substrate->getTexture() == nil) {
             // Use a blank placeholder if a texture is not yet available (i.e.
-            // during video texture loading)
+            // during video texture loading). A substrate with no MTLTexture has
+            // no sampler either, and the shader declares both.
             std::shared_ptr<VROTexture> blank = getBlankTexture(VROTextureType::Texture2D);
             substrate = (VROTextureSubstrateMetal *) blank->getSubstrate(0, driver, true);
         }
         
+        // Material texture n pairs with sampler n (VRO_MATERIAL_TEXTURE_SLOTS
+        // in VROSharedStructures.h): the texture's own wrap and filter modes.
         [renderEncoder setFragmentTexture:substrate->getTexture() atIndex:j];
+        [renderEncoder setFragmentSamplerState:substrate->getSampler() atIndex:j];
     }
     
     [renderEncoder drawIndexedPrimitives:element.primitiveType

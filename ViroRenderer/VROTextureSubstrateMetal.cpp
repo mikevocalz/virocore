@@ -180,7 +180,83 @@ VROTextureSubstrateMetal::VROTextureSubstrateMetal(VROTextureType type, VROTextu
 }
 
 VROTextureSubstrateMetal::~VROTextureSubstrateMetal() {
+    invalidateSampler();
     ALLOCATION_TRACKER_SUB(TextureSubstrates, 1);
+}
+
+namespace {
+
+MTLSamplerAddressMode toMetalAddressMode(VROWrapMode mode) {
+    switch (mode) {
+        case VROWrapMode::Clamp:          return MTLSamplerAddressModeClampToEdge;
+        case VROWrapMode::Repeat:         return MTLSamplerAddressModeRepeat;
+        case VROWrapMode::Mirror:         return MTLSamplerAddressModeMirrorRepeat;
+        // GL's default border colour is transparent black, which ClampToZero
+        // gives on every Metal family (ClampToBorderColor is not on all iOS GPUs).
+        case VROWrapMode::ClampToBorder:  return MTLSamplerAddressModeClampToZero;
+    }
+    return MTLSamplerAddressModeRepeat;
+}
+
+// None reads as Nearest, the same as VROTextureSubstrateOpenGL::convertMagFilter.
+MTLSamplerMinMagFilter toMetalFilter(VROFilterMode mode) {
+    return mode == VROFilterMode::Linear ? MTLSamplerMinMagFilterLinear
+                                         : MTLSamplerMinMagFilterNearest;
+}
+
+// None means no mipmapping: the glTF loader returns it for the NEAREST and
+// LINEAR min filters, and GL then samples level 0 only.
+MTLSamplerMipFilter toMetalMipFilter(VROFilterMode mode) {
+    switch (mode) {
+        case VROFilterMode::None:    return MTLSamplerMipFilterNotMipmapped;
+        case VROFilterMode::Nearest: return MTLSamplerMipFilterNearest;
+        case VROFilterMode::Linear:  return MTLSamplerMipFilterLinear;
+    }
+    return MTLSamplerMipFilterLinear;
+}
+
+}  // namespace
+
+void VROTextureSubstrateMetal::setSamplerModes(VROWrapMode wrapS, VROWrapMode wrapT,
+                                               VROFilterMode minFilter, VROFilterMode magFilter,
+                                               VROFilterMode mipFilter) {
+    _wrapS = wrapS;
+    _wrapT = wrapT;
+    _minFilter = minFilter;
+    _magFilter = magFilter;
+    _mipFilter = mipFilter;
+    invalidateSampler();
+}
+
+void VROTextureSubstrateMetal::updateWrapMode(VROWrapMode wrapModeS, VROWrapMode wrapModeT) {
+    _wrapS = wrapModeS;
+    _wrapT = wrapModeT;
+    invalidateSampler();
+}
+
+void VROTextureSubstrateMetal::invalidateSampler() {
+    [_sampler release];
+    _sampler = nil;
+}
+
+id <MTLSamplerState> VROTextureSubstrateMetal::getSampler() {
+    if (_sampler != nil || _texture == nil) {
+        return _sampler;
+    }
+    MTLSamplerDescriptor *descriptor = [[MTLSamplerDescriptor alloc] init];
+    descriptor.sAddressMode = toMetalAddressMode(_wrapS);
+    descriptor.tAddressMode = toMetalAddressMode(_wrapT);
+    // Cube maps sample with a direction; r only matters there.
+    descriptor.rAddressMode = toMetalAddressMode(_wrapT);
+    descriptor.minFilter = toMetalFilter(_minFilter);
+    descriptor.magFilter = toMetalFilter(_magFilter);
+    // A texture without mips ignores the mip filter, so this needs no check
+    // against mipmapLevelCount.
+    descriptor.mipFilter = toMetalMipFilter(_mipFilter);
+    descriptor.normalizedCoordinates = YES;
+    _sampler = [[_texture device] newSamplerStateWithDescriptor:descriptor];
+    [descriptor release];
+    return _sampler;
 }
 
 #endif
