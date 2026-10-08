@@ -38,6 +38,9 @@ option(VRO_BRIDGE_FALLBACK "Use bridge renderer instead of real VRORenderer" OFF
 set(VIRO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(VIRO_RENDERER_DIR ${VIRO_ROOT}/ViroRenderer)
 set(VIRO_METAL_DIR ${VIRO_ROOT}/ios/ViroKit/VisionOS)
+# The OpenXR input stack that ships on Quest / PICO / Android XR. The host
+# compiles it unchanged; VROOpenXRPlatformDesktop.mm supplies its host seam.
+set(VIRO_OPENXR_SHARED_DIR ${VIRO_ROOT}/android/sharedCode/src/main/cpp)
 
 add_executable(viro_sim_host
   main.mm
@@ -67,11 +70,13 @@ if(VIRO_DESKTOP_SCENE)
     ${VIRO_ROOT}/ios/ViroKit
     ${VIRO_ROOT}/wasm/libs/bullet/include
     ${VIRO_ROOT}/wasm/libs/bullet/src
-    ${FREETYPE_INCLUDE_DIRS})
+    ${FREETYPE_INCLUDE_DIRS}
+    # Last, so its Android-only headers never shadow the Metal ones above.
+    ${VIRO_OPENXR_SHARED_DIR})
   target_sources(viro_sim_host PRIVATE
     VROSceneGraphMetalBridge.mm
     VRODriverMetalOpenXR.mm
-    VROInputControllerXR.mm)
+    VROOpenXRPlatformDesktop.mm)
 
   # Renderer sources: the same selection ios/add_visionos_target.rb makes for
   # the ViroKitVisionOS target, so the desktop host runs the Metal stack that
@@ -109,7 +114,9 @@ if(VIRO_DESKTOP_SCENE)
     ${VIRO_ROOT}/ios/ViroKit/VROVideoTextureCacheMetal.cpp
     ${VIRO_ROOT}/ios/ViroKit/VROTypefaceiOS.cpp
     ${VIRO_ROOT}/macos/ViroKit/VROImageMacOS.cpp
-    ${VIRO_ROOT}/macos/ViroKit/VROConvert.cpp)
+    ${VIRO_ROOT}/macos/ViroKit/VROConvert.cpp
+    ${VIRO_OPENXR_SHARED_DIR}/VROInputControllerOpenXR.cpp
+    ${VIRO_OPENXR_SHARED_DIR}/VROOpenXRRenderModel.cpp)
   # Every .cpp builds as Objective-C++: VRODefines.h only selects
   # VRO_PLATFORM_MACOS under __OBJC__, and the Metal headers need it.
   set_source_files_properties(${VIRO_SOURCES} PROPERTIES
@@ -143,6 +150,17 @@ if(VIRO_DESKTOP_SCENE)
     COMMENT "Generating ViroShadersSource.txt")
   add_custom_target(viro_shader_source DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/ViroShadersSource.txt)
   add_dependencies(viro_sim_host viro_shader_source)
+
+  # The neutral controller GLB VROInputPresenterOpenXR falls back to when the
+  # runtime has no XR_FB_render_model model; looked up next to the executable.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/controller_neutral.glb
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${VIRO_ROOT}/android/sharedCode/src/main/assets/controller_neutral.glb
+            ${CMAKE_CURRENT_BINARY_DIR}/controller_neutral.glb
+    DEPENDS ${VIRO_ROOT}/android/sharedCode/src/main/assets/controller_neutral.glb)
+  add_custom_target(viro_host_assets DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/controller_neutral.glb)
+  add_dependencies(viro_sim_host viro_host_assets)
 
   # Dead-strip as the visionOS app link does: the GL shader-binding path
   # (VROMaterialShaderBinding -> VROShaderProgram::getUniform) is compiled in

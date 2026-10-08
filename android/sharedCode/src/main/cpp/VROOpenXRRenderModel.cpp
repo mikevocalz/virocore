@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <android/log.h>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -16,8 +15,7 @@
 
 #undef  LOG_TAG
 #define LOG_TAG "VROInputOpenXR"
-#define ALOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
-#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#include "VROOpenXRPlatform.h"
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Loader

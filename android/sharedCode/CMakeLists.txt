@@ -163,6 +163,7 @@ add_library( # Sets the name of the library.
              # VROInputControllerOVR.cpp deprecated in 2.57.3 (VrApi path removed).
              ${VIRO_ANDROID_SRC}/VROInputControllerOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROOpenXRRenderModel.cpp
+             ${VIRO_ANDROID_SRC}/VROOpenXRPlatformAndroid.cpp
              ${VIRO_ANDROID_SRC}/VROAVRecorderAndroid.cpp
              ${VIRO_ANDROID_SRC}/VROTextureReader.cpp
              ${VIRO_ANDROID_SRC}/VROAndroidViewTexture.cpp

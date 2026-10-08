@@ -368,19 +368,31 @@ void VROPolyline::writeEndcapCorner(VROVector3f position, VROVector3f direction,
 
 void VROPolyline::setThickness(float thickness) {
     animate(std::make_shared<VROAnimationFloat>([](VROAnimatable *const animatable, float v) {
-        ((VROPolyline *)animatable)->_thickness = v;
+        VROPolyline *polyline = (VROPolyline *)animatable;
+        polyline->_thickness = v;
+#if VRO_METAL
+        // Metal reads modifier uniforms from the material, not from binders.
+        const auto &materials = polyline->getMaterials();
+        if (!materials.empty()) {
+            materials.front()->setShaderUniform("thickness", v);
+        }
+#endif
     }, _thickness, thickness));
 }
 
 void VROPolyline::setMaterials(std::vector<std::shared_ptr<VROMaterial>> materials) {
     createPolylineShaderModifiers();
 
-    if (!materials.front()->hasShaderModifier(sPolylineShaderGeometryModifier)) {
+    if (sPolylineShaderGeometryModifier &&
+        !materials.front()->hasShaderModifier(sPolylineShaderGeometryModifier)) {
         materials.front()->addShaderModifier(sPolylineShaderGeometryModifier);
     }
     if (!materials.front()->hasShaderModifier(sPolylineShaderVertexModifier)) {
         materials.front()->addShaderModifier(sPolylineShaderVertexModifier);
     }
+#if VRO_METAL
+    materials.front()->setShaderUniform("thickness", _thickness);
+#endif
     materials.front()->setCullMode(VROCullMode::None);
     VROGeometry::setMaterials(materials);
 }
@@ -407,6 +419,36 @@ void VROPolyline::createPolylineShaderModifiers() {
      Lastly, we input the *correct* normal vector at the end of this modifier to that
      lighting works as expected.
      */
+#if VRO_METAL
+    /*
+     Metal variant. VROMaterialSubstrateMetal scopes each modifier body in its
+     own block, so the GLSL pair (geometry declares world_position, vertex
+     reads it) cannot share variables; one vertex modifier does the whole
+     stroke. It reads the camera and normal matrix from the view uniforms
+     (GLSL's bare camera_position / normal_matrix do not exist in MSL), and
+     `thickness` comes from the material (setThickness / setMaterials) because
+     the Metal substrate does not run geometry uniform binders. The vertex
+     stage does not load the tangent attribute, so endcap triangles stroke
+     unrotated: the segment body is exact, the round caps flatten.
+     */
+    if (!sPolylineShaderVertexModifier) {
+        std::vector<std::string> vertexCode = {
+            "uniform float thickness;",
+            "float4 line_world_position = _transforms.model_matrix * float4(_geometry.position, 1.0);",
+            "float3 line_camera_ray = normalize(line_world_position.xyz - view.camera_position);",
+            "float4 line_dir = view.normal_matrix * float4(_geometry.normal, 0.0);",
+            "float3 line_stroke_dir = cross(line_camera_ray, line_dir.xyz);",
+            "float3 line_offset = float3(0.0);",
+            "if (length(line_stroke_dir) > 0.0) {",
+            "   line_offset = normalize(line_stroke_dir) * (thickness / 2.0);",
+            "}",
+            "_vertex.position = _transforms.projection_matrix * _transforms.view_matrix * (float4(line_offset, 0.0) + line_world_position);",
+        };
+        sPolylineShaderVertexModifier = std::make_shared<VROShaderModifier>(VROShaderEntryPoint::Vertex, vertexCode);
+        sPolylineShaderVertexModifier->setName("line_v_metal");
+    }
+    return;
+#endif
     if (!sPolylineShaderGeometryModifier) {
         std::vector<std::string> geometryCode = {
             "uniform float thickness;",
