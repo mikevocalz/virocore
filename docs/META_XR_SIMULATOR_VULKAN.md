@@ -136,7 +136,7 @@ The Eskiu migration should consume the same backend contract rather than creatin
 
 ### Status (2026-10-07, macOS, Meta XR Simulator 207.0.0, Metal path)
 
-`desktop/tools/xr_sim_gates.py` runs the gates below against a live simulator for each device profile: render and input gates on both `ses_texture_format` transports, the three display modes, and `hello_xr`. It exits non-zero on a failure. Last run: Meta VR Glasses and Meta Quest 3, all passing.
+`desktop/tools/xr_sim_gates.py` runs the gates below against a live simulator on the Meta VR Glasses profile (pass `--profiles` for others): render and input gates on all three `ses_texture_format` transports (`gpu_handle`, `raw_rgba`, `jpg`), the three display modes, `hello_xr`, and passthrough in each hero room. It exits non-zero on a failure. Last run: Meta VR Glasses, 119 passing, 0 failing, 3 skipped (floor alignment, one per room).
 
 The host (`desktop/`) renders through the same Metal stack the visionOS target ships: `VRODriverVisionOS`, `VRORenderTargetMetal`, the Metal post-process and render passes in `ios/ViroKit/VisionOS`, and the shared `VRO*SubstrateMetal` classes. `VRODriverMetalOpenXR` only adds per-eye plumbing for OpenXR swapchain images. `desktop/CMakeLists.txt` takes the renderer sources with the same exclusions as `ios/add_visionos_target.rb`, and generates `ViroShadersSource.txt` with `ios/generate_shader_source.rb` for the runtime shader compile. Build with `cd desktop && cmake -S . -B build && cmake --build build -j8`.
 
@@ -146,7 +146,7 @@ The host picks an `*_sRGB` swapchain format. The renderer shades in linear space
 |---|---|
 | Swapchain pixels (A) | Verified. Host reads back eye 0 and counts lit pixels; 232,812 of 2,956,800 on Glasses. |
 | Accepted layer (B) | Verified. Views come from `xrLocateViews`; frames advance at FOCUSED. |
-| Composited pixels (C) | Verified through `openxr_capture_composited_image`, both eyes, both transports. |
+| Composited pixels (C) | Verified through `openxr_capture_composited_image`, both eyes, all three transports. |
 | Simulator window (eye viewport, Graphics panel, RemoteFrameObservation stream) | Blocked by the simulator. The window drops every session 5 s after connecting (`Frontend is disconnected. XrSession synchronization ... cancelled`), for `hello_xr` as well as `viro_sim_host`, and it crashed once in `RuntimeOrchestrator::transferToNewState` while handling a disconnect (`MetaXRSimulator-2026-10-07-113737.ips`, SIGSEGV). The operator capture is the Gate C evidence until Meta fixes the window. |
 | Viro scene in both eyes | Verified, with left/right centroid disparity. |
 | Head pose updates view matrices | Verified. A 20° yaw left moves the box about 200 px right in the left eye. |
@@ -157,11 +157,14 @@ The host picks an `*_sRGB` swapchain format. The renderer shades in linear space
 | Quest/Horizon GLES path still green | CI `androidBuild` passes. Needs a Quest on USB to run; none was connected. |
 | Passthrough-off immersive scene | Verified. Default mode is immersive: blend OPAQUE, black background. |
 | Passthrough | Verified. `VIRO_PASSTHROUGH=1` creates an `XR_FB_passthrough` reconstruction layer under the projection layer, selects ALPHA_BLEND and clears to transparent; the simulator room shows behind the box. |
+| Passthrough per room | Verified on Glasses in GameRoom, LivingRoom and Bedroom: session FOCUSED, passthrough blend 3, the room fills the frame behind the box, the box keeps its checker texture, and each room's capture differs from the others. Floor alignment is skipped: the desktop host creates a LOCAL reference space and does not log one. |
 | Passthrough degradation | Verified. With the extension hidden (`VIRO_XR_DISABLE_EXT=XR_FB_passthrough`) the host logs `passthrough unavailable: XR_FB_passthrough not enabled; falling back to immersive`, selects OPAQUE and clears to slate, so the fallback never looks like a black frame. A system without ALPHA_BLEND takes the same path with its own reason. |
 
-Simulator traps the script handles, both of which silently produce the wrong device:
+Simulator traps the script handles, each of which silently produces the wrong device or room:
 - The config env var is `META_XRSIM_CONFIG_JSON`. Any other name is ignored and the simulator runs on its bundled `config/sim_core_configuration.json`.
 - `device_profile` in `~/Library/Application Support/MetaXR/MetaXrSimulator/persistent_data.json` overrides the config file. The script writes the profile there per run and restores the file afterwards.
+- `metavr xrsim env set` stops the SyntheticEnvironmentServer to relaunch it in the new room, but on 207 the frontend never starts it again: passthrough then shows the old room, or a flat grey frame once the server is gone. The room choice is already persisted (`player_device_configs.XrSim_SESRoom` in the `com.meta.metaxrsimulator` defaults), so the script restarts the frontend (`app quit`, `app launch`), which starts the server in that room, and waits until the server process carries the room name before launching the host. It restores the original room at the end.
+- `app quit` can leave the SyntheticEnvironmentServer running, reparented to launchd. It holds the server port, so the next frontend starts no server of its own and passthrough keeps showing the orphan's room. Before relaunching, the script stops any server whose parent is pid 1.
 
 Meta VR Glasses captures look squashed horizontally (about 0.86). That's expected: Meta documents a 74°×68° per-eye render extent rendered into a 1680×1760 eye buffer, so buffer pixels aren't square, and the compositor stretches the buffer onto the 2412×2288 panel. `openxr_capture_composited_image` returns the raw eye buffer. Scaled horizontally by tan-span ratio ÷ buffer ratio (1.117 ÷ 0.955 = 1.17), hello_xr's front-facing cube measures 1.007, i.e. square. The host logs `eye N fov ... tan span ... vs swapchain ...` at startup. Source: developers.meta.com/horizon/documentation/essentials/field-of-view.
 

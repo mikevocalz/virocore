@@ -6,14 +6,22 @@ once per device profile and texture transport, and exits non-zero on any
 failure. Needs MetaXRSimulator running, the Meta XR Operator layer installed
 (metavr CLI), a built desktop/build/viro_sim_host, and Pillow.
 
-    python3 desktop/tools/xr_sim_gates.py [--profiles "Meta VR Glasses,Meta Quest 3"]
-                                          [--transports gpu_handle,jpg]
+    python3 desktop/tools/xr_sim_gates.py [--profiles "Meta VR Glasses"]
+                                          [--transports gpu_handle,raw_rgba,jpg]
                                           [--skip-modes] [--skip-hello-xr]
+                                          [--rooms | --skip-rooms]
 
 Per profile it runs: the render and input gates for each transport; the
 immersive, passthrough and passthrough-fallback display modes; and Khronos
 hello_xr (Metal) on the same runtime, built from the OpenXR source CMake
 already fetched into desktop/build/_deps.
+
+The rooms pass (on by default) runs once, on the Meta VR Glasses profile in
+passthrough: for each hero room (game room, living room, bedroom) it switches
+the synthetic environment with `metavr xrsim env set`, waits for the frontend
+to report the new room, launches the host and checks the session, the
+passthrough blend, the room behind the box and the textured box. The
+environment that was current before the pass is restored at the end.
 
 The input gates drive VROInputControllerOpenXR, the controller that ships on
 Quest, PICO and Android XR (the host compiles it from android/sharedCode), so
@@ -39,6 +47,10 @@ Two simulator traps this script handles:
     silently and the simulator runs on its bundled defaults.
   * device_profile in persistent_data.json beats the config file. The script
     writes the profile there for each run and restores the file at the end.
+  * Changing the synthetic environment relaunches the simulator's target
+    platform and drops every connected OpenXR client, and the choice persists
+    across simulator restarts. The rooms pass only switches rooms with no
+    host running, and puts the original room back even when a gate fails.
 """
 import argparse, base64, io, json, os, re, shutil, subprocess, sys, tempfile, time
 
@@ -502,6 +514,217 @@ def run_modes(profile, workdir):
             stop(host)
 
 
+METAVR = ["npx", "-y", "metavr@latest"]
+HERO_ROOMS = ("GameRoom", "LivingRoom", "Bedroom")
+
+
+def xrsim(*args, timeout=120):
+    """Runs `metavr xrsim ... --format json`; returns the parsed JSON or None."""
+    r = subprocess.run(METAVR + ["xrsim", *args, "--format", "json"],
+                       capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        print(f"  [INFO] metavr xrsim {' '.join(args)} exit {r.returncode}: "
+              f"{(r.stderr or r.stdout).strip()[-300:]}")
+        return None
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return None
+
+
+def environments():
+    return xrsim("env", "list") or []
+
+
+def current_environment():
+    return next((e["id"] for e in environments() if e.get("current")), None)
+
+
+def ses_processes():
+    """(pid, parent pid, room) for each running SyntheticEnvironmentServer.
+    The frontend starts it as `SyntheticEnvironmentServer <Room> -batchmode`."""
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,command="],
+                         capture_output=True, text=True).stdout
+    procs = []
+    for line in out.splitlines():
+        f = line.split()
+        # Match the executable, not any command line that mentions it.
+        if len(f) >= 3 and f[2].endswith("/MacOS/SyntheticEnvironmentServer"):
+            procs.append((int(f[0]), int(f[1]), f[3] if len(f) > 3 else None))
+    return procs
+
+
+def ses_room():
+    """The room of the server a live frontend owns, or None. An orphan
+    (parent pid 1) left by an earlier quit does not count."""
+    return next((room for _, ppid, room in ses_processes() if ppid != 1), None)
+
+
+def stop_orphaned_ses():
+    """Terminates SyntheticEnvironmentServer processes whose frontend is gone.
+
+    `app quit` can leave the server running, reparented to launchd. It keeps
+    the server port, so the next frontend cannot start its own server and the
+    old room stays on screen. Only orphans (parent pid 1) are touched, and only
+    after the frontend has quit."""
+    pids = [pid for pid, ppid, _ in ses_processes() if ppid == 1]
+    for pid in pids:
+        print(f"  [INFO] stopping orphaned environment server pid {pid}")
+        subprocess.run(["kill", str(pid)])
+    end = time.time() + 15
+    while time.time() < end and any(p in pids for p, _, _ in ses_processes()):
+        time.sleep(0.5)
+
+
+def frontend_ready(timeout=60):
+    """Waits until the frontend answers `runtime list` (frontend tier)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if xrsim("runtime", "list", "--timeout", "2") is not None:
+            return True
+        time.sleep(2)
+    return False
+
+
+def wait_ses(name, timeout):
+    """Waits for a server running `name`. The feature rooms' launch argument
+    is not their display name, so for those any running server counts."""
+    end = time.time() + timeout
+    while time.time() < end:
+        room = ses_room()
+        if room == name or (room and name not in HERO_ROOMS):
+            return True
+        time.sleep(1)
+    return False
+
+
+def set_environment(env_id, name):
+    """Switches the synthetic environment and waits until the room is served.
+
+    `env set` stops the target platform (the SyntheticEnvironmentServer) to
+    relaunch it in the new room. On simulator 207 the frontend stops it but
+    does not start it again, and the choice is already persisted, so when no
+    server comes back the frontend is restarted (scoped, graceful `app quit`,
+    then `app launch`), which starts the server in the persisted room. A
+    server orphaned by an earlier quit is stopped first (stop_orphaned_ses). Ready
+    means the frontend answers, reports env_id as current, and a server runs
+    with this room's name."""
+    # Set and restart up to three times: a restart can race the server's
+    # startup and come back without one.
+    for attempt in range(3):
+        if wait_ses(name, 0.1) and current_environment() == env_id:
+            break
+        if xrsim("env", "set", "--id", env_id) is None:
+            return False
+        if wait_ses(name, 20):
+            break
+        print(f"  [INFO] no environment server for {name} after env set "
+              f"(attempt {attempt + 1}); restarting the simulator frontend")
+        xrsim("app", "quit")
+        stop_orphaned_ses()
+        if xrsim("app", "launch") is None or not frontend_ready():
+            return False
+        wait_ses(name, 30)
+    ok = frontend_ready() and wait_ses(name, 60) and current_environment() == env_id
+    if not ok:
+        logs = subprocess.run(METAVR + ["xrsim", "runtime", "logs"],
+                              capture_output=True, text=True).stdout
+        print(f"  [INFO] environment {env_id} not ready (server room {ses_room()})\n{logs}")
+        return False
+    time.sleep(3)  # let the server finish loading the room before a client connects
+    return True
+
+
+def room_diff(a, b):
+    """Mean absolute per-channel difference of two captures at 64x64."""
+    a, b = a.resize((64, 64)), b.resize((64, 64))
+    da, db = list(a.getdata()), list(b.getdata())
+    return sum(abs(x - y) for p, q in zip(da, db) for x, y in zip(p, q)) / (len(da) * 3)
+
+
+def run_rooms(workdir, profile="Meta VR Glasses"):
+    """Passthrough on each hero room. Leaves the original environment current."""
+    envs = environments()
+    original = next((e for e in envs if e.get("current")), None)
+    rooms = [e for name in HERO_ROOMS for e in envs if e.get("name") == name]
+    print(f"\n### rooms ({profile}, passthrough), original environment "
+          f"{original['id'] if original else None}")
+    check("rooms: simulator lists the three hero rooms", len(rooms) == len(HERO_ROOMS),
+          ", ".join(e["id"] for e in rooms))
+    if not rooms or original is None:
+        check("rooms: current environment readable", original is not None)
+        return
+    captures = {}
+    try:
+        for room in rooms:
+            name, env_id = room["name"], room["id"]
+            print(f"\n### {profile} / passthrough in {name} ({env_id})")
+            if not set_environment(env_id, name):
+                check(f"room {name}: environment active", False)
+                continue
+            check(f"room {name}: environment active", True)
+            host, log = launch(profile, "gpu_handle", workdir, f"room-{name}",
+                               {"VIRO_PASSTHROUGH": "1"})
+            try:
+                if not wait_for(log, r"^session state -> 5", timeout=40):
+                    check(f"room {name}: session reaches FOCUSED", False, f"see {log}")
+                    continue
+                check(f"room {name}: session reaches FOCUSED", True)
+                time.sleep(2.5)
+                text = open(log).read()
+                got = re.search(r"^mode: (.*), blend (\d+)$", text, re.M)
+                check(f"room {name}: mode passthrough, blend 3",
+                      got is not None and got.groups() == ("passthrough", "3"),
+                      ", ".join(got.groups()) if got else "no mode line")
+                floor = re.search(r"^Reference space: (\S+)", text, re.M)
+                if floor:
+                    check(f"room {name}: floor-level reference space",
+                          floor.group(1) == "LOCAL_FLOOR", floor.group(1))
+                else:
+                    print(f"  [SKIP] room {name}: floor alignment: the desktop host creates a "
+                          "LOCAL reference space and logs no 'Reference space:' line")
+                op = Operator()
+                try:
+                    img = op.capture("left")
+                finally:
+                    op.close()
+                if img is None:
+                    check(f"room {name}: capture", False)
+                    continue
+                img.save(os.path.join(workdir, f"room-{name}-left.png"))
+                lit_count, _ = lit(img)
+                check(f"room {name}: room visible behind the box",
+                      lit_count > 0.9 * img.size[0] * img.size[1], f"lit {lit_count}")
+                # Count inside the box only: the game room's wood panelling
+                # passes the orange test, so a whole-frame count could pass
+                # with no box at all. The box spans roughly 39-65% of the
+                # width and 35-65% of the height of the left eye; this crop
+                # sits inside it and must be about half orange, half white.
+                w, h = img.size
+                px = list(img.crop((int(w * .42), int(h * .38),
+                                    int(w * .62), int(h * .62))).getdata())
+                orange = sum(1 for r, g, b in px if r > 150 and 60 < g < 160 and b < 90)
+                white = sum(1 for r, g, b in px if r > 170 and g > 170 and b > 170)
+                check(f"room {name}: box rendered with checker texture",
+                      orange > 0.25 * len(px) and white > 0.25 * len(px),
+                      f"orange={orange} white={white} of {len(px)} box pixels")
+                captures[name] = img
+                check(f"room {name}: host survives", host.poll() is None)
+            finally:
+                stop(host)
+        # Each room must actually change what passthrough shows; a stale
+        # environment would hand back the same frame for every room.
+        names = list(captures)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                d = room_diff(captures[a], captures[b])
+                check(f"rooms: {a} and {b} passthrough differ", d > 8, f"mean diff {d:.1f}")
+    finally:
+        restored = set_environment(original["id"], original["name"])
+        check("rooms: original environment restored",
+              restored and current_environment() == original["id"], str(current_environment()))
+
+
 def build_hello_xr():
     if os.access(HELLO, os.X_OK):
         return True
@@ -622,12 +845,19 @@ def run_hello_xr(profile, workdir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--profiles", default="Meta VR Glasses,Meta Quest 3")
-    ap.add_argument("--transports", default="gpu_handle,jpg")
+    ap.add_argument("--profiles", default="Meta VR Glasses",
+                    help="comma-separated simulator device profiles, e.g. "
+                         "\"Meta VR Glasses,Meta Quest 3\"")
+    ap.add_argument("--transports", default="gpu_handle,raw_rgba,jpg")
     ap.add_argument("--skip-modes", action="store_true",
                     help="skip the immersive/passthrough/fallback runs")
     ap.add_argument("--skip-hello-xr", action="store_true",
                     help="skip the Khronos hello_xr run")
+    rooms = ap.add_mutually_exclusive_group()
+    rooms.add_argument("--rooms", dest="rooms", action="store_true", default=True,
+                       help="run the hero-room passthrough pass (default)")
+    rooms.add_argument("--skip-rooms", dest="rooms", action="store_false",
+                       help="skip the hero-room passthrough pass")
     args = ap.parse_args()
 
     if not os.access(HOST, os.X_OK):
@@ -653,6 +883,10 @@ def main():
                 run_modes(profile.strip(), workdir)
             if op_ok and not args.skip_hello_xr:
                 run_hello_xr(profile.strip(), workdir)
+        if op_ok and args.rooms:
+            run_rooms(workdir)
+        elif args.rooms:
+            print("  [SKIP] rooms: needs the Meta XR Operator for captures")
     finally:
         if os.path.exists(backup):
             shutil.move(backup, PERSIST)
