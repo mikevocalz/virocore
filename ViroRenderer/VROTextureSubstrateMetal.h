@@ -78,13 +78,43 @@ public:
         _texture = texture;
     }
 
-    void updateWrapMode(VROWrapMode wrapModeS, VROWrapMode wrapModeT) override {
-        // Metal wrap modes are baked into the MTLSamplerState at pipeline creation time.
-    }
+    /*
+     Sampling parameters from the owning VROTexture. Substrates created
+     without one (render targets, video frames, glyph atlases) keep the
+     defaults below, which match the shader-constant sampler every material
+     texture used before samplers were per texture.
+     */
+    void setSamplerModes(VROWrapMode wrapS, VROWrapMode wrapT,
+                         VROFilterMode minFilter, VROFilterMode magFilter,
+                         VROFilterMode mipFilter);
+
+    void updateWrapMode(VROWrapMode wrapModeS, VROWrapMode wrapModeT) override;
+
+    /*
+     The sampler for this texture, built on first use and rebuilt after a
+     wrap or filter change. The geometry substrate binds it at the same slot
+     as the texture ([[ sampler(n) ]] next to [[ texture(n) ]]). Nil while the
+     substrate has no MTLTexture; callers bind the blank texture instead.
+
+     Render thread only, like updateWrapMode and setSamplerModes: the cached
+     sampler is released on invalidation without a lock. VROTexture calls
+     updateWrapMode only once hydrated, and the GL substrate already issues GL
+     calls there, so the render-thread contract is the existing one.
+     */
+    id <MTLSamplerState> getSampler();
 
 private:
   
     id <MTLTexture> _texture;
+    id <MTLSamplerState> _sampler = nil;
+
+    VROWrapMode _wrapS = VROWrapMode::Repeat;
+    VROWrapMode _wrapT = VROWrapMode::Repeat;
+    VROFilterMode _minFilter = VROFilterMode::Linear;
+    VROFilterMode _magFilter = VROFilterMode::Linear;
+    VROFilterMode _mipFilter = VROFilterMode::Linear;
+
+    void invalidateSampler();
     
 };
 
