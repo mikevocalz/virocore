@@ -47,6 +47,7 @@
 #import <ViroKit/VROMaterial.h>
 #import <ViroKit/VROMaterialVisual.h>
 #import <ViroKit/VROTexture.h>
+#import <ViroKit/VROTextureSubstrate.h>
 #import <ViroKit/VROImagePostProcess.h>
 #import <ViroKit/VROImageShaderProgram.h>
 #import <ViroKit/VROLight.h>

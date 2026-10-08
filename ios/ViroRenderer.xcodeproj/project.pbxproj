@@ -863,6 +863,7 @@
 		8FD4DF361C18F500003DC425 /* VROGeometrySource.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F4DCE3F1BFBE97600061DD7 /* VROGeometrySource.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8FD4DF371C18F500003DC425 /* VROMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F4DCE331BFBCB5400061DD7 /* VROMaterial.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8FD4DF381C18F500003DC425 /* VROMaterialVisual.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F4DCE391BFBD19B00061DD7 /* VROMaterialVisual.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		8F292C2020A9E78100635C0D /* VROTextureSubstrate.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F152A7F1C121A0E00A211F8 /* VROTextureSubstrate.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8FD4DF391C18F500003DC425 /* VROTexture.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F4DCE361BFBCB8200061DD7 /* VROTexture.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8FD4DF3A1C18F500003DC425 /* VROLight.h in Headers */ = {isa = PBXBuildFile; fileRef = 8FD4DE9D1C16432B003DC425 /* VROLight.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8FD4DF3B1C18F5EA003DC425 /* VROTime.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F63186C1BD95EA6000A75DF /* VROTime.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -4310,6 +4311,7 @@
 				8FC908871CA458EB00069C89 /* VRONodeCamera.h in Headers */,
 				8FD4DF381C18F500003DC425 /* VROMaterialVisual.h in Headers */,
 				8FD4DF391C18F500003DC425 /* VROTexture.h in Headers */,
+				8F292C2020A9E78100635C0D /* VROTextureSubstrate.h in Headers */,
 				8FDDB4B31DB1316700DE0968 /* VROUniform.h in Headers */,
 				8F3488B31EE83DD3008917CB /* VROARSessionInertial.h in Headers */,
 				8F2F342620F54BAD001962D0 /* VROGlyphAtlas.h in Headers */,

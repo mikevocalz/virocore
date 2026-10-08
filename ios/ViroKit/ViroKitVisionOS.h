@@ -51,6 +51,7 @@
 #import "VROMaterial.h"
 #import "VROMaterialVisual.h"
 #import "VROTexture.h"
+#import "VROTextureSubstrate.h"
 #import "VROLight.h"
 #import "VROImage.h"
 #import "VROShaderModifier.h"

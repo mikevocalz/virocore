@@ -375,18 +375,24 @@ private:
 
     // ── Controller model source, per hand (0 = left, 1 = right) ───────────────
     // Order: the runtime render model (XR_FB_render_model) → the fallback GLB,
-    // and the fallback only when the runtime has no model path for that hand.
+    // and the fallback when the runtime has no model path for that hand.
     // A runtime that lists the path but reports the model unavailable keeps the
-    // hand hidden and is retried; it never gets the fallback mesh.
+    // hand hidden and is retried. If that lasts kMaxUnavailableFrames while the
+    // controller's grip pose is active (an app without
+    // com.oculus.permission.RENDER_MODEL can land here), the hand gets the
+    // fallback mesh and keeps polling: a runtime model that shows up later
+    // replaces it.
     struct ControllerModelState {
         enum class Phase { Unresolved, Loading, Runtime, Fallback };
         Phase              phase      = Phase::Unresolved;
         XrRenderModelKeyFB key        = XR_NULL_RENDER_MODEL_KEY_FB;
         uint32_t           generation = 0;     // bumps per load; stale completions drop
         uint64_t           nextAttemptFrame = 0;
+        uint64_t           unavailableSinceFrame = 0;  // start of the current unavailable run
         bool               recheck    = false; // profile changed: re-query the key
         bool               retryLater = false; // set by a failed async load
-        bool               loggedUnavailable = false;
+        bool               fallbackUpgradable = false; // Fallback from timeout: keep polling
+        bool               loggedUnavailable = false;  // also marks an unavailable run
         bool               hasModel   = false; // a GLB was handed to the presenter: draw it
         uint8_t            loadFailures = 0;   // hard failures; kMaxModelFailures → fallback
     };
