@@ -138,7 +138,7 @@
 		8F292BD020A913F500635C0D /* VROToneMappingTest.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8F292BCE20A913F400635C0D /* VROToneMappingTest.cpp */; };
 		8F292BD120A913F500635C0D /* VROToneMappingTest.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F292BCF20A913F500635C0D /* VROToneMappingTest.h */; };
 		8F292BD520A91EED00635C0D /* ViroKit.framework in Copy Framework  */ = {isa = PBXBuildFile; fileRef = 8FD4DECD1C18ECD4003DC425 /* ViroKit.framework */; };
-		8F292C2020A9E78100635C0D /* VROTextureSubstrate.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F152A7F1C121A0E00A211F8 /* VROTextureSubstrate.h */; };
+		8F292C2020A9E78100635C0D /* VROTextureSubstrate.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F152A7F1C121A0E00A211F8 /* VROTextureSubstrate.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8F2D1BAF1EC288F700E7BF44 /* VROSkinner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8F2D1BAD1EC288F700E7BF44 /* VROSkinner.cpp */; };
 		8F2D1BB01EC288F700E7BF44 /* VROSkinner.h in Headers */ = {isa = PBXBuildFile; fileRef = 8F2D1BAE1EC288F700E7BF44 /* VROSkinner.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8F2D1BB31EC3785C00E7BF44 /* VROBone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8F2D1BB11EC3785C00E7BF44 /* VROBone.cpp */; };

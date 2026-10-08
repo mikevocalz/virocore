@@ -1303,6 +1303,9 @@ namespace {
 constexpr uint64_t kModelRetryFrames = 90;
 // Hard failures (not "unavailable") before a hand gives up on the runtime model.
 constexpr uint8_t  kMaxModelFailures = 3;
+// ~8 s at 72-90 Hz of "unavailable" with an active grip pose before the hand
+// shows the fallback mesh (it keeps polling for the runtime model).
+constexpr uint64_t kMaxUnavailableFrames = 640;
 
 const char *handName(int hand) { return hand == 0 ? "left" : "right"; }
 }  // namespace
@@ -1328,6 +1331,7 @@ void VROInputControllerOpenXR::applyFallbackModel(
         const char *reason, const std::shared_ptr<VROInputPresenterOpenXR> &presenter) {
     state->phase    = ControllerModelState::Phase::Fallback;
     state->recheck  = false;
+    state->fallbackUpgradable = false;
     state->hasModel = true;
     const std::string path = VROInputPresenterOpenXR::fallbackControllerGlbPath(source);
     ALOGI("[XR-DIAG] controller model: neutral fallback %s for %s (%s)", path.c_str(),
@@ -1361,7 +1365,8 @@ void VROInputControllerOpenXR::resolveControllerModel(
         state.retryLater       = false;
         state.nextAttemptFrame = _meshFrame + kModelRetryFrames;
     }
-    if (state.phase == Phase::Loading || state.phase == Phase::Fallback) return;
+    if (state.phase == Phase::Loading) return;
+    if (state.phase == Phase::Fallback && !state.fallbackUpgradable) return;
     if (state.phase == Phase::Runtime && !state.recheck) return;
     if (_meshFrame < state.nextAttemptFrame) return;
 
@@ -1377,7 +1382,8 @@ void VROInputControllerOpenXR::resolveControllerModel(
             return;
         case VROOpenXRRenderModels::PathState::NotListed:
             applyFallbackModel(statePtr, hand, source,
-                               "runtime lists no controller render model", presenter);
+                               "runtime lists no controller render model (Quest: is com.oculus.permission.RENDER_MODEL declared?)",
+                               presenter);
             return;
         case VROOpenXRRenderModels::PathState::Listed:
             break;
@@ -1390,15 +1396,33 @@ void VROInputControllerOpenXR::resolveControllerModel(
         // model of the controller that was there) and ask again later.
         state.nextAttemptFrame = _meshFrame + kModelRetryFrames;
         if (!state.loggedUnavailable) {
-            state.loggedUnavailable = true;
+            state.loggedUnavailable     = true;
+            state.unavailableSinceFrame = _meshFrame;
             ALOGI("[XR-DIAG] controller model: %s unavailable from runtime, retrying",
                   VROOpenXRRenderModels::pathString(rmHand));
+        }
+        if (state.phase == Phase::Unresolved && !state.hasModel &&
+            _meshFrame - state.unavailableSinceFrame >= kMaxUnavailableFrames) {
+            ALOGW("controller model: %s still unavailable with the controller tracked. "
+                  "Quest apps need com.oculus.permission.RENDER_MODEL and the "
+                  "com.oculus.feature.RENDER_MODEL feature in their manifest for "
+                  "XR_FB_render_model; using the fallback mesh and polling on",
+                  VROOpenXRRenderModels::pathString(rmHand));
+            applyFallbackModel(statePtr, hand, source,
+                               "runtime model unavailable; RENDER_MODEL permission declared?",
+                               presenter);
+            state.fallbackUpgradable = true;
+            state.nextAttemptFrame   = _meshFrame + kModelRetryFrames;
         }
         return;
     }
     if (XR_FAILED(props.result)) {
         if (state.phase == Phase::Runtime) {
             state.recheck = false;  // keep the model already loaded
+            return;
+        }
+        if (state.phase == Phase::Fallback) {
+            state.fallbackUpgradable = false;  // keep the fallback; stop polling
             return;
         }
         char reason[64];
@@ -1411,8 +1435,9 @@ void VROInputControllerOpenXR::resolveControllerModel(
         return;
     }
 
-    state.recheck           = false;
-    state.loggedUnavailable = false;
+    state.recheck            = false;
+    state.loggedUnavailable  = false;
+    state.fallbackUpgradable = false;
     if (state.phase == Phase::Runtime && props.key == state.key) return;
 
     if (_renderModelCacheDir.empty()) {
