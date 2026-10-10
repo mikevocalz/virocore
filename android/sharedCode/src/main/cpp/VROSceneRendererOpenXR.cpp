@@ -1706,6 +1706,10 @@ bool VROSceneRendererOpenXR::updateCompositorPanelPose(
     return _panelCompositor && _panelCompositor->updatePanelPose(id, pose);
 }
 
+bool VROSceneRendererOpenXR::invalidateCompositorPanelContent(const std::string &id) {
+    return _panelCompositor && _panelCompositor->invalidatePanelContent(id);
+}
+
 bool VROSceneRendererOpenXR::removeCompositorPanel(const std::string &id) {
     return _panelCompositor && _panelCompositor->removePanel(id);
 }
