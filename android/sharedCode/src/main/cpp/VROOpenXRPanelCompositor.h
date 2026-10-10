@@ -8,6 +8,7 @@
 #ifndef XR_USE_PLATFORM_ANDROID
 #define XR_USE_PLATFORM_ANDROID
 #endif
+#include <jni.h>  // OpenXR Android platform declarations use jobject
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <openxr/openxr.h>
