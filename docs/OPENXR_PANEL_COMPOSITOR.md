@@ -1,49 +1,37 @@
 # OpenXR native compositor-backed panels (Android GLES)
 
-This is the **engine-side** implementation. It is not yet a React Native
-public component. The `VROSceneRendererOpenXR` session is the sole owner of
-panel swapchains; do not create a second OpenXR session from Viro External.
+This is an **engine-side draft**, paired with [Viro External #58](https://github.com/mikevocalz/viro-external/pull/58). It does not make React Native views compositor layers yet. `VROSceneRendererOpenXR` owns the existing `XrSession`; never create another session from the JS host.
 
-## Supported now, in source
-- Native, independent `xrCreateSwapchain` per **registered** panel.
-- Compositor `XrCompositionLayerQuad` and capability-gated
-  `XrCompositionLayerCylinderKHR` (only after actually enabling
-  `XR_KHR_composition_layer_cylinder` at instance creation).
-- Source texture is produced into the XR swapchain image **on the render
-  thread**, through `VROOpenXRPanelProducer`. Registration fails without a
-  producer. A producer returning false or failing to draw is not submitted.
-- Acquired image always released, even on wait/producer failure.
-- Stable panel ID, position/rotation updates and visibility, explicit
-  remove/teardown before session destruction.
-- Per-frame compositor layer-budget enforcement from
-  `XrSystemProperties.graphicsProperties.maxLayerCount`, including
-  projection and passthrough layers. Registering a panel does not guarantee
-  it will fit on every frame; rendering fallback remains the caller's job.
+## Current engine contract
 
-## Integration contract (not yet wired)
-1. A Viro-renderer-native texture producer must supply actual panel content
-   (e.g. GPU blit or Skia/WebGPU surface drawn to the XR texture). No stand-in
-   pixels or dummy composition layers are generated. Producer must preserve
-   its own GL state and submit its draw before returning success.
-2. React Native/Fabric needs an imperative presenter/host for registration,
-   pose, visibility, resize and release. It must dispatch operations to the
-   existing `VROPlatformDispatchAsyncRenderer` queue, never touch the
-   session from the JS thread.
-3. Viro External's `SpatialPanel` should make `scene` the fallback until
-   native host capabilities **and** producer/interaction registration are ready.
-4. For compositor-hit-test, map controller/ray/hand input into the same
-   world pose and quad/cylinder surface; pointer capture and true drag end
-   need the Viro input source to expose release, including loss of hover.
-5. Meta `SpatialWindow` and PICO `WindowContainer` are separate OS-managed
-   presentation paths, not OpenXR compositor layers.
+- One independent `xrCreateSwapchain` for each registered GLES texture producer. A valid producer is required.
+- Native `XrCompositionLayerQuad` and capability-gated `XrCompositionLayerCylinderKHR`; the latter requires `XR_KHR_composition_layer_cylinder` at instance creation.
+- Panel validation returns `VROOpenXRPanelError` for duplicate or empty IDs, absent session/producer, layer budget, invalid geometry, unavailable cylinder, and allocation failures. The scene-renderer compatibility wrapper still returns `bool`.
+- `addPanel` makes content dirty initially. After one successful acquire → wait → producer draw → release, later frames **reuse the last released image** until `invalidatePanelContent(id)` or `invalidateCompositorPanelContent(id)` requests fresh pixels. Pose changes and visibility do not repaint texture content.
+- **Wait must return `XR_SUCCESS`** before an image can be released; `XR_TIMEOUT_EXPIRED` is NOT a successful wait. A timed-out or failed wait retains the acquired image for another frame rather than releasing it illegally.
+- If drawing fails after a successful wait, retain that acquired/waited image for redraw and continue submitting the last released frame. If `xrReleaseSwapchainImage` fails, retry release without drawing again. No panel is submitted before its first successful release.
+- The wait timeout is the predicted display period from `XrFrameState`, not infinite.
+- `BLEND_TEXTURE_SOURCE_ALPHA_BIT` is set without `UNPREMULTIPLIED_ALPHA_BIT`: texture producers **must draw premultiplied alpha**.
+- The compositor observes the runtime `maxLayerCount` after projection and passthrough layers. Capacity is not a guarantee of successful per-frame composition; the host must implement a real scene-mesh fallback.
+- Call compositor methods on the existing OpenXR render thread. Destroy panel resources before the parent session is destroyed.
 
-## Device validation gates
-- Android NDK OpenXR build and headset test (Quest and PICO).
-- Acquire/wait/release balanced across failures and every lifecycle transition.
-- No previous-frame stale imagery on return-false.
-- Alpha blending, sRGB correctness and z-order vs passthrough.
-- Native producer actual text/media, occlusion and input behavior.
-- Cylindrical projection geometry, UV mapping, rays.
-- Metal/Vulkan backends require their own texture-image descriptors.
+## Important limits
 
-This PR cannot be declared production-ready merely because C++ compiles.
+The producer callback remains GLES texture-only and is not wired to RN/Fabric/Expo. The attached design pack recommends a **separate** `XR_KHR_android_surface_swapchain` kind and Android `VirtualDisplay`/`Presentation` host rather than pretending a Surface swapchain can use acquire/wait/release. Do not mix the lifecycle rules of those swapchain kinds.
+
+The renderer has no automatic dirty notification from the eventual React root. Dynamic content needs a host-side invalidation call. Pending acquired-but-not-waited images during session teardown also require explicit device/runtime verification; correctness during STOPPING and session loss is not yet demonstrated.
+
+## Integration checklist
+
+- [ ] Runtime-gated Android Surface panel creation (only `xrDestroySwapchain` on those swapchains).
+- [ ] Expo Modules 2.0 Android SharedObject host, JNI render-queue ownership, RN root to virtual display.
+- [ ] Controller/hand ray to quad/cylinder pixel coordinates, reliable input capture and release.
+- [ ] Native budget eviction callbacks and reliable `scene` fallback; depth testing when supported.
+- [ ] Meta system windows and PICO WindowContainers validated separately in shared-space mode.
+- [ ] Device-verified lifecycle, sRGB, alpha, passthrough ordering, geometry and performance on Quest 3 and PICO 4 Ultra.
+- [ ] Call-order fake and native/NDK tests, including wait timeouts and session transitions; no tests claimed until executed.
+- [ ] Metal/Vulkan image backend implementations (excluded from Android GLES v1).
+
+Reference: [Khronos rendering chapter](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/rendering.adoc), [cylinder extension](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/extensions/khr/khr_composition_layer_cylinder.adoc), [Android Surface extension](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/extensions/khr/khr_android_surface_swapchain.adoc).
+
+**Do not mark ready for review** without native compilation and headset evidence.
