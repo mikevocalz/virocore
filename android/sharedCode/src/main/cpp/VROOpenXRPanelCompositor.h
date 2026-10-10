@@ -20,6 +20,24 @@
 
 enum class VROOpenXRPanelShape { Quad, Cylinder };
 
+// Rejection is observable by the JNI/Expo host; do not collapse failures to false.
+enum class VROOpenXRPanelError {
+    None,
+    SessionUnavailable,
+    EmptyId,
+    MissingProducer,
+    DuplicateId,
+    LayerBudgetExceeded,
+    InvalidPose,
+    InvalidDimensions,
+    InvalidPixelSize,
+    CylinderUnavailable,
+    InvalidCylinderRadius,
+    InvalidCylinderAngle,
+    SwapchainFailed,
+};
+const char *VROOpenXRPanelErrorMessage(VROOpenXRPanelError error);
+
 struct VROOpenXRPanelDesc {
     std::string id;
     VROOpenXRPanelShape shape = VROOpenXRPanelShape::Quad;
@@ -34,10 +52,13 @@ struct VROOpenXRPanelDesc {
 };
 
 /**
- * Called for every acquired panel swapchain image. The producer draws actual
- * UI content into the supplied OpenGL ES 2D texture on the OpenXR render
- * thread and returns true only when rendering/submission succeeded.
- * No blank placeholder or stale panel is submitted after an unsuccessful draw.
+ * Draws changed UI content into an acquired GLES swapchain image on the XR
+ * renderer thread. Returns true only when the texture contains a complete
+ * frame. The producer MUST write premultiplied alpha: composition sets
+ * BLEND_TEXTURE_SOURCE_ALPHA_BIT, not UNPREMULTIPLIED_ALPHA_BIT.
+ *
+ * On a failed draw the compositor retains the acquired image for a retry,
+ * without releasing it or replacing the last successfully submitted frame.
  */
 using VROOpenXRPanelProducer = std::function<bool(GLuint, uint32_t, uint32_t)>;
 
@@ -52,7 +73,10 @@ public:
 
     // All methods must run on the XR render thread, except construction and
     // destruction at session startup/teardown after the render loop is stopped.
-    bool addPanel(const VROOpenXRPanelDesc &desc, VROOpenXRPanelProducer producer);
+    VROOpenXRPanelError addPanel(const VROOpenXRPanelDesc &desc,
+                                  VROOpenXRPanelProducer producer);
+    // Call when the producer has new pixels; pose changes need no redraw.
+    bool invalidatePanelContent(const std::string &id);
     bool updatePanelPose(const std::string &id, const XrPosef &pose);
     bool setPanelVisible(const std::string &id, bool visible);
     bool removePanel(const std::string &id);
@@ -61,6 +85,7 @@ public:
     // After projection/passthrough setup, before xrEndFrame. Produces layer
     // pointers owned by this object, valid until the next mutation.
     void appendLayers(XrSpace appSpace, uint32_t remainingLayerSlots,
+                      XrDuration predictedDisplayPeriod,
                       std::vector<const XrCompositionLayerBaseHeader *> &layers);
     bool supportsCylinder() const { return _cylinderEnabled; }
     size_t count() const { return _panels.size(); }
@@ -71,6 +96,12 @@ private:
         VROOpenXRPanelProducer producer;
         XrSwapchain swapchain = XR_NULL_HANDLE;
         std::vector<XrSwapchainImageOpenGLESKHR> images;
+        bool dirty = true;
+        bool acquired = false;
+        bool waited = false;
+        bool readyToRelease = false;
+        bool hasReleasedImage = false;
+        uint32_t acquiredIndex = 0;
         XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         XrCompositionLayerCylinderKHR cylinder = { XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR };
     };
