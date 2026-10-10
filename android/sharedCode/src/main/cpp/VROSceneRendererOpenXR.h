@@ -119,6 +119,9 @@ public:
     bool addCompositorPanel(const VROOpenXRPanelDesc &desc,
                             VROOpenXRPanelProducer producer);
     bool updateCompositorPanelPose(const std::string &id, const XrPosef &pose);
+    // Dynamic producer content requires explicit invalidation. Only the
+    // registered texture producer is called when this flag is set.
+    bool invalidateCompositorPanelContent(const std::string &id);
     bool removeCompositorPanel(const std::string &id);
 
     /*
