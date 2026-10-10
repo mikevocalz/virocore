@@ -5,6 +5,7 @@ on:
       - 'scripts/build_ios_framework.sh'
       - 'tests/ios/**'
       - 'ios/fastlane/Fastfile'
+      - 'Jenkinsfile'
       - '.github/workflows/pull-request.yml'
       - '.github/workflows/ios-artifact-policy.yml'
   push:
@@ -13,6 +14,7 @@ on:
       - 'scripts/build_ios_framework.sh'
       - 'tests/ios/**'
       - 'ios/fastlane/Fastfile'
+      - 'Jenkinsfile'
       - '.github/workflows/pull-request.yml'
       - '.github/workflows/ios-artifact-policy.yml'
 jobs:

@@ -77,8 +77,18 @@ bool VROOpenXRPanelCompositor::createSwapchain(Panel &panel) {
     return true;
 }
 
+void VROOpenXRPanelCompositor::finishPendingGpuWork() {
+    if (_hasPendingGpuWork) {
+        // xrDestroySwapchain requires all graphics commands referencing its
+        // images to have completed. glFlush alone does not guarantee this.
+        glFinish();
+        _hasPendingGpuWork = false;
+    }
+}
+
 void VROOpenXRPanelCompositor::destroySwapchain(Panel &panel) {
     if (panel.swapchain != XR_NULL_HANDLE) {
+        finishPendingGpuWork();
         xrDestroySwapchain(panel.swapchain);
         panel.swapchain = XR_NULL_HANDLE;
     }
@@ -172,6 +182,7 @@ void VROOpenXRPanelCompositor::appendLayers(
             },
             [&](uint32_t index) {
                 if (index >= panel.images.size()) return false;
+                _hasPendingGpuWork = true; // failed producers may also submit work
                 if (!panel.producer(panel.images[index].image,
                                     panel.desc.widthPixels, panel.desc.heightPixels)) return false;
                 glFlush();

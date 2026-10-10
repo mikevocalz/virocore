@@ -1844,6 +1844,9 @@ void VROSceneRendererOpenXR::renderLoop() {
         }
     }
 
+    // onDestroy tears resources down after joining this thread, when the GL
+    // context is no longer current. Complete panel work before releasing it.
+    if (_panelCompositor) _panelCompositor->finishPendingGpuWork();
     _jvm->DetachCurrentThread();
     eglMakeCurrent(_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     ALOGV("Render thread exited");

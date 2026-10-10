@@ -87,6 +87,9 @@ public:
     bool setPanelVisible(const std::string &id, bool visible);
     bool removePanel(const std::string &id);
     void clear();
+    // Drain producer work while the owning GLES context is still current.
+    // Required before releasing that context at render-thread shutdown.
+    void finishPendingGpuWork();
 
     // After projection/passthrough setup, before xrEndFrame. Produces layer
     // pointers owned by this object, valid until the next mutation.
@@ -111,6 +114,7 @@ private:
     int64_t _rgbaFormat;
     uint32_t _maxLayers;
     bool _cylinderEnabled;
+    bool _hasPendingGpuWork = false;
     std::vector<Panel> _panels;
 
     Panel *find(const std::string &id);

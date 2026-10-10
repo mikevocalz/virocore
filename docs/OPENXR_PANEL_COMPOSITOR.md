@@ -15,6 +15,7 @@ This is the engine side of native panels, paired with [Viro External #58](https:
 - `BLEND_TEXTURE_SOURCE_ALPHA_BIT` is set without `UNPREMULTIPLIED_ALPHA_BIT`: texture producers **must draw premultiplied alpha**.
 - The panel budget is the runtime `maxLayerCount` minus two slots held for projection and passthrough, so `addPanel` rejects with `LayerBudgetExceeded` instead of admitting a panel that never composites. Each frame also recomputes the free slots. Capacity is not a guarantee of successful per-frame composition; the host must implement a real scene-mesh fallback.
 - A cylinder `pose` is the centre of the circle, not the panel surface (OpenXR `XrCompositionLayerCylinderKHR`). The visible arc sits `radiusMeters` in front of it.
+- Producer GPU work is completed before destroying panel swapchains. The render thread also drains it before releasing its GLES context, so later session teardown does not call GL without a current context.
 - Call compositor methods on the existing OpenXR render thread. Destroy panel resources before the parent session is destroyed.
 
 ## Important limits
