@@ -17,6 +17,25 @@ bool validPose(const XrPosef &pose) {
 }
 }
 
+const char *VROOpenXRPanelErrorMessage(VROOpenXRPanelError error) {
+    switch (error) {
+        case VROOpenXRPanelError::None: return "none";
+        case VROOpenXRPanelError::SessionUnavailable: return "OpenXR session unavailable";
+        case VROOpenXRPanelError::EmptyId: return "panel ID must not be empty";
+        case VROOpenXRPanelError::MissingProducer: return "panel texture producer missing";
+        case VROOpenXRPanelError::DuplicateId: return "panel ID already registered";
+        case VROOpenXRPanelError::LayerBudgetExceeded: return "runtime panel layer budget exceeded";
+        case VROOpenXRPanelError::InvalidPose: return "panel pose must be finite and orientation normalized";
+        case VROOpenXRPanelError::InvalidDimensions: return "panel width and height must be positive finite metres";
+        case VROOpenXRPanelError::InvalidPixelSize: return "panel pixel dimensions must be between 16 and 4096";
+        case VROOpenXRPanelError::CylinderUnavailable: return "XR_KHR_composition_layer_cylinder unavailable";
+        case VROOpenXRPanelError::InvalidCylinderRadius: return "cylinder radius must be finite and greater than zero";
+        case VROOpenXRPanelError::InvalidCylinderAngle: return "cylinder arc angle must be smaller than 2pi";
+        case VROOpenXRPanelError::SwapchainFailed: return "OpenXR panel swapchain allocation failed";
+    }
+    return "unknown OpenXR panel error";
+}
+
 VROOpenXRPanelCompositor::VROOpenXRPanelCompositor(
     XrSession session, int64_t rgbaFormat,
     uint32_t maxLayers, bool cylinderEnabled)
@@ -64,28 +83,46 @@ void VROOpenXRPanelCompositor::destroySwapchain(Panel &panel) {
         panel.swapchain = XR_NULL_HANDLE;
     }
     panel.images.clear();
+    panel.acquired = false;
+    panel.waited = false;
+    panel.readyToRelease = false;
+    panel.hasReleasedImage = false;
 }
 
-bool VROOpenXRPanelCompositor::addPanel(
+VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
     const VROOpenXRPanelDesc &desc, VROOpenXRPanelProducer producer) {
-    if (_session == XR_NULL_HANDLE || desc.id.empty() || !producer ||
-        find(desc.id) || _panels.size() >= _maxLayers ||
-        !validPose(desc.pose) ||
-        !std::isfinite(desc.widthMeters) || desc.widthMeters <= 0 ||
-        !std::isfinite(desc.heightMeters) || desc.heightMeters <= 0 ||
-        desc.widthPixels < 16 || desc.heightPixels < 16 ||
-        desc.widthPixels > 4096 || desc.heightPixels > 4096) return false;
+    if (_session == XR_NULL_HANDLE) return VROOpenXRPanelError::SessionUnavailable;
+    if (desc.id.empty()) return VROOpenXRPanelError::EmptyId;
+    if (!producer) return VROOpenXRPanelError::MissingProducer;
+    if (find(desc.id)) return VROOpenXRPanelError::DuplicateId;
+    if (_panels.size() >= _maxLayers) return VROOpenXRPanelError::LayerBudgetExceeded;
+    if (!validPose(desc.pose)) return VROOpenXRPanelError::InvalidPose;
+    if (!std::isfinite(desc.widthMeters) || desc.widthMeters <= 0 ||
+        !std::isfinite(desc.heightMeters) || desc.heightMeters <= 0)
+        return VROOpenXRPanelError::InvalidDimensions;
+    if (desc.widthPixels < 16 || desc.heightPixels < 16 ||
+        desc.widthPixels > 4096 || desc.heightPixels > 4096)
+        return VROOpenXRPanelError::InvalidPixelSize;
     if (desc.shape == VROOpenXRPanelShape::Cylinder) {
-        if (!_cylinderEnabled || !std::isfinite(desc.radiusMeters) ||
-            desc.radiusMeters <= 0 || desc.widthMeters / desc.radiusMeters >= kFullCircle)
-            return false;
+        if (!_cylinderEnabled) return VROOpenXRPanelError::CylinderUnavailable;
+        if (!std::isfinite(desc.radiusMeters) || desc.radiusMeters <= 0)
+            return VROOpenXRPanelError::InvalidCylinderRadius;
+        if (desc.widthMeters / desc.radiusMeters >= kFullCircle)
+            return VROOpenXRPanelError::InvalidCylinderAngle;
     }
 
     Panel panel;
     panel.desc = desc;
     panel.producer = std::move(producer);
-    if (!createSwapchain(panel)) return false;
+    if (!createSwapchain(panel)) return VROOpenXRPanelError::SwapchainFailed;
     _panels.push_back(std::move(panel));
+    return VROOpenXRPanelError::None;
+}
+
+bool VROOpenXRPanelCompositor::invalidatePanelContent(const std::string &id) {
+    auto *panel = find(id);
+    if (!panel) return false;
+    panel->dirty = true;
     return true;
 }
 
@@ -118,29 +155,58 @@ void VROOpenXRPanelCompositor::clear() {
 }
 
 void VROOpenXRPanelCompositor::appendLayers(
-    XrSpace appSpace, uint32_t remainingLayerSlots,
+    XrSpace appSpace, uint32_t remainingLayerSlots, XrDuration predictedDisplayPeriod,
     std::vector<const XrCompositionLayerBaseHeader *> &layers) {
     if (appSpace == XR_NULL_HANDLE || remainingLayerSlots == 0) return;
     for (auto &panel : _panels) {
         if (remainingLayerSlots == 0) break;
         if (!panel.desc.visible || panel.swapchain == XR_NULL_HANDLE) continue;
 
-        XrSwapchainImageAcquireInfo acquire = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-        uint32_t imageIndex = 0;
-        if (XR_FAILED(xrAcquireSwapchainImage(panel.swapchain, &acquire, &imageIndex))) continue;
+        if (panel.dirty || panel.acquired) {
+            if (!panel.acquired) {
+                XrSwapchainImageAcquireInfo acquire = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+                if (xrAcquireSwapchainImage(panel.swapchain, &acquire, &panel.acquiredIndex) == XR_SUCCESS) {
+                    panel.acquired = true;
+                    panel.waited = false;
+                    panel.readyToRelease = false;
+                }
+            }
 
-        XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-        wait.timeout = XR_INFINITE_DURATION;
-        const bool acquired = XR_SUCCEEDED(xrWaitSwapchainImage(panel.swapchain, &wait));
-        bool drawn = false;
-        if (acquired && imageIndex < panel.images.size()) {
-            drawn = panel.producer(panel.images[imageIndex].image,
-                                  panel.desc.widthPixels, panel.desc.heightPixels);
-            if (drawn) glFlush(); // Submit GLES commands before handing texture to compositor.
+            if (panel.acquired && !panel.waited) {
+                XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+                wait.timeout = std::max<XrDuration>(0, predictedDisplayPeriod);
+                // XR_TIMEOUT_EXPIRED is not a successful wait, despite XR_SUCCEEDED().
+                panel.waited = xrWaitSwapchainImage(panel.swapchain, &wait) == XR_SUCCESS;
+            }
+
+            if (panel.acquired && panel.waited && !panel.readyToRelease &&
+                panel.acquiredIndex < panel.images.size()) {
+                const bool drawn = panel.producer(panel.images[panel.acquiredIndex].image,
+                                                  panel.desc.widthPixels,
+                                                  panel.desc.heightPixels);
+                if (drawn) {
+                    glFlush();
+                    panel.readyToRelease = true;
+                }
+                // A failed draw stays acquired and waited. Releasing would replace
+                // the last known-good image with a possibly half-painted image.
+            }
+
+            if (panel.acquired && panel.waited && panel.readyToRelease) {
+                XrSwapchainImageReleaseInfo release = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+                if (xrReleaseSwapchainImage(panel.swapchain, &release) == XR_SUCCESS) {
+                    panel.acquired = false;
+                    panel.waited = false;
+                    panel.readyToRelease = false;
+                    panel.hasReleasedImage = true;
+                    panel.dirty = false;
+                }
+            }
         }
 
-        XrSwapchainImageReleaseInfo release = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-        if (XR_FAILED(xrReleaseSwapchainImage(panel.swapchain, &release)) || !drawn) continue;
+        // Reuse the most recently released image when unchanged, timed out,
+        // or a redraw failed; never submit a swapchain without a released frame.
+        if (!panel.hasReleasedImage) continue;
 
         XrSwapchainSubImage image = {};
         image.swapchain = panel.swapchain;
@@ -170,4 +236,6 @@ void VROOpenXRPanelCompositor::appendLayers(
         }
         --remainingLayerSlots;
     }
+
+
 }
