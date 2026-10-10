@@ -29,7 +29,8 @@ The renderer has no automatic dirty notification from the eventual React root. D
 - [ ] Native budget eviction callbacks and reliable `scene` fallback; depth testing when supported.
 - [ ] Meta system windows and PICO WindowContainers validated separately in shared-space mode.
 - [ ] Device-verified lifecycle, sRGB, alpha, passthrough ordering, geometry and performance on Quest 3 and PICO 4 Ultra.
-- [ ] Call-order fake and native/NDK tests, including wait timeouts and session transitions; no tests claimed until executed.
+- [x] SDK-free C++ state-machine regression: four scenarios (timeout, failed redraw, release retry, first-frame failure) compiled and passed locally with `g++ -std=c++17 -Wall -Wextra -Werror`; CI workflow also added.
+- [ ] Android NDK build, mocked real OpenXR calls, STOPPING cleanup and session-transition/device tests.
 - [ ] Metal/Vulkan image backend implementations (excluded from Android GLES v1).
 
 Reference: [Khronos rendering chapter](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/rendering.adoc), [cylinder extension](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/extensions/khr/khr_composition_layer_cylinder.adoc), [Android Surface extension](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/extensions/khr/khr_android_surface_swapchain.adoc).
