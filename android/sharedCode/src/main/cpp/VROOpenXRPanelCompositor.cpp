@@ -83,10 +83,7 @@ void VROOpenXRPanelCompositor::destroySwapchain(Panel &panel) {
         panel.swapchain = XR_NULL_HANDLE;
     }
     panel.images.clear();
-    panel.acquired = false;
-    panel.waited = false;
-    panel.readyToRelease = false;
-    panel.hasReleasedImage = false;
+    panel.imageState.reset();
 }
 
 VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
@@ -122,7 +119,7 @@ VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
 bool VROOpenXRPanelCompositor::invalidatePanelContent(const std::string &id) {
     auto *panel = find(id);
     if (!panel) return false;
-    panel->dirty = true;
+    panel->imageState.invalidate();
     return true;
 }
 
@@ -162,51 +159,32 @@ void VROOpenXRPanelCompositor::appendLayers(
         if (remainingLayerSlots == 0) break;
         if (!panel.desc.visible || panel.swapchain == XR_NULL_HANDLE) continue;
 
-        if (panel.dirty || panel.acquired) {
-            if (!panel.acquired) {
+        panel.imageState.step(
+            [&](uint32_t &index) {
                 XrSwapchainImageAcquireInfo acquire = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-                if (xrAcquireSwapchainImage(panel.swapchain, &acquire, &panel.acquiredIndex) == XR_SUCCESS) {
-                    panel.acquired = true;
-                    panel.waited = false;
-                    panel.readyToRelease = false;
-                }
-            }
-
-            if (panel.acquired && !panel.waited) {
+                return xrAcquireSwapchainImage(panel.swapchain, &acquire, &index) == XR_SUCCESS;
+            },
+            [&] {
                 XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
                 wait.timeout = std::max<XrDuration>(0, predictedDisplayPeriod);
-                // XR_TIMEOUT_EXPIRED is not a successful wait, despite XR_SUCCEEDED().
-                panel.waited = xrWaitSwapchainImage(panel.swapchain, &wait) == XR_SUCCESS;
-            }
-
-            if (panel.acquired && panel.waited && !panel.readyToRelease &&
-                panel.acquiredIndex < panel.images.size()) {
-                const bool drawn = panel.producer(panel.images[panel.acquiredIndex].image,
-                                                  panel.desc.widthPixels,
-                                                  panel.desc.heightPixels);
-                if (drawn) {
-                    glFlush();
-                    panel.readyToRelease = true;
-                }
-                // A failed draw stays acquired and waited. Releasing would replace
-                // the last known-good image with a possibly half-painted image.
-            }
-
-            if (panel.acquired && panel.waited && panel.readyToRelease) {
+                // XR_TIMEOUT_EXPIRED is a non-successful wait even though it is nonnegative.
+                return xrWaitSwapchainImage(panel.swapchain, &wait) == XR_SUCCESS;
+            },
+            [&](uint32_t index) {
+                if (index >= panel.images.size()) return false;
+                if (!panel.producer(panel.images[index].image,
+                                    panel.desc.widthPixels, panel.desc.heightPixels)) return false;
+                glFlush();
+                return true;
+            },
+            [&] {
                 XrSwapchainImageReleaseInfo release = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-                if (xrReleaseSwapchainImage(panel.swapchain, &release) == XR_SUCCESS) {
-                    panel.acquired = false;
-                    panel.waited = false;
-                    panel.readyToRelease = false;
-                    panel.hasReleasedImage = true;
-                    panel.dirty = false;
-                }
-            }
-        }
+                return xrReleaseSwapchainImage(panel.swapchain, &release) == XR_SUCCESS;
+            });
 
-        // Reuse the most recently released image when unchanged, timed out,
-        // or a redraw failed; never submit a swapchain without a released frame.
-        if (!panel.hasReleasedImage) continue;
+        // The compositor uses the last released image while a new paint is
+        // pending; no layer is legal before its first successful release.
+        if (!panel.imageState.hasReleasedImage()) continue;
 
         XrSwapchainSubImage image = {};
         image.swapchain = panel.swapchain;
