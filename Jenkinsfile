@@ -23,8 +23,7 @@ pipeline {
     stage('virokit_framework (ios)') {
       steps {
         sh '''cd ios
-        fastlane virorender_viroreact_virokit
-        fastlane virorender_viroreact_virokit_static_lib'''
+        fastlane virorender_viroreact_virokit'''
       }
     }
     stage('releasetest') {

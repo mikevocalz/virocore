@@ -76,21 +76,15 @@ jobs:
           cd ios
           pod install --verbose
         shell: bash
-      - name: Xcodebuild iOS Renderer (non-static)
-        run: |
-          cd ios
-           set -o pipefail && xcodebuild \
-            -workspace ViroRenderer.xcworkspace \
-            -scheme ViroKit \
-            -sdk iphoneos \
-            -configuration Release \
-            IPHONEOS_DEPLOYMENT_TARGET=13.0 | xcpretty
+      - name: Build and stage iOS framework
+        run: bash scripts/build_ios_framework.sh
 
       - name: Upload iOS Renderer artifact
         uses: actions/upload-artifact@v4.6.0
         with:
-          name: ios_dist.tgz
+          name: virokit-iphoneos
           path: ./ios/dist/
+          if-no-files-found: error
 
 
   wasmBuild:

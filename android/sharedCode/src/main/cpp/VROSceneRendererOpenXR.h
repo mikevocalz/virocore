@@ -41,6 +41,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "VROOpenXRBoundaryVisibility.h"
+#include "VROOpenXRPanelCompositor.h"
 
 class VRORendererConfiguration;
 class VRODriverOpenGLAndroidOpenXR;
@@ -111,6 +112,19 @@ public:
      */
     void triggerHaptic(int hand, float amplitude, float durationSec);
     void setHandTrackingEnabled(bool enabled);
+
+    // Render-thread API: native producers can promote a textured panel into a
+    // compositor-managed quad/cylinder layer, instead of the scene projection.
+    // The producer callback must submit content for every acquired image.
+    // Returns SessionUnavailable before the session exists or after teardown.
+    VROOpenXRPanelError addCompositorPanel(const VROOpenXRPanelDesc &desc,
+                                           VROOpenXRPanelProducer producer);
+    bool updateCompositorPanelPose(const std::string &id, const XrPosef &pose);
+    bool setCompositorPanelVisible(const std::string &id, bool visible);
+    // Dynamic producer content requires explicit invalidation. Only the
+    // registered texture producer is called when this flag is set.
+    bool invalidateCompositorPanelContent(const std::string &id);
+    bool removeCompositorPanel(const std::string &id);
 
     /*
      Per-eye swapchain dimensions, or 0 until the session has created them.
@@ -329,6 +343,12 @@ private:
 
     // Per-eye swapchains (index 0 = left, 1 = right)
     VROOpenXRSwapchain _swapchains[2];
+
+    // One session owns every independent spatial panel swapchain.
+    std::unique_ptr<VROOpenXRPanelCompositor> _panelCompositor;
+    bool _cylinderLayerAvailable = false;
+    uint32_t _maxCompositorLayers = 0;
+    int64_t _panelSwapchainFormat = 0;
 
     // Passthrough extension handles (XR_FB_passthrough)
     XrPassthroughFB      _passthrough      = XR_NULL_HANDLE;

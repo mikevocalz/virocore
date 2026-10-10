@@ -1,0 +1,26 @@
+name: OpenXR panel image lifecycle
+
+on:
+  pull_request:
+    paths:
+      - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
+      - "tests/xr_backend/panel_image_state_test.cpp"
+      - ".github/workflows/openxr-panel-policy.yml"
+  push:
+    paths:
+      - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
+      - "tests/xr_backend/panel_image_state_test.cpp"
+    branches:
+      - main
+
+jobs:
+  image-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and exercise fake swapchain transitions
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tests/xr_backend/panel_image_state_test.cpp \
+            -o "$RUNNER_TEMP/panel_image_state_test"
+          "$RUNNER_TEMP/panel_image_state_test"

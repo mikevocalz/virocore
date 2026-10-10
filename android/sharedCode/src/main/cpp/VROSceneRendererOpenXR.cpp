@@ -75,6 +75,7 @@ static constexpr const char *const kOptionalExtensions[] = {
     XR_EXT_LOCAL_FLOOR_EXTENSION_NAME,                // floor-level reference space (PICO 4 Ultra; OpenXR 1.1 core)
     XR_META_BOUNDARY_VISIBILITY_EXTENSION_NAME, // hide the boundary while passthrough shows the room
     XR_FB_RENDER_MODEL_EXTENSION_NAME,          // real controller GLBs from the runtime (Quest Touch / Touch Plus / Touch Pro)
+    XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME, // optional native curved panels
 
     // CL-H: co-location. All three are needed and none of them is optional to
     // each other — an anchor has to be STORABLE before it can be SHARABLE, and
@@ -410,6 +411,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
                     _handInteractionAvailable = true;
                 if (strcmp(optExt, XR_FB_RENDER_MODEL_EXTENSION_NAME) == 0)
                     _renderModelAvailable = true;
+                if (strcmp(optExt, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME) == 0)
+                    _cylinderLayerAvailable = true;
                 break;
             }
         }
@@ -521,6 +524,14 @@ bool VROSceneRendererOpenXR::initOpenXR() {
         return false;
     }
     ALOGV("xrGetSystem OK  systemId=%llu", (unsigned long long)_systemId);
+    // Runtime owns compositor layer capacity; projection and passthrough also
+    // consume slots, so each frame recomputes the remaining panel budget.
+    XrSystemProperties panelProps = { XR_TYPE_SYSTEM_PROPERTIES };
+    if (XR_SUCCEEDED(xrGetSystemProperties(_instance, _systemId, &panelProps))) {
+        _maxCompositorLayers = panelProps.graphicsProperties.maxLayerCount;
+    }
+    ALOGI("[XR-PANEL] compositor maxLayers=%u cylinder=%d",
+          _maxCompositorLayers, (int)_cylinderLayerAvailable);
 
     // ── Probe eye-gaze support ────────────────────────────────────────────────
     // The extension being present doesn't mean the device has eye-tracking
@@ -691,6 +702,12 @@ bool VROSceneRendererOpenXR::createSession() {
 
     if (!createReferenceSpace()) return false;
     if (!createSwapchains())    return false;
+    // Projection and passthrough always hold one slot each; panels get the rest.
+    const uint32_t panelLayerBudget =
+        _maxCompositorLayers > 2 ? _maxCompositorLayers - 2 : 0;
+    _panelCompositor = std::make_unique<VROOpenXRPanelCompositor>(
+        _session, _panelSwapchainFormat,
+        panelLayerBudget, _cylinderLayerAvailable);
 
     // "Facts before code": one-shot dump of the runtime's actual capabilities
     // (reference spaces, swapchain formats, requested API version, refresh
@@ -992,6 +1009,7 @@ bool VROSceneRendererOpenXR::createSwapchains() {
     for (int64_t f : formats) {
         if (f == GL_SRGB8_ALPHA8_EXT) { chosenFormat = f; break; }
     }
+    _panelSwapchainFormat = chosenFormat;
     ALOGI("Swapchain format: 0x%llx (%s)", (long long)chosenFormat,
           chosenFormat == GL_SRGB8_ALPHA8_EXT ? "sRGB" : "linear RGBA8");
 
@@ -1560,6 +1578,7 @@ void VROSceneRendererOpenXR::destroySession() {
         _pfnDestroyPassthrough(_passthrough);
         _passthrough = XR_NULL_HANDLE;
     }
+    _panelCompositor.reset(); // destroy panel swapchains before xrDestroySession
     destroySwapchains();
     if (_appSpace != XR_NULL_HANDLE) {
         xrDestroySpace(_appSpace);
@@ -1676,6 +1695,30 @@ void VROSceneRendererOpenXR::onDestroy() {
         _activity = nullptr;
     }
     ALOGV("VROSceneRendererOpenXR destroyed");
+}
+
+VROOpenXRPanelError VROSceneRendererOpenXR::addCompositorPanel(
+    const VROOpenXRPanelDesc &desc, VROOpenXRPanelProducer producer) {
+    if (!_panelCompositor) return VROOpenXRPanelError::SessionUnavailable;
+    return _panelCompositor->addPanel(desc, std::move(producer));
+}
+
+bool VROSceneRendererOpenXR::setCompositorPanelVisible(
+    const std::string &id, bool visible) {
+    return _panelCompositor && _panelCompositor->setPanelVisible(id, visible);
+}
+
+bool VROSceneRendererOpenXR::updateCompositorPanelPose(
+    const std::string &id, const XrPosef &pose) {
+    return _panelCompositor && _panelCompositor->updatePanelPose(id, pose);
+}
+
+bool VROSceneRendererOpenXR::invalidateCompositorPanelContent(const std::string &id) {
+    return _panelCompositor && _panelCompositor->invalidatePanelContent(id);
+}
+
+bool VROSceneRendererOpenXR::removeCompositorPanel(const std::string &id) {
+    return _panelCompositor && _panelCompositor->removePanel(id);
 }
 
 void VROSceneRendererOpenXR::onTouchEvent(int /*action*/, float /*x*/, float /*y*/) {
@@ -1801,6 +1844,9 @@ void VROSceneRendererOpenXR::renderLoop() {
         }
     }
 
+    // onDestroy tears resources down after joining this thread, when the GL
+    // context is no longer current. Complete panel work before releasing it.
+    if (_panelCompositor) _panelCompositor->finishPendingGpuWork();
     _jvm->DetachCurrentThread();
     eglMakeCurrent(_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     ALOGV("Render thread exited");
@@ -2143,6 +2189,16 @@ void VROSceneRendererOpenXR::renderFrame() {
                                    XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
         }
         layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projLayer));
+    }
+
+    // Native compositor panels are independent OpenXR swapchains, not Viro
+    // scene meshes. Fail closed if runtime advertises no remaining layer slots.
+    if (_panelCompositor && frameState.shouldRender && viewsValid) {
+        const uint32_t used = static_cast<uint32_t>(layers.size());
+        const uint32_t freeSlots = _maxCompositorLayers > used
+                                      ? _maxCompositorLayers - used : 0;
+        _panelCompositor->appendLayers(_appSpace, freeSlots,
+                                       frameState.predictedDisplayPeriod, layers);
     }
 
     XrFrameEndInfo endInfo = { XR_TYPE_FRAME_END_INFO };
