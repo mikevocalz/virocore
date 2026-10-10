@@ -66,5 +66,35 @@ int main() {
     assert(firstDraw.acquired == 1 && firstDraw.waited == 1 && firstDraw.released == 1);
     firstDraw.state.reset();
     assert(!firstDraw.state.isAcquired() && !firstDraw.state.hasReleasedImage());
-    std::puts("VROOpenXRPanelImageState: 4 scenarios passed");
+    // Invalidation while retrying release must repaint after that release.
+    FakeSwapchain pending;
+    pending.releaseOk = false;
+    pending.frame();
+    pending.state.invalidate();
+    pending.releaseOk = true;
+    pending.frame();
+    assert(pending.drawn == 1 && pending.released == 2);
+    pending.frame();
+    assert(pending.drawn == 2 && pending.acquired == 2);
+    pending.frame();
+    assert(pending.drawn == 2);
+
+    // Reentrant content invalidation from a producer also survives release.
+    VROOpenXRPanelImageState invalidatedDuringDraw;
+    int drawCount = 0;
+    auto frame = [&] {
+        invalidatedDuringDraw.step(
+            [](uint32_t &index) { index = 0; return true; },
+            [] { return true; },
+            [&](uint32_t) {
+                if (++drawCount == 1) invalidatedDuringDraw.invalidate();
+                return true;
+            },
+            [] { return true; });
+    };
+    frame();
+    frame();
+    frame();
+    assert(drawCount == 2);
+    std::puts("VROOpenXRPanelImageState: 6 scenarios passed");
 }

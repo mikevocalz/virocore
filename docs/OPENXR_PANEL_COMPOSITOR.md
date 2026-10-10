@@ -10,6 +10,7 @@ This is the engine side of native panels, paired with [Viro External #58](https:
 - `addPanel` makes content dirty initially. After one successful acquire → wait → producer draw → release, later frames **reuse the last released image** until `invalidatePanelContent(id)` or `invalidateCompositorPanelContent(id)` requests fresh pixels. Pose changes and visibility do not repaint texture content.
 - **Wait must return `XR_SUCCESS`** before an image can be released; `XR_TIMEOUT_EXPIRED` is NOT a successful wait. A timed-out or failed wait retains the acquired image for another frame rather than releasing it illegally.
 - If drawing fails after a successful wait, retain that acquired/waited image for redraw and continue submitting the last released frame. If `xrReleaseSwapchainImage` fails, retry release without drawing again. No panel is submitted before its first successful release.
+- Content invalidation during a producer draw or a release retry survives that release and schedules another draw.
 - The wait timeout is the predicted display period from `XrFrameState`, not infinite.
 - `BLEND_TEXTURE_SOURCE_ALPHA_BIT` is set without `UNPREMULTIPLIED_ALPHA_BIT`: texture producers **must draw premultiplied alpha**.
 - The panel budget is the runtime `maxLayerCount` minus two slots held for projection and passthrough, so `addPanel` rejects with `LayerBudgetExceeded` instead of admitting a panel that never composites. Each frame also recomputes the free slots. Capacity is not a guarantee of successful per-frame composition; the host must implement a real scene-mesh fallback.
@@ -30,8 +31,8 @@ The renderer has no automatic dirty notification from the eventual React root. D
 - [ ] Native budget eviction callbacks and reliable `scene` fallback; depth testing when supported.
 - [ ] Meta system windows and PICO WindowContainers validated separately in shared-space mode.
 - [ ] Device-verified lifecycle, sRGB, alpha, passthrough ordering, geometry and performance on Quest 3 and PICO 4 Ultra.
-- [x] SDK-free C++ state-machine regression: four scenarios (timeout, failed redraw, release retry, first-frame failure) compiled and passed locally with `g++ -std=c++17 -Wall -Wextra -Werror`; CI workflow also added.
-- [x] Android NDK compile: `VROOpenXRPanelCompositor.cpp` and `VROSceneRendererOpenXR.cpp` pass `-fsyntax-only` with the arm64-v8a NDK r27.1 flags from the cached viroreact `compile_commands.json`. No AAR was rebuilt.
+- [x] SDK-free C++ state-machine regression: six scenarios (timeout, failed redraw, release retry, first-frame failure, invalidation during release retry, invalidation during draw) compiled and passed locally with `g++ -std=c++17 -Wall -Wextra -Werror`; CI workflow also added.
+- [x] Android NDK compile: `VROOpenXRPanelCompositor.cpp` and `VROSceneRendererOpenXR.cpp` pass `-fsyntax-only` with the arm64-v8a NDK r27.1 flags from the cached viroreact `compile_commands.json`. Android debug and PICO release AAR builds also passed in PR CI.
 - [ ] Mocked real OpenXR calls, STOPPING cleanup and session-transition/device tests.
 - [ ] Metal/Vulkan image backend implementations (excluded from Android GLES v1).
 

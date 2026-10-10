@@ -37,118 +37,20 @@ platform :ios do
        )
   end
 
-  desc "Build ViroKit (framework + static lib), (iphoneos + iphonesimulator)"
-
-
+  desc "Build and stage the supported Release iphoneos ViroKit framework"
   lane :virorender_viroreact_virokit do
     cocoapods
     virorender_viroreact_virokit_framework
-    virorender_viroreact_virokit_static_lib
   end
 
-  desc "Build ViroKit framework (release)"
+  desc "Build ViroKit device framework (run pod install first)"
   lane :virorender_viroreact_virokit_framework do
-    begin       
-       # Clean virokit framework for simulator target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit",
-          configuration: "Release",
-          sdk: "iphonesimulator",
-          destination: "platform=iOS Simulator,name=iPhone X",
-          skip_package_ipa: true,
-          skip_archive: true,
-          clean: true,
-       )
-
-       # Clean virokit framework for device target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit",
-          configuration: "Release",
-          sdk: "iphoneos",
-          skip_package_ipa: true,
-          skip_archive: true,
-          clean: true,
-       )
-
-       # Build virokit framework for simulator target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit",
-          configuration: "Release",
-          sdk: "iphonesimulator",
-          destination: "platform=iOS Simulator,name=iPhone X",
-          skip_package_ipa: true,
-          skip_archive: true,
-       )
-
-       # Build virokit framework for device target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit",
-          configuration: "Release",
-          sdk: "iphoneos",
-          skip_package_ipa: true,
-          skip_archive: true,
-       )
-    rescue => exception
-           on_error(exception)
-    end
+    sh("bash", File.expand_path("../../scripts/build_ios_framework.sh", __dir__))
   end
 
+  desc "Removed: standalone static-library target is no longer available"
   lane :virorender_viroreact_virokit_static_lib do
-    begin
-     
-       # Clean virokit framework for simulator target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit_static_lib",
-          configuration: "Release",
-          sdk: "iphonesimulator",
-          destination: "platform=iOS Simulator,name=iPhone X",
-          skip_package_ipa: true,
-          skip_archive: true,
-          clean: true,
-       )
-
-       # Clean virokit framework for device target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit_static_lib",
-          configuration: "Release",
-          sdk: "iphoneos",
-          skip_package_ipa: true,
-          skip_archive: true,
-          clean: true,
-       )
-
-       # Build virokit framework for simulator target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit_static_lib",
-          configuration: "Release",
-          sdk: "iphonesimulator",
-          destination: "platform=iOS Simulator,name=iPhone X",
-          skip_package_ipa: true,
-          skip_archive: true,
-          # clean: true,
-       )
-
-       # Build virokit framework for device target
-       gym(
-          workspace: "ViroRenderer.xcworkspace",
-          scheme: "ViroKit_static_lib",
-          configuration: "Release",
-          sdk: "iphoneos",
-          skip_package_ipa: true,
-          skip_archive: true,
-          # clean: true,
-       )
-     
-    rescue => exception
-           on_error(exception)
-    end
+    UI.user_error!("The standalone static-library target was removed. Use virorender_viroreact_virokit for the device framework; see docs/BUILD_IOS.md.")
   end
 
   # You can define as many lanes as you want

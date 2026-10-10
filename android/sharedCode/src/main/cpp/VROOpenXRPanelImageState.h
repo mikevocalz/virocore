@@ -32,7 +32,13 @@ public:
             _waited = true;
         }
         if (!_readyToRelease) {
-            if (!std::forward<Draw>(draw)(_index)) return;
+            // Consume only the invalidation that caused this draw. A producer
+            // may invalidate again while drawing, or while release is retried.
+            _dirty = false;
+            if (!std::forward<Draw>(draw)(_index)) {
+                _dirty = true;
+                return;
+            }
             _readyToRelease = true;
         }
         if (!std::forward<Release>(release)()) return;
@@ -40,7 +46,6 @@ public:
         _waited = false;
         _readyToRelease = false;
         _hasReleasedImage = true;
-        _dirty = false;
     }
 
 private:

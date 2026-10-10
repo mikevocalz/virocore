@@ -1,0 +1,25 @@
+name: iOS artifact staging
+on:
+  pull_request:
+    paths:
+      - 'scripts/build_ios_framework.sh'
+      - 'tests/ios/**'
+      - 'ios/fastlane/Fastfile'
+      - '.github/workflows/pull-request.yml'
+      - '.github/workflows/ios-artifact-policy.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_ios_framework.sh'
+      - 'tests/ios/**'
+      - 'ios/fastlane/Fastfile'
+      - '.github/workflows/pull-request.yml'
+      - '.github/workflows/ios-artifact-policy.yml'
+jobs:
+  artifact-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/build_ios_framework.sh
+      - run: ruby -c ios/fastlane/Fastfile
+      - run: python3 tests/ios/test_framework_artifact.py

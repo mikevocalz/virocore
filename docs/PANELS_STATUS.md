@@ -15,7 +15,7 @@ Companion: [Viro External #58](https://github.com/mikevocalz/viro-external/pull/
 
 1. `XR_KHR_android_surface_swapchain` backend must be a separate panel kind; never call acquire/wait/release on its Surface swapchain.
 2. Host must post real content from React Native into the Android `Surface` via a native display/presentation root. No dummy texture producer is acceptable.
-3. The SDK-free C++ fake image-state test now covers wait timeout, redraw failure, retrying release and first-frame failure (four scenarios passed locally). Still missing: mocked OpenXR API boundary, resource teardown, STOPPING and resumed-session tests.
+3. The SDK-free C++ fake image-state test now covers wait timeout, redraw failure, retrying release and first-frame failure (six scenarios passed locally). Still missing: mocked OpenXR API boundary, resource teardown, STOPPING and resumed-session tests.
 4. The native host must use the existing XR renderer queue; no additional `XrSession`.
 5. Native input, occlusion policy, native layer eviction and actual scene fallback remain unwired.
 6. Quest 3 and PICO 4 Ultra device evidence remains required: curved/flat alpha, rays, drag release, pause/resume, resource counts, frame times.
