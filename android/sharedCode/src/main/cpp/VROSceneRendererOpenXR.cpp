@@ -1696,7 +1696,9 @@ void VROSceneRendererOpenXR::onDestroy() {
 
 bool VROSceneRendererOpenXR::addCompositorPanel(
     const VROOpenXRPanelDesc &desc, VROOpenXRPanelProducer producer) {
-    return _panelCompositor && _panelCompositor->addPanel(desc, std::move(producer));
+    return _panelCompositor &&
+           _panelCompositor->addPanel(desc, std::move(producer)) ==
+               VROOpenXRPanelError::None;
 }
 
 bool VROSceneRendererOpenXR::updateCompositorPanelPose(
@@ -2181,7 +2183,8 @@ void VROSceneRendererOpenXR::renderFrame() {
         const uint32_t used = static_cast<uint32_t>(layers.size());
         const uint32_t freeSlots = _maxCompositorLayers > used
                                       ? _maxCompositorLayers - used : 0;
-        _panelCompositor->appendLayers(_appSpace, freeSlots, layers);
+        _panelCompositor->appendLayers(_appSpace, freeSlots,
+                                       frameState.predictedDisplayPeriod, layers);
     }
 
     XrFrameEndInfo endInfo = { XR_TYPE_FRAME_END_INFO };
