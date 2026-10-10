@@ -2,14 +2,14 @@
 
 Companion: [Viro External #58](https://github.com/mikevocalz/viro-external/pull/58).
 
-## Present in this draft (checked against GitHub branch)
+## Present on this branch
 
 - `android/sharedCode/src/main/cpp/VROOpenXRPanelCompositor.h/.cpp`: per-panel GLES swapchain and quad/cylinder composition; explicit dirty state, acquired/waited/released lifecycle and typed registration errors.
 - `android/sharedCode/src/main/cpp/VROSceneRendererOpenXR.h/.cpp`: renderer ownership, optional cylinder extension, available layer budget, frame-period wait timeout, producer invalidation method.
 - `android/sharedCode/CMakeLists.txt`: includes compositor implementation.
 - `docs/OPENXR_PANEL_COMPOSITOR.md`: native contract and limitations.
 
-**Partial Phase 1 work only:** source changes committed; no claim of successful NDK/device verification. Android Surface, input and RN host are not implemented here.
+**Phase 1, engine only.** NDK compile verified (arm64-v8a syntax check). Not run on a device. Android Surface, input and RN host are not implemented here.
 
 ## Blockers that are not solved by a compiling GLES compositor
 
@@ -22,4 +22,4 @@ Companion: [Viro External #58](https://github.com/mikevocalz/viro-external/pull/
 
 ## Merge policy
 
-Keep #111 draft until the NDK build and both headset tests are verified. Do not treat host designs, CI queued, or a registered producer callback as proof that React Native UI is visible in the compositor.
+#111 merges as an engine API that nothing calls yet (see `OPENXR_PANEL_COMPOSITOR.md`). The Quest 3 and PICO 4 Ultra runs in blocker 6 gate the first host that registers a panel. A compiling compositor or a registered producer callback is not proof that React Native UI shows up in a compositor layer.

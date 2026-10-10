@@ -116,9 +116,11 @@ public:
     // Render-thread API: native producers can promote a textured panel into a
     // compositor-managed quad/cylinder layer, instead of the scene projection.
     // The producer callback must submit content for every acquired image.
-    bool addCompositorPanel(const VROOpenXRPanelDesc &desc,
-                            VROOpenXRPanelProducer producer);
+    // Returns SessionUnavailable before the session exists or after teardown.
+    VROOpenXRPanelError addCompositorPanel(const VROOpenXRPanelDesc &desc,
+                                           VROOpenXRPanelProducer producer);
     bool updateCompositorPanelPose(const std::string &id, const XrPosef &pose);
+    bool setCompositorPanelVisible(const std::string &id, bool visible);
     // Dynamic producer content requires explicit invalidation. Only the
     // registered texture producer is called when this flag is set.
     bool invalidateCompositorPanelContent(const std::string &id);

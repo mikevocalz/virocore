@@ -7,8 +7,11 @@ on:
       - "tests/xr_backend/panel_image_state_test.cpp"
       - ".github/workflows/openxr-panel-policy.yml"
   push:
+    paths:
+      - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
+      - "tests/xr_backend/panel_image_state_test.cpp"
     branches:
-      - "feat/openxr-panel-compositor"
+      - main
 
 jobs:
   image-policy:

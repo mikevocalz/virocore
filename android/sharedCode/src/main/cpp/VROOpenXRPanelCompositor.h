@@ -43,6 +43,9 @@ const char *VROOpenXRPanelErrorMessage(VROOpenXRPanelError error);
 struct VROOpenXRPanelDesc {
     std::string id;
     VROOpenXRPanelShape shape = VROOpenXRPanelShape::Quad;
+    // Quad: centre of the panel. Cylinder: centre of the circle the arc lies
+    // on (OpenXR XrCompositionLayerCylinderKHR), so the visible surface sits
+    // radiusMeters in front of it along -Z.
     XrPosef pose = { {0, 0, 0, 1}, {0, 0, -2} };
     float widthMeters = 1.6f;
     float heightMeters = 0.9f;
@@ -66,6 +69,7 @@ using VROOpenXRPanelProducer = std::function<bool(GLuint, uint32_t, uint32_t)>;
 
 class VROOpenXRPanelCompositor final {
 public:
+    // maxLayers is the panel budget, already excluding projection/passthrough.
     VROOpenXRPanelCompositor(XrSession session, int64_t rgbaFormat,
                              uint32_t maxLayers, bool cylinderEnabled);
     ~VROOpenXRPanelCompositor();

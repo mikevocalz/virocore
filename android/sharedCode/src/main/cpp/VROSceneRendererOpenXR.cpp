@@ -702,9 +702,12 @@ bool VROSceneRendererOpenXR::createSession() {
 
     if (!createReferenceSpace()) return false;
     if (!createSwapchains())    return false;
-    _panelCompositor.reset(new VROOpenXRPanelCompositor(
+    // Projection and passthrough always hold one slot each; panels get the rest.
+    const uint32_t panelLayerBudget =
+        _maxCompositorLayers > 2 ? _maxCompositorLayers - 2 : 0;
+    _panelCompositor = std::make_unique<VROOpenXRPanelCompositor>(
         _session, _panelSwapchainFormat,
-        _maxCompositorLayers, _cylinderLayerAvailable));
+        panelLayerBudget, _cylinderLayerAvailable);
 
     // "Facts before code": one-shot dump of the runtime's actual capabilities
     // (reference spaces, swapchain formats, requested API version, refresh
@@ -1694,11 +1697,15 @@ void VROSceneRendererOpenXR::onDestroy() {
     ALOGV("VROSceneRendererOpenXR destroyed");
 }
 
-bool VROSceneRendererOpenXR::addCompositorPanel(
+VROOpenXRPanelError VROSceneRendererOpenXR::addCompositorPanel(
     const VROOpenXRPanelDesc &desc, VROOpenXRPanelProducer producer) {
-    return _panelCompositor &&
-           _panelCompositor->addPanel(desc, std::move(producer)) ==
-               VROOpenXRPanelError::None;
+    if (!_panelCompositor) return VROOpenXRPanelError::SessionUnavailable;
+    return _panelCompositor->addPanel(desc, std::move(producer));
+}
+
+bool VROSceneRendererOpenXR::setCompositorPanelVisible(
+    const std::string &id, bool visible) {
+    return _panelCompositor && _panelCompositor->setPanelVisible(id, visible);
 }
 
 bool VROSceneRendererOpenXR::updateCompositorPanelPose(

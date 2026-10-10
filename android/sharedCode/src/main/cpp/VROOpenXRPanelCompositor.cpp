@@ -214,6 +214,4 @@ void VROOpenXRPanelCompositor::appendLayers(
         }
         --remainingLayerSlots;
     }
-
-
 }
