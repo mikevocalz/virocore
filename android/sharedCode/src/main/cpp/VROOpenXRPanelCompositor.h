@@ -2,6 +2,8 @@
 // See docs/OPENXR_PANEL_COMPOSITOR.md for producer and lifecycle rules.
 #pragma once
 
+#include "VROOpenXRPanelImageState.h"
+
 #ifndef XR_USE_GRAPHICS_API_OPENGL_ES
 #define XR_USE_GRAPHICS_API_OPENGL_ES
 #endif
@@ -96,12 +98,7 @@ private:
         VROOpenXRPanelProducer producer;
         XrSwapchain swapchain = XR_NULL_HANDLE;
         std::vector<XrSwapchainImageOpenGLESKHR> images;
-        bool dirty = true;
-        bool acquired = false;
-        bool waited = false;
-        bool readyToRelease = false;
-        bool hasReleasedImage = false;
-        uint32_t acquiredIndex = 0;
+        VROOpenXRPanelImageState imageState;
         XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         XrCompositionLayerCylinderKHR cylinder = { XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR };
     };
