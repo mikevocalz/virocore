@@ -390,10 +390,9 @@ private:
     // planes into the standard VROARScene anchor pipeline. Null when plane
     // detection is unavailable on the device. Driven once per renderFrame().
     std::shared_ptr<VROARSessionOpenXR>           _arSession;
-
-    // The attached AR scene, kept so OpenXR session-state changes can be
-    // published as VROARTrackingState — the ARCore renderer does this from
-    // its camera; here the session state machine is the honest source.
+    // The attached AR scene. Session-state changes publish Normal/Unavailable;
+    // renderFrame() refines that per frame from xrLocateViews flags (Limited
+    // when only valid, not tracked). Weak: the scene controller owns it.
     std::weak_ptr<VROARScene>                     _arScene;
 
     // ── Java callback (onDrawFrame) ───────────────────────────────────────────
