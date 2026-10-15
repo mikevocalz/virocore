@@ -118,19 +118,33 @@ class AndroidViewSink extends FrameLayout {
     @Override
     protected void dispatchDraw(Canvas canvas) {
         Surface surface = mTexture != null ? mTexture.getTextureRenderSurface() : null;
-        if ( surface == null) {
+        if (surface == null || !surface.isValid()) {
             return;
         }
 
         // Clear and draw the attached view onto the AndroidViewTexture surface's canvas.
+        // The texture can release its surface on the GL thread between the isValid() check
+        // and lockCanvas() (scene rebuild, reference-space recenter), so a released or
+        // invalid surface skips this frame instead of crashing the UI thread.
+        final Canvas surfaceCanvas;
         try {
-            final Canvas surfaceCanvas = surface.lockCanvas( null );
+            surfaceCanvas = surface.lockCanvas(null);
+        } catch (Surface.OutOfResourcesException excp) {
+            Log.e(TAG, "Viro: Unable to draw on AndroidViewSink with insufficient memory!", excp);
+            return;
+        } catch (IllegalStateException | IllegalArgumentException excp) {
+            Log.w(TAG, "Viro: AndroidViewSink surface released before draw; skipping frame");
+            return;
+        }
+        try {
             surfaceCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
             super.dispatchDraw(surfaceCanvas);
-            surface.unlockCanvasAndPost(surfaceCanvas);
-        } catch (android.view.Surface.OutOfResourcesException excp) {
-            Log.e(TAG, "Viro: Unable to draw on AndroidViewSink with insufficient memory!");
-            excp.printStackTrace();
+        } finally {
+            try {
+                surface.unlockCanvasAndPost(surfaceCanvas);
+            } catch (IllegalStateException | IllegalArgumentException excp) {
+                Log.w(TAG, "Viro: AndroidViewSink surface released during draw; frame dropped");
+            }
         }
     }
 
