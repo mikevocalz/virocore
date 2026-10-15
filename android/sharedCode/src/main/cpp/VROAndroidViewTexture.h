@@ -28,6 +28,7 @@
 
 #include "VROTexture.h"
 #include "VROOpenGL.h"
+#include <memory>
 class VRORenderContext;
 class VROFrameSynchronizer;
 class VRODriver;
@@ -37,6 +38,15 @@ class VRODriverOpenGL;
  VROAndroidViewTexture is responsible for constructing and initializing
  surfaces and glTextures required for rendering Android pixel data onto
  VROTextures for a given AndroidViewTexture.java object in a 3D scene.
+
+ The producer (an Android View, a Canvas/GPU renderer, MediaCodec) draws into
+ a SurfaceTexture backed by a GL_TEXTURE_EXTERNAL_OES texture. External
+ textures cannot carry mipmaps, so a large producer surface shown small in
+ the headset was point- or bilinear-sampled from full resolution and text
+ broke up. Each time the SurfaceTexture latches a new frame, the OES image is
+ copied into a mipmapped GL_TEXTURE_2D (sRGB storage when the renderer works
+ in linear space), and materials sample that texture with trilinear,
+ anisotropic filtering.
  */
 class VROAndroidViewTexture : public VROTexture {
 public:
@@ -52,6 +62,14 @@ public:
      */
     void init(std::shared_ptr<VRODriverOpenGL> driver);
 
+    /*
+     Called on the rendering thread right after the SurfaceTexture whose OES
+     texture is `oesTextureId` latched a new frame (VideoSink.updateTexImage).
+     Refreshes the mipmapped copy. A no-op for textures that are not
+     registered (for example the OES textures behind VROVideoTextureAVP).
+     */
+    static void onExternalFrameLatched(GLuint oesTextureId);
+
 private:
     /*
      The java object associated with this VROAndroidViewTexture that contains a reference
@@ -66,9 +84,26 @@ private:
     jobject _jVideoSinkSurface;
 
     /*
-     The texture ID representing the underlying OpenGL texture for this VROAndroidViewTexture.
+     The GL_TEXTURE_EXTERNAL_OES texture the SurfaceTexture writes into.
      */
     GLuint _textureId;
+
+    /*
+     The mipmapped GL_TEXTURE_2D materials sample, the framebuffer that
+     writes its level 0, and the program and geometry that copy the OES
+     image into it.
+     */
+    GLuint _resolveTexture;
+    GLuint _resolveFramebuffer;
+    GLuint _resolveProgram;
+    GLuint _resolveVAO;
+    GLuint _resolveVBO;
+    bool _resolveReady;
+
+    std::weak_ptr<VRODriverOpenGL> _driver;
+
+    bool createResolveResources(bool sRGBStorage);
+    void resolve();
 };
 
 #endif /* VROAndroidViewTexture */
