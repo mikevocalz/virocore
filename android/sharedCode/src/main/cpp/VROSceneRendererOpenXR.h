@@ -45,6 +45,7 @@ class VRODriverOpenGLAndroidOpenXR;
 class VROInputControllerOpenXR;
 class VRODisplayOpenGLOpenXR;
 class VROARSessionOpenXR;
+class VROARScene;
 class VROSceneController;
 class VRONode;
 
@@ -273,6 +274,9 @@ private:
     // planes into the standard VROARScene anchor pipeline. Null when plane
     // detection is unavailable on the device. Driven once per renderFrame().
     std::shared_ptr<VROARSessionOpenXR>           _arSession;
+    // The attached AR scene, for per-frame tracking reports. Weak: the scene
+    // controller owns the scene and may swap it out under the renderer.
+    std::weak_ptr<VROARScene>                     _trackedARScene;
 
     // ── Java callback (onDrawFrame) ───────────────────────────────────────────
     JavaVM  *_jvm      = nullptr;

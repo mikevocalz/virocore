@@ -1317,6 +1317,7 @@ void VROSceneRendererOpenXR::attachARSceneIfNeeded(
     }
 
     arScene->setDriver(_driver);
+    _trackedARScene = arScene;
 
     // Wire the OpenXR AR session to the scene's anchor delegate so onAnchorFound /
     // anchorUpdated / anchorRemoved (and ViroARPlane) fire — mirrors
@@ -1802,6 +1803,24 @@ void VROSceneRendererOpenXR::renderFrame() {
                   "unavailable (true floor origin expects eye Y ~1.3-1.8)",
                   (int)_appSpaceType, views[0].pose.position.y);
         }
+    }
+
+    // Report tracking to the AR scene the way VROSceneRendererARCore does from its
+    // camera. Without this, the only report JS ever got was the forced one
+    // setDelegate() sends with the default Unavailable state, so an app gating
+    // its UI on onTrackingUpdated stayed "tracking lost" for the whole session.
+    // setTrackingState() drops repeats, so calling it every frame is cheap.
+    if (std::shared_ptr<VROARScene> trackedScene = _trackedARScene.lock()) {
+        const XrViewStateFlags flags = viewState.viewStateFlags;
+        VROARTrackingState trackingState = VROARTrackingState::Unavailable;
+        if ((flags & XR_VIEW_STATE_POSITION_TRACKED_BIT) &&
+            (flags & XR_VIEW_STATE_ORIENTATION_TRACKED_BIT)) {
+            trackingState = VROARTrackingState::Normal;
+        } else if ((flags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
+                   (flags & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+            trackingState = VROARTrackingState::Limited;
+        }
+        trackedScene->setTrackingState(trackingState, VROARTrackingStateReason::None, false);
     }
 
     // Drive the Quest MR (AR) session: query XR_EXT_plane_detection and fan
