@@ -33,6 +33,7 @@
 class VRORenderTarget;
 class VRODriver;
 class VROTexture;
+enum class VROBlendMode;
 
 class VROImagePostProcess {
 public:
@@ -44,6 +45,13 @@ public:
      Set to true to flip the result image vertically.
      */
     virtual void setVerticalFlip(bool flip) = 0;
+
+    /*
+     Blend mode blit() draws with. Defaults to Alpha. Use PremultiplyAlpha
+     when the input is a render target, whose colour is already
+     premultiplied.
+     */
+    virtual void setBlendMode(VROBlendMode mode) = 0;
     
     /*
      Bind the given textures and blit to the currently bound render target, using

@@ -181,7 +181,11 @@ std::shared_ptr<VROImagePostProcess> VROToneMappingRenderPass::createPostProcess
     std::vector<std::shared_ptr<VROShaderModifier>> modifiers = { modifier };
     std::shared_ptr<VROImageShaderProgram> shader = std::make_shared<VROImageShaderProgram>(samplers, modifiers, driver);
     
-    return driver->newImagePostProcess(shader);
+    // The HDR input is premultiplied; blending it with SRC_ALPHA would
+    // multiply translucent colour by alpha a second time.
+    std::shared_ptr<VROImagePostProcess> postProcess = driver->newImagePostProcess(shader);
+    postProcess->setBlendMode(VROBlendMode::PremultiplyAlpha);
+    return postProcess;
 }
 
 void VROToneMappingRenderPass::render(std::shared_ptr<VROScene> scene,

@@ -2195,10 +2195,11 @@ void VROSceneRendererOpenXR::renderFrame() {
         // When passthrough is on, the scene is rendered with a transparent clear
         // (alpha 0). Tell the compositor to honor the layer's alpha channel so
         // passthrough shows through empty regions; otherwise the layer is treated
-        // as opaque and hides the room.
+        // as opaque and hides the room. The eye buffer holds premultiplied
+        // colour (see VRODriverOpenGL::applyBlendFunction), which is the
+        // compositor's default, so UNPREMULTIPLIED_ALPHA is not set.
         if (_passthroughEnabled) {
-            projLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
-                                   XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+            projLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         }
         layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projLayer));
     }
