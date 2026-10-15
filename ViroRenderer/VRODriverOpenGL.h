@@ -95,8 +95,7 @@ public:
         
         _blendMode = VROBlendMode::Alpha;
         GL( glEnable(GL_BLEND) );
-        GL( glBlendEquation(GL_FUNC_ADD) );
-        GL( glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) );
+        applyBlendFunction(VROBlendMode::Alpha);
 
         // The fragment shaders multiply the vertex colour into the surface diffuse, and a
         // mesh without one leaves that attribute array disabled, where GL's own generic
@@ -292,6 +291,53 @@ public:
         }
     }
 
+    /*
+     Render targets hold premultiplied colour with coverage in alpha, which
+     is what the OpenXR compositor blends over passthrough. Colour factors
+     are the classic ones for each mode; the alpha factors keep the
+     destination's coverage correct:
+
+       Alpha             coverage-over: a = as + ad(1 - as)
+       Add / Subtract    light only; coverage unchanged
+       Multiply          tints what is there; coverage unchanged
+       Screen / Premult  source is already premultiplied: coverage-over
+
+     A single glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) also squared the
+     source alpha into the target, so translucent content composited over
+     passthrough far fainter than drawn.
+     */
+    void applyBlendFunction(VROBlendMode mode) {
+        if (mode == VROBlendMode::Alpha) {
+            GL( glBlendEquation(GL_FUNC_ADD) );
+            GL( glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                                    GL_ONE, GL_ONE_MINUS_SRC_ALPHA) );
+        }
+        else if (mode == VROBlendMode::Add) {
+            GL( glBlendEquation(GL_FUNC_ADD) );
+            GL( glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE) );
+        }
+        else if (mode == VROBlendMode::Multiply) {
+            GL( glBlendEquation(GL_FUNC_ADD) );
+            GL( glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ONE) );
+        }
+        else if (mode == VROBlendMode::Subtract) {
+            GL( glBlendEquationSeparate(GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_ADD) );
+            GL( glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE) );
+        }
+        else if (mode == VROBlendMode::Screen) {
+            GL( glBlendEquation(GL_FUNC_ADD) );
+            GL( glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR,
+                                    GL_ONE, GL_ONE_MINUS_SRC_ALPHA) );
+        }
+        else if (mode == VROBlendMode::PremultiplyAlpha) {
+            GL( glBlendEquation(GL_FUNC_ADD) );
+            GL( glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA) );
+        }
+        else {
+            pwarn("Warn: Attempted to use an unsupported blend mode. No blending is applied.");
+        }
+    }
+
     void setBlendingMode(VROBlendMode mode) {
         if (_blendMode == mode) {
             return;
@@ -305,33 +351,7 @@ public:
                 GL( glEnable(GL_BLEND) );
             }
             
-            if (mode == VROBlendMode::Alpha) {
-                GL( glBlendEquation(GL_FUNC_ADD) );
-                GL( glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) );
-            }
-            else if (mode == VROBlendMode::Add) {
-                GL( glBlendEquation(GL_FUNC_ADD) );
-                GL( glBlendFunc(GL_SRC_ALPHA, GL_ONE) );
-            }
-            else if (mode == VROBlendMode::Multiply) {
-                GL( glBlendEquation(GL_FUNC_ADD) );
-                GL( glBlendFunc(GL_DST_COLOR, GL_ZERO) );
-            }
-            else if (mode == VROBlendMode::Subtract) {
-                GL( glBlendEquation(GL_FUNC_REVERSE_SUBTRACT) );
-                GL( glBlendFunc(GL_SRC_ALPHA, GL_ONE) );
-            }
-            else if (mode == VROBlendMode::Screen) {
-                GL( glBlendEquation(GL_FUNC_ADD) );
-                GL( glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR) );
-            }
-            else if (mode == VROBlendMode::PremultiplyAlpha) {
-                GL( glBlendEquation(GL_FUNC_ADD) );
-                GL( glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA) );
-            }
-            else {
-                pwarn("Warn: Attempted to use an unsupported blend mode. No blending is applied.");
-            }
+            applyBlendFunction(mode);
         }
         _blendMode = mode;
     }

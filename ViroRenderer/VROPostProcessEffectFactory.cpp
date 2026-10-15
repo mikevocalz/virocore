@@ -32,6 +32,7 @@
 #include "VROTime.h"
 #include "VROTexture.h"
 #include "VROGaussianBlurRenderPass.h"
+#include "VROMaterial.h"
 
 static thread_local std::shared_ptr<VROImagePostProcess> sGrayScale;
 static thread_local std::shared_ptr<VROImagePostProcess> sSepia;
@@ -330,6 +331,8 @@ std::shared_ptr<VRORenderTarget> VROPostProcessEffectFactory::renderEffects(std:
     
     for (int i = 0; i < _cachedPrograms.size(); i++) {
         std::shared_ptr<VROImagePostProcess> &postProcess = _cachedPrograms[i].second;
+        // Each pass reads a render target, whose colour is premultiplied.
+        postProcess->setBlendMode(VROBlendMode::PremultiplyAlpha);
         
         if (i == 0) {
             driver->bindRenderTarget(targetA, VRORenderTargetUnbindOp::Invalidate);

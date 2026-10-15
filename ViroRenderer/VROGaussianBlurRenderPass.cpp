@@ -206,8 +206,9 @@ void VROGaussianBlurRenderPass::initPreBlurPass(std::shared_ptr<VRODriver> drive
         std::vector<std::string> inputSampler = {"sampled_texture"};
         std::vector<std::string> preMultiplyShader = {
                 "uniform sampler2D sampled_texture;",
+                // Scene blending already writes premultiplied colour with
+                // coverage in alpha (VRODriverOpenGL::applyBlendFunction).
                 "highp vec4 base = texture(sampled_texture, v_texcoord);",
-                "base.rgb *= base.a;",
                 "frag_color = base;"
         };
         _preBlurPass = driver->newImagePostProcess(

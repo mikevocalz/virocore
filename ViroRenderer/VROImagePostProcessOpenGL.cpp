@@ -36,9 +36,11 @@
 #include "VROLog.h"
 #include "VROShaderModifier.h"
 #include "VROTextureSubstrateOpenGL.h"
+#include "VROMaterial.h"
 
 VROImagePostProcessOpenGL::VROImagePostProcessOpenGL(std::shared_ptr<VROShaderProgram> shader) :
     _shader(shader),
+    _blendMode(VROBlendMode::Alpha),
     _quadVAO(0),
     _quadVBO(0) {
     buildQuadFSVAR(false);
@@ -66,6 +68,10 @@ VROImagePostProcessOpenGL::~VROImagePostProcessOpenGL() {
     
 }
 
+void VROImagePostProcessOpenGL::setBlendMode(VROBlendMode mode) {
+    _blendMode = mode;
+}
+
 void VROImagePostProcessOpenGL::setVerticalFlip(bool flip) {
     buildQuadFSVAR(flip);
 }
@@ -79,6 +85,7 @@ void VROImagePostProcessOpenGL::blit(std::vector<std::shared_ptr<VROTexture>> te
     }
 
     VRORenderUtil::prepareForBlit(driver, false, true);
+    driver->setBlendingMode(_blendMode);
 
     // Compile and bind the shader and its corresponding uniforms
     if (!_shader->isHydrated()) {

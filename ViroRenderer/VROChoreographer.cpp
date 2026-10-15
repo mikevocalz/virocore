@@ -113,6 +113,7 @@ void VROChoreographer::createRenderTargets() {
         };
         std::shared_ptr<VROShaderProgram> blitShader = VROImageShaderProgram::create(blitSamplers, blitCode, driver);
         _blitPostProcess = driver->newImagePostProcess(blitShader);
+        _blitPostProcess->setBlendMode(VROBlendMode::PremultiplyAlpha);
         _blitTarget = driver->newRenderTarget(colorType, 1, 1, false, true);
         _rttTarget = driver->newRenderTarget(VRORenderTargetType::ColorTexture, 1, 1, false, true);
 
@@ -157,9 +158,9 @@ void VROChoreographer::createRenderTargets() {
                 "uniform sampler2D hdr_texture;",
                 "uniform sampler2D bloom_texture;",
                 
-                // The HDR input is not premultiplied, so multiply its RGB by its alpha
+                // The HDR input is premultiplied: scene blending writes coverage
+                // to alpha (see VRODriverOpenGL::applyBlendFunction)
                 "highp vec4 base = texture(hdr_texture, v_texcoord);",
-                "base.rgb *= base.a;",
 
                 // The bloom input is already premultiplied (see VROGaussianBlurRenderPass)
                 "highp vec4 bloom = texture(bloom_texture, v_texcoord);",
