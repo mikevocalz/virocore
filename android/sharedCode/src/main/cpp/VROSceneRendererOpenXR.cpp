@@ -1028,8 +1028,19 @@ bool VROSceneRendererOpenXR::createSwapchains() {
         auto &view  = viewConfigs[eye];
         auto &sc    = _swapchains[eye];
 
-        sc.width  = view.recommendedImageRectWidth;
-        sc.height = view.recommendedImageRectHeight;
+        // Render above the recommended size. The recommended rect is tuned
+        // for 3D scenes; flat UI panels with small text alias and blur at
+        // that density. 1.3x per axis, clamped to what the runtime allows.
+        // Everything downstream (viewport, scissor, render targets, the
+        // projection layer's imageRect) reads sc.width/sc.height.
+        constexpr float kEyeBufferScale = 1.3f;
+        sc.width  = std::min(view.maxImageRectWidth,
+                             (uint32_t)(view.recommendedImageRectWidth * kEyeBufferScale + 0.5f));
+        sc.height = std::min(view.maxImageRectHeight,
+                             (uint32_t)(view.recommendedImageRectHeight * kEyeBufferScale + 0.5f));
+        ALOGI("Eye %u: recommended %ux%u, max %ux%u, rendering %ux%u", eye,
+              view.recommendedImageRectWidth, view.recommendedImageRectHeight,
+              view.maxImageRectWidth, view.maxImageRectHeight, sc.width, sc.height);
 
         XrSwapchainCreateInfo scInfo = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
         scInfo.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
@@ -1058,8 +1069,9 @@ bool VROSceneRendererOpenXR::createSwapchains() {
     // a runtime without FB_foveation simply renders unfoveated.
     if (_foveationAvailable && _swapchainUpdateStateAvailable) {
         if (initFoveation()) {
-            // Default to a sensible level for high-PPD HMDs; app can override.
-            setFoveationLevel(VROFoveationLevel::MEDIUM, /*dynamic=*/true);
+            // LOW keeps the periphery of panel text legible; the larger eye
+            // buffer still leaves GPU headroom on Quest 3S. App can override.
+            setFoveationLevel(VROFoveationLevel::LOW, /*dynamic=*/true);
         }
     }
     return true;
