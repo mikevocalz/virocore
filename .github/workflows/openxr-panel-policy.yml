@@ -8,12 +8,17 @@ on:
       - "tests/xr_backend/panel_eviction_test.cpp"
       - "tests/host_shims/**"
       - "scripts/test-openxr-panel-eviction.sh"
+      - "android/sharedCode/src/main/cpp/jni/RiveCompositorPanel*"
+      - "tests/xr_backend/compositor_panel_mapping_test.cpp"
+      - "scripts/test-compositor-panel-mapping.sh"
       - ".github/workflows/openxr-panel-policy.yml"
   push:
     paths:
       - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
       - "tests/xr_backend/panel_image_state_test.cpp"
       - "tests/xr_backend/panel_eviction_test.cpp"
+      - "android/sharedCode/src/main/cpp/jni/RiveCompositorPanel*"
+      - "tests/xr_backend/compositor_panel_mapping_test.cpp"
     branches:
       - main
 
@@ -30,3 +35,5 @@ jobs:
           "$RUNNER_TEMP/panel_image_state_test"
       - name: Eviction reporting against a fake runtime
         run: CXX=g++ scripts/test-openxr-panel-eviction.sh
+      - name: JNI codes of RiveCompositorPanel
+        run: CXX=g++ scripts/test-compositor-panel-mapping.sh
