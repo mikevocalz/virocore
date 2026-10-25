@@ -88,7 +88,8 @@ foreach(lib ${VIRO_RIVE_LIBS})
     list(APPEND VIRO_RIVE_IMPORTED viro_${lib})
     list(APPEND VIRO_RIVE_EXCLUDE lib${lib}.a)
 endforeach()
-string(REPLACE ";" "," VIRO_RIVE_EXCLUDE "${VIRO_RIVE_EXCLUDE}")
+# Colon-separated: -Wl, splits on commas, which would hand lld the names as input files.
+string(REPLACE ";" ":" VIRO_RIVE_EXCLUDE "${VIRO_RIVE_EXCLUDE}")
 
 # Link check only: see the comment at the top of VRORiveRuntimeProbe.cpp. No runtime behaviour.
 target_sources(viro_renderer PRIVATE ${VIRO_ANDROID_SRC}/VRORiveRuntimeProbe.cpp)
