@@ -32,6 +32,7 @@ const char *VROOpenXRPanelErrorMessage(VROOpenXRPanelError error) {
         case VROOpenXRPanelError::InvalidCylinderRadius: return "cylinder radius must be finite and greater than zero";
         case VROOpenXRPanelError::InvalidCylinderAngle: return "cylinder arc angle must be smaller than 2pi";
         case VROOpenXRPanelError::SwapchainFailed: return "OpenXR panel swapchain allocation failed";
+        case VROOpenXRPanelError::ProducerUnavailable: return "panel texture producer could not be created";
     }
     return "unknown OpenXR panel error";
 }

@@ -43,6 +43,7 @@
 #include "VROOpenXRBoundaryVisibility.h"
 #include "VROOpenXRPanelCompositor.h"
 #include "VROOpenXRRenderQuality.h"
+#include "VRORivePanel.h"
 
 class VRORendererConfiguration;
 class VRODriverOpenGLAndroidOpenXR;
@@ -130,6 +131,26 @@ public:
     // registered texture producer is called when this flag is set.
     bool invalidateCompositorPanelContent(const std::string &id);
     bool removeCompositorPanel(const std::string &id);
+
+    // Render-thread API: a Rive compositor panel (viro-external ADR 0001 route
+    // B2). Creates a VRORivePanel in texture-ring mode whose worker context
+    // shares this session's EGL context, and registers a finish-pass producer
+    // (VROOpenXRRivePanelProducer) for it. cornerRadiusMeters rounds the panel
+    // through the shared coverage function; the Rive content itself is drawn
+    // square. Each published Rive frame posts one invalidateCompositorPanelContent
+    // to this thread, so the swapchain is redrawn only while the state machine
+    // advances or after input, data or lifecycle changes.
+    //
+    // On success *outPanel is the Rive panel for loading files, view-model
+    // writes and pointer input; its hit test already uses the corner radii.
+    // removeCompositorPanel(id) tears down the swapchain, then the finish
+    // pass; the ring and the shared context go when the last reference to
+    // the Rive panel does, never before the swapchain.
+    VROOpenXRPanelError addRiveCompositorPanel(const VROOpenXRPanelDesc &desc,
+                                               float cornerRadiusMeters,
+                                               VRORivePanelOptions options,
+                                               VRORivePanel::StatusListener listener,
+                                               std::shared_ptr<VRORivePanel> *outPanel);
 
     /*
      Per-eye swapchain dimensions, or 0 until the session has created them.

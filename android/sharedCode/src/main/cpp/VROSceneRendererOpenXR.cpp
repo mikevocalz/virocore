@@ -5,6 +5,8 @@
 // MIT License — see LICENSE file.
 
 #include "VROSceneRendererOpenXR.h"
+#include "VROOpenXRRivePanelProducer.h"
+#include "VROPanelCoverage.h"
 
 #include <android/log.h>
 #include <sys/prctl.h>
@@ -1848,6 +1850,77 @@ bool VROSceneRendererOpenXR::invalidateCompositorPanelContent(const std::string 
 
 bool VROSceneRendererOpenXR::removeCompositorPanel(const std::string &id) {
     return _panelCompositor && _panelCompositor->removePanel(id);
+}
+
+namespace {
+// Connects a Rive worker's frame callbacks to compositor invalidation. The
+// worker only touches `pending`; `producer` and `compositor` are read and
+// written on the XR render thread alone.
+struct VRORiveCompositorLink {
+    std::atomic<bool> pending{false};
+    std::weak_ptr<VROOpenXRRivePanelProducer> producer;
+    VROOpenXRPanelCompositor *compositor = nullptr;
+    std::string id;
+};
+} // namespace
+
+VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
+    const VROOpenXRPanelDesc &desc, float cornerRadiusMeters, VRORivePanelOptions options,
+    VRORivePanel::StatusListener listener, std::shared_ptr<VRORivePanel> *outPanel) {
+    if (!_panelCompositor || _eglContext == EGL_NO_CONTEXT) {
+        return VROOpenXRPanelError::SessionUnavailable;
+    }
+    if (outPanel == nullptr) return VROOpenXRPanelError::MissingProducer;
+    if (!VRORivePanel::isAvailable()) return VROOpenXRPanelError::ProducerUnavailable;
+
+    // The consumer rounds; Rive draws square (ADR 0001 "Corner ownership").
+    const VROPanelCornerRadii radii = VROPanelCornerRadiiPx(
+        cornerRadiusMeters, desc.widthMeters, desc.heightMeters,
+        (float) desc.widthPixels, (float) desc.heightPixels);
+    options.cornerRadiusPx = 0.0f;
+    options.coverageRadiusXPx = radii.x;
+    options.coverageRadiusYPx = radii.y;
+
+    auto link = std::make_shared<VRORiveCompositorLink>();
+    link->compositor = _panelCompositor.get();
+    link->id = desc.id;
+    // Worker thread: at most one invalidation in flight per panel. The task
+    // runs on this thread from VROPlatformDrainRendererQueue (direct queue,
+    // enabled for OpenXR). A live producer means its compositor panel, and so
+    // the compositor, still exists: the compositor owns the only reference.
+    auto onFrame = [link](uint64_t) {
+        if (link->pending.exchange(true)) return;
+        VROPlatformDispatchAsyncRenderer([link] {
+            link->pending.store(false);
+            if (link->producer.lock()) {
+                link->compositor->invalidatePanelContent(link->id);
+            }
+        });
+    };
+
+    std::shared_ptr<VRORivePanel> panel = VRORivePanel::createTextureRing(
+        _eglDisplay, _eglContext, (int) desc.widthPixels, (int) desc.heightPixels, options,
+        std::move(listener), onFrame);
+    if (!panel) return VROOpenXRPanelError::ProducerUnavailable;
+
+    std::string error;
+    std::shared_ptr<VROOpenXRRivePanelProducer> producer =
+        VROOpenXRRivePanelProducer::create(panel, _panelSwapchainFormat, radii, &error);
+    if (!producer) {
+        ALOGE("addRiveCompositorPanel(%s): %s", desc.id.c_str(), error.c_str());
+        panel->dispose();
+        return VROOpenXRPanelError::ProducerUnavailable;
+    }
+    link->producer = producer;
+    VROOpenXRPanelError result =
+        _panelCompositor->addPanel(desc, VROOpenXRRivePanelProducer::bind(producer));
+    if (result != VROOpenXRPanelError::None) {
+        producer.reset();  // finish-pass GL objects, on this thread
+        panel->dispose();
+        return result;
+    }
+    *outPanel = std::move(panel);
+    return VROOpenXRPanelError::None;
 }
 
 void VROSceneRendererOpenXR::onTouchEvent(int /*action*/, float /*x*/, float /*y*/) {

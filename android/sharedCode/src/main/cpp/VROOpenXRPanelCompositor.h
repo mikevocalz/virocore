@@ -37,6 +37,10 @@ enum class VROOpenXRPanelError {
     InvalidCylinderRadius,
     InvalidCylinderAngle,
     SwapchainFailed,
+    // No producer could be built for the requested content (for a Rive panel:
+    // rive-runtime not in this ABI, the shared EGL context failed, or the
+    // finish pass did not compile).
+    ProducerUnavailable,
 };
 const char *VROOpenXRPanelErrorMessage(VROOpenXRPanelError error);
 
