@@ -89,6 +89,9 @@ VROBlendMode parseBlendMode(std::string blendMode) {
     else if (VROStringUtil::strcmpinsensitive(blendMode, "Screen")) {
         return VROBlendMode::Screen;
     }
+    else if (VROStringUtil::strcmpinsensitive(blendMode, "PremultiplyAlpha")) {
+        return VROBlendMode::PremultiplyAlpha;
+    }
     else {
         return VROBlendMode::None;
     }
