@@ -5,6 +5,7 @@
 // MIT License — see LICENSE file.
 
 #include "VROSceneRendererOpenXR.h"
+#include "VROOpenXRRiveFrameListener.h"
 #include "VROOpenXRRivePanelFallback.h"
 #include "VROOpenXRRivePanelProducer.h"
 #include "VROPanelCoverage.h"
@@ -1695,6 +1696,21 @@ void VROSceneRendererOpenXR::destroySwapchains() {
     }
 }
 
+// Connects a Rive worker's frame callbacks to compositor invalidation and to
+// the scene fallback. Read and written on the XR render thread alone; the
+// worker's listener holds it weakly (VROOpenXRRiveFrameListener.h), so
+// _riveLinks is its only owner.
+struct __attribute__((visibility("hidden"))) VRORiveCompositorLink {
+    std::weak_ptr<VROOpenXRRivePanelProducer> producer;
+    VROOpenXRPanelCompositor *compositor = nullptr;
+    std::string id;
+    int widthPx = 0;
+    int heightPx = 0;
+    VROPanelCornerRadii radii;
+    bool evicted = false;
+    std::shared_ptr<VROOpenXRRivePanelFallback> fallback;
+};
+
 void VROSceneRendererOpenXR::destroySession() {
     _planeDetectionStatus.store(kPlaneDetectionTornDown);
     // Clear the runtime facts with it. They describe an XrInstance that no
@@ -1717,7 +1733,10 @@ void VROSceneRendererOpenXR::destroySession() {
         _passthrough = XR_NULL_HANDLE;
     }
     _panelCompositor.reset(); // destroy panel swapchains before xrDestroySession
-    _riveLinks.clear();       // fallback textures; GL deletion is queued on the driver
+    // Fallback textures first (GL deletion is queued on the driver); a
+    // fallback the host still holds keeps its panel until the host drops it.
+    for (auto &entry : _riveLinks) entry.second->fallback.reset();
+    _riveLinks.clear();
     destroySwapchains();
     if (_appSpace != XR_NULL_HANDLE) {
         xrDestroySpace(_appSpace);
@@ -1858,27 +1877,17 @@ bool VROSceneRendererOpenXR::invalidateCompositorPanelContent(const std::string 
 
 bool VROSceneRendererOpenXR::removeCompositorPanel(const std::string &id) {
     if (!_panelCompositor || !_panelCompositor->removePanel(id)) return false;
-    // After the swapchain and the finish pass are gone; the fallback texture
-    // keeps its own reference to the Rive panel until the host drops it.
-    _riveLinks.erase(id);
+    // After the swapchain and the finish pass are gone. The fallback texture
+    // keeps its own reference to the Rive panel until the host drops its
+    // handle (a PersistentRef with its own shared_ptr).
+    auto link = _riveLinks.find(id);
+    if (link != _riveLinks.end()) {
+        link->second->fallback.reset();
+        _riveLinks.erase(link);
+    }
     _layerLimitCap = 0;
     return true;
 }
-
-// Connects a Rive worker's frame callbacks to compositor invalidation and to
-// the scene fallback. The worker only touches `pending`; every other member
-// is read and written on the XR render thread alone.
-struct __attribute__((visibility("hidden"))) VRORiveCompositorLink {
-    std::atomic<bool> pending{false};
-    std::weak_ptr<VROOpenXRRivePanelProducer> producer;
-    VROOpenXRPanelCompositor *compositor = nullptr;
-    std::string id;
-    int widthPx = 0;
-    int heightPx = 0;
-    VROPanelCornerRadii radii;
-    bool evicted = false;
-    std::shared_ptr<VROOpenXRRivePanelFallback> fallback;
-};
 
 void VROSceneRendererOpenXR::setCompositorPanelPresentationListener(
     VROOpenXRPanelPresentationListener listener) {
@@ -1972,17 +1981,18 @@ VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
     // runs on this thread from VROPlatformDrainRendererQueue (direct queue,
     // enabled for OpenXR). A live producer means its compositor panel, and so
     // the compositor, still exists: the compositor owns the only reference.
-    auto onFrame = [link](uint64_t) {
-        if (link->pending.exchange(true)) return;
-        VROPlatformDispatchAsyncRenderer([link] {
-            link->pending.store(false);
-            if (!link->producer.lock()) return;
-            link->compositor->invalidatePanelContent(link->id);
+    // The link is captured weakly: the fallback it owns holds the panel, and
+    // the panel holds this listener.
+    auto onFrame = VROMakeRiveFrameListener(
+        std::weak_ptr<VRORiveCompositorLink>(link),
+        [](std::function<void()> task) { VROPlatformDispatchAsyncRenderer(std::move(task)); },
+        [](VRORiveCompositorLink &live) {
+            if (!live.producer.lock()) return;
+            live.compositor->invalidatePanelContent(live.id);
             // While evicted the compositor does not call the producer, so the
             // fallback is the only copy that tracks the animation.
-            if (link->evicted && link->fallback) link->fallback->update();
+            if (live.evicted && live.fallback) live.fallback->update();
         });
-    };
 
     std::shared_ptr<VRORivePanel> panel = VRORivePanel::createTextureRing(
         _eglDisplay, _eglContext, (int) desc.widthPixels, (int) desc.heightPixels, options,
