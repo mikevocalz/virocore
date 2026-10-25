@@ -651,6 +651,7 @@ set_source_files_properties(
     ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelEGL.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelGeometry.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelRing.cpp
     PROPERTIES COMPILE_OPTIONS "-std=c++17")
 option(VIRO_WITH_RIVE "Link rive-runtime statically into viro_renderer" ON)
 if(VIRO_WITH_RIVE)

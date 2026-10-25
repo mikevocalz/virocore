@@ -120,13 +120,32 @@ void VRORivePanelEGL::recordError(const char *call) {
 }
 
 std::unique_ptr<VRORivePanelEGL> VRORivePanelEGL::create(std::string *error) {
-    std::unique_ptr<VRORivePanelEGL> egl(new VRORivePanelEGL());
-    egl->_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (egl->_display == EGL_NO_DISPLAY) {
-        egl->recordError("eglGetDisplay");
-        *error = egl->_lastError;
+    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display == EGL_NO_DISPLAY) {
+        *error = std::string("eglGetDisplay: ") + eglErrorName(eglGetError());
+        __android_log_print(ANDROID_LOG_ERROR, RIVE_PANEL_LOG_TAG, "%s", error->c_str());
         return nullptr;
     }
+    return createOn(display, EGL_NO_CONTEXT, error);
+}
+
+std::unique_ptr<VRORivePanelEGL> VRORivePanelEGL::createShared(EGLDisplay display,
+                                                               EGLContext shareContext,
+                                                               std::string *error) {
+    if (display == EGL_NO_DISPLAY || shareContext == EGL_NO_CONTEXT) {
+        *error = "createShared: no display or share context";
+        return nullptr;
+    }
+    return createOn(display, shareContext, error);
+}
+
+std::unique_ptr<VRORivePanelEGL> VRORivePanelEGL::createOn(EGLDisplay display,
+                                                           EGLContext shareContext,
+                                                           std::string *error) {
+    std::unique_ptr<VRORivePanelEGL> egl(new VRORivePanelEGL());
+    egl->_display = display;
+    // Already initialised by Viro in the shared case; eglInitialize on an
+    // initialised display only returns its version.
     if (!eglInitialize(egl->_display, nullptr, nullptr)) {
         egl->recordError("eglInitialize");
         *error = egl->_lastError;
@@ -150,10 +169,13 @@ std::unique_ptr<VRORivePanelEGL> VRORivePanelEGL::create(std::string *error) {
     egl->_hasColorspaceExtension = hasExtension(extensions, "EGL_KHR_gl_colorspace");
 
     const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+    // A share context only has to be on the same display and the same client
+    // API (EGL 1.5 section 3.7.1); the configs need not match.
     egl->_context =
-        eglCreateContext(egl->_display, egl->_config, EGL_NO_CONTEXT, contextAttributes);
+        eglCreateContext(egl->_display, egl->_config, shareContext, contextAttributes);
     if (egl->_context == EGL_NO_CONTEXT) {
-        egl->recordError("eglCreateContext (ES 3)");
+        egl->recordError(shareContext == EGL_NO_CONTEXT ? "eglCreateContext (ES 3)"
+                                                        : "eglCreateContext (ES 3, shared)");
         *error = egl->_lastError;
         return nullptr;
     }
@@ -170,7 +192,8 @@ std::unique_ptr<VRORivePanelEGL> VRORivePanelEGL::create(std::string *error) {
         return nullptr;
     }
     __android_log_print(ANDROID_LOG_INFO, RIVE_PANEL_LOG_TAG,
-                        "EGL ready: RGBA8 depth %d stencil %d samples %d, colorspace ext %d",
+                        "EGL ready%s: RGBA8 depth %d stencil %d samples %d, colorspace ext %d",
+                        shareContext == EGL_NO_CONTEXT ? "" : " (shared with XR context)",
                         configAttrib(egl->_display, egl->_config, EGL_DEPTH_SIZE),
                         configAttrib(egl->_display, egl->_config, EGL_STENCIL_SIZE),
                         configAttrib(egl->_display, egl->_config, EGL_SAMPLES),

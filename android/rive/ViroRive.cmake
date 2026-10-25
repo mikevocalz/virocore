@@ -99,6 +99,7 @@ string(REPLACE ";" ":" VIRO_RIVE_EXCLUDE "${VIRO_RIVE_EXCLUDE}")
 target_sources(viro_renderer PRIVATE
     ${VIRO_ANDROID_SRC}/VRORivePanelGeometry.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelEGL.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelRing.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
 viro_rive_sources(${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
 

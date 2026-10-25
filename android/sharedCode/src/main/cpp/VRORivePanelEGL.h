@@ -3,8 +3,11 @@
 //  ViroRenderer
 //
 //  EGL objects owned by one VRORivePanel worker thread: a GLES 3 context of
-//  its own (never shared with Viro's), a 1x1 pbuffer to stay current on while
-//  no window is attached, and the window surface on the panel's ANativeWindow.
+//  its own, a 1x1 pbuffer to stay current on while no window is attached,
+//  and the window surface on the panel's ANativeWindow. In window mode the
+//  context shares nothing with Viro. In texture-ring mode (createShared) it
+//  shares the OpenXR render context's object namespace, so the ring textures
+//  and fences are visible to the XR thread; it still never renders there.
 //  Every method must be called on the worker thread that created the object.
 //
 //  Colour: the config is RGBA8 and the window surface is created with
@@ -52,6 +55,12 @@ public:
     // pbuffer, and makes them current. Null with *error set on failure.
     static std::unique_ptr<VRORivePanelEGL> create(std::string *error);
 
+    // Texture-ring mode: same, on `display`, with a context created with
+    // `shareContext` as its share context. No window is ever attached.
+    static std::unique_ptr<VRORivePanelEGL> createShared(EGLDisplay display,
+                                                         EGLContext shareContext,
+                                                         std::string *error);
+
     // Releases current, destroys the window surface (before dropping the
     // window reference), the pbuffer and the context. Does not call
     // eglTerminate: the display is process-wide and Viro uses it too.
@@ -78,6 +87,8 @@ public:
 
 private:
     VRORivePanelEGL() = default;
+    static std::unique_ptr<VRORivePanelEGL> createOn(EGLDisplay display, EGLContext shareContext,
+                                                     std::string *error);
     bool makeCurrent(EGLSurface surface);
     void recordError(const char *call);
 

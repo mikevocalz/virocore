@@ -12,10 +12,14 @@
 //  renders into an internal texture and blits back at the end of the pass
 //  (allocateOffscreenTargetTexture, render_target_gl.cpp:327), which is the
 //  same cost as doing that blit ourselves.
-//  Alternative, not taken: a TextureRenderTargetGL on a texture we own plus
-//  one blit/draw to FBO 0. It always pays the blit but would let the same
-//  texture feed the B2 compositor ring. Pick by measuring both on Quest 3 and
-//  PICO 4 Ultra (Rive frame time and GPU time per frame).
+//  Alternative for the window, not taken: a TextureRenderTargetGL on a texture
+//  we own plus one blit/draw to FBO 0. It always pays the blit. Pick by
+//  measuring both on Quest 3 and PICO 4 Ultra (Rive frame time and GPU time
+//  per frame).
+//
+//  Texture-ring mode (route B2) renders into the ring texture itself through
+//  TextureRenderTargetGL (render_target_gl.hpp:113), which the client owns
+//  and Rive only attaches; rows stay bottom-up (its default).
 //
 //  GL state: this context belongs to the panel worker alone; nothing else
 //  issues GL on it, so RenderContextGLImpl::invalidateGLState() and
@@ -148,6 +152,7 @@ struct VRORivePanelScene::State {
     rive::rcp<rive::gpu::FramebufferRenderTargetGL> target;
     int targetWidth = 0;
     int targetHeight = 0;
+    rive::rcp<rive::gpu::TextureRenderTargetGL> textureTarget;
 
     rive::rcp<rive::File> file;
     Content content;
@@ -334,14 +339,28 @@ bool VRORivePanelScene::advance(float elapsedSeconds) {
 
 void VRORivePanelScene::releaseRenderTarget() {
     _state->target = nullptr;
+    _state->textureTarget = nullptr;
     _state->targetWidth = 0;
     _state->targetHeight = 0;
 }
 
 bool VRORivePanelScene::render(int widthPx, int heightPx, const VRORiveAffine &artboardToPanel,
-                               float cornerRadiusPx, uint32_t backgroundColor, std::string *error) {
+                               float cornerRadiusPx, uint32_t backgroundColor,
+                               uint32_t targetTexture, std::string *error) {
     State &s = *_state;
-    if (s.target == nullptr || s.targetWidth != widthPx || s.targetHeight != heightPx) {
+    rive::gpu::RenderTarget *renderTarget = nullptr;
+    if (targetTexture != 0) {
+        if (s.textureTarget == nullptr || s.textureTarget->width() != uint32_t(widthPx) ||
+            s.textureTarget->height() != uint32_t(heightPx)) {
+            s.textureTarget = rive::make_rcp<rive::gpu::TextureRenderTargetGL>(uint32_t(widthPx),
+                                                                              uint32_t(heightPx));
+        }
+        // Cheap when unchanged; re-attaches the FBO lazily when the slot moves.
+        if (s.textureTarget->externalTextureID() != targetTexture) {
+            s.textureTarget->setTargetTexture(targetTexture);
+        }
+        renderTarget = s.textureTarget.get();
+    } else if (s.target == nullptr || s.targetWidth != widthPx || s.targetHeight != heightPx) {
         GLint samples = 0;
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glGetIntegerv(GL_SAMPLES, &samples);
@@ -350,6 +369,7 @@ bool VRORivePanelScene::render(int widthPx, int heightPx, const VRORiveAffine &a
         s.targetWidth = widthPx;
         s.targetHeight = heightPx;
     }
+    if (renderTarget == nullptr) renderTarget = s.target.get();
 
     const float w = float(widthPx);
     const float h = float(heightPx);
@@ -392,7 +412,7 @@ bool VRORivePanelScene::render(int widthPx, int heightPx, const VRORiveAffine &a
         renderer.restore();
     }
     rive::gpu::RenderContext::FlushResources flush;
-    flush.renderTarget = s.target.get();
+    flush.renderTarget = renderTarget;
     // GL syncs buffer reuse itself; frame numbers only drive Rive's resource
     // purgatory (gpu_resource.cpp).
     flush.currentFrameNumber = ++s.frameNumber;

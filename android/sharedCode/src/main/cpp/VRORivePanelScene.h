@@ -54,11 +54,15 @@ public:
     // Returns true while more frames are needed.
     bool advance(float elapsedSeconds);
 
-    // Draws one frame into the current window surface's framebuffer 0.
+    // Draws one frame. targetTexture 0: into the current window surface's
+    // framebuffer 0 (window mode). Otherwise into that GL_TEXTURE_2D (an
+    // immutable RGBA8 ring texture of widthPx x heightPx) through a
+    // TextureRenderTargetGL, rows bottom-up.
     bool render(int widthPx, int heightPx, const VRORiveAffine &artboardToPanel,
-                float cornerRadiusPx, uint32_t backgroundColor, std::string *error);
+                float cornerRadiusPx, uint32_t backgroundColor, uint32_t targetTexture,
+                std::string *error);
 
-    // Drops the framebuffer render target (the window surface it described is
+    // Drops the render targets (the window surface or ring they described is
     // going away). Rive resources stay.
     void releaseRenderTarget();
 

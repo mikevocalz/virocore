@@ -30,11 +30,23 @@
 //  own corners and exists only for displays that do not round at the
 //  consumer; with Viro leave it 0.
 //
+//  Texture-ring mode (route B2, createTextureRing): the worker's EGL context
+//  shares the OpenXR render context and renders into three GL_RGBA8 textures
+//  instead of a window. The XR render thread reads the newest one through
+//  beginFrameRead()/endFrameRead(); fences order the two in both directions
+//  (VRORivePanelRing.h). FrameListener fires on the worker after each
+//  published frame, which happens only while the state machine advances or
+//  after input, data or lifecycle changes, so the host can invalidate the
+//  compositor panel exactly then. Same premultiplied, sRGB-encoded,
+//  square-cornered pixels as the window mode.
+//
 //  Availability: arm64-v8a builds with VIRO_WITH_RIVE. Elsewhere isAvailable()
 //  is false and create() returns null.
 //
 
 #pragma once
+
+#include <EGL/egl.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -103,6 +115,15 @@ struct VRORivePanelOptions {
     float maxFrameRateHz = 72.0f;
 };
 
+// One published texture-ring frame, valid between beginFrameRead() and
+// endFrameRead() on the reading thread.
+struct VRORivePanelFrame {
+    uint32_t texture = 0;  // GL_TEXTURE_2D name in the shared context group
+    int32_t width = 0;
+    int32_t height = 0;
+    uint64_t sequence = 0;  // 1 for the first published frame, then +1
+};
+
 class VRO_RIVE_PANEL_API VRORivePanel {
 public:
     // Called on the worker thread on every state change, and with the current
@@ -112,6 +133,11 @@ public:
     // return immediately there and finish after the listener returns.
     using StatusListener =
         std::function<void(VRORivePanelState state, const std::string &detail)>;
+
+    // Texture-ring mode: called on the worker thread after each frame is
+    // published, with its sequence number. Must not block or call back into
+    // the panel; post the work elsewhere.
+    using FrameListener = std::function<void(uint64_t sequence)>;
 
     static bool isAvailable();
 
@@ -124,6 +150,20 @@ public:
                                                 int widthPx, int heightPx,
                                                 VRORivePanelOptions options,
                                                 StatusListener listener = nullptr);
+
+    // Texture-ring mode. display and shareContext are the OpenXR renderer's
+    // (VROSceneRendererOpenXR::getEGLDisplay/getEGLContext); the worker
+    // creates its own GLES 3 context sharing shareContext's object namespace,
+    // plus a 1x1 pbuffer. attachSurface() and surfaceLost() return false in
+    // this mode; there is no window. After a GPU failure (state Lost),
+    // setActive(true) rebuilds the context and the ring and re-imports the
+    // file. Returns null under the same conditions as create().
+    static std::shared_ptr<VRORivePanel> createTextureRing(EGLDisplay display,
+                                                           EGLContext shareContext,
+                                                           int widthPx, int heightPx,
+                                                           VRORivePanelOptions options,
+                                                           StatusListener listener = nullptr,
+                                                           FrameListener frameListener = nullptr);
 
     ~VRORivePanel();
     VRORivePanel(const VRORivePanel &) = delete;
@@ -169,6 +209,20 @@ public:
     // Idempotent. Blocks until the worker has destroyed every Rive and EGL
     // object and exited (except when called from the status listener).
     void dispose();
+
+    bool isTextureRing() const;
+
+    // Texture-ring mode, on the consumer thread with a context of the shared
+    // group current (the XR render thread). Takes the newest published frame
+    // and makes the current context's GPU wait for Rive to finish it
+    // (glWaitSync; the CPU does not block). False before the first frame, in
+    // window mode, or while the ring is being rebuilt. Every true return must
+    // be paired with endFrameRead() after the last GL command that samples
+    // frame->texture, on the same thread, before returning to the caller's
+    // frame loop.
+    bool beginFrameRead(VRORivePanelFrame *frame);
+    // Fences the sampling and releases the frame so the worker may reuse it.
+    void endFrameRead();
 
     struct Impl;
 

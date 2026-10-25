@@ -15,6 +15,10 @@
 //  - The worker sleeps on a condition variable: untimed while there is
 //    nothing to draw, until the next frame deadline while the state machine
 //    is animating. A settled panel uses no CPU or GPU.
+//  - Texture-ring mode: the worker also owns VRORivePanelRing's textures and
+//    fences (created and deleted on its shared context). The XR render
+//    thread reads frames through the ring's own mutex, never through the
+//    command queue, so a read never waits for the worker to wake.
 //
 //  Exceptions: this file is built with exceptions; rive's TU is not. Every
 //  command and frame runs inside a try block on the worker; a throw tears
@@ -44,6 +48,7 @@ const char *VRORivePanelStateName(VRORivePanelState state) {
 
 #include "VRORivePanelEGL.h"
 #include "VRORivePanelGeometry.h"
+#include "VRORivePanelRing.h"
 #include "VRORivePanelScene.h"
 
 #include <EGL/egl.h>
@@ -124,8 +129,12 @@ VRORivePanelOptions sanitize(VRORivePanelOptions options) {
 // Hidden: a nested class takes VRORivePanel's default visibility otherwise,
 // which would export every worker method.
 struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
-    Impl(const VRORivePanelOptions &opts, int w, int h, StatusListener statusListener)
-        : options(opts), listener(std::move(statusListener)), width(w), height(h) {
+    Impl(const VRORivePanelOptions &opts, int w, int h, StatusListener statusListener,
+         bool textureRing = false, EGLDisplay display = EGL_NO_DISPLAY,
+         EGLContext share = EGL_NO_CONTEXT, FrameListener onFrame = nullptr)
+        : options(opts), listener(std::move(statusListener)), ringMode(textureRing),
+          shareDisplay(display), shareContext(share), frameListener(std::move(onFrame)),
+          ring(textureRing ? std::make_shared<VRORivePanelRing>() : nullptr), width(w), height(h) {
         frameInterval = std::chrono::duration_cast<Clock::duration>(
             std::chrono::duration<double>(1.0 / double(options.maxFrameRateHz)));
     }
@@ -133,6 +142,13 @@ struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
     // ---- Set at creation, read-only afterwards ----
     const VRORivePanelOptions options;
     const StatusListener listener;
+    const bool ringMode;
+    const EGLDisplay shareDisplay;
+    const EGLContext shareContext;
+    const FrameListener frameListener;
+    // Texture-ring mode only. The object is shared with the XR thread for
+    // reads; its GL objects are created and deleted by the worker.
+    const std::shared_ptr<VRORivePanelRing> ring;
     Clock::duration frameInterval{};
 
     // ---- Shared between callers and the worker ----
@@ -183,13 +199,21 @@ struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
     bool initializeGpu();
     void tearDownGpu();
     bool canRender() const {
+        if (ringMode) {
+            return scene != nullptr && egl != nullptr && active && ring->ready();
+        }
         return scene != nullptr && egl != nullptr && egl->hasWindow() && active && !surfaceFailed;
     }
     VRORivePanelState computeState() const {
         if (gpuFailed || surfaceFailed) return VRORivePanelState::Lost;
-        if (egl == nullptr || !egl->hasWindow()) return VRORivePanelState::WaitingForSurface;
+        if (ringMode) {
+            if (egl == nullptr || !ring->ready()) return VRORivePanelState::WaitingForSurface;
+        } else if (egl == nullptr || !egl->hasWindow()) {
+            return VRORivePanelState::WaitingForSurface;
+        }
         return active ? VRORivePanelState::Active : VRORivePanelState::Suspended;
     }
+    bool createRing();
     void notify(VRORivePanelState s, const std::string &detail);
     void publishIfChanged();
     void report(const std::string &detail);
@@ -239,10 +263,24 @@ void VRORivePanel::Impl::report(const std::string &detail) { notify(computeState
 
 void VRORivePanel::Impl::tearDownGpu() {
     // Scene first: its rive objects hold GL resources of egl's context, which
-    // is still current here. Then the EGL surface, then the window ref.
+    // is still current here (including the FBO attached to a ring texture).
+    // Then the ring, which waits for any XR-thread read and its fence. Then
+    // the EGL surface, then the window ref, then the context.
     scene.reset();
+    if (ring != nullptr && egl != nullptr) ring->destroy();
     egl.reset();
     router.reset();
+}
+
+bool VRORivePanel::Impl::createRing() {
+    std::string error;
+    if (!ring->create(width, height, &error)) {
+        failGpu("ring: " + error);
+        return false;
+    }
+    needsFrame = true;
+    idle = true;
+    return true;
 }
 
 void VRORivePanel::Impl::failGpu(const std::string &detail) {
@@ -260,7 +298,8 @@ void VRORivePanel::Impl::dropWindow() {
 
 bool VRORivePanel::Impl::initializeGpu() {
     std::string error;
-    egl = VRORivePanelEGL::create(&error);
+    egl = ringMode ? VRORivePanelEGL::createShared(shareDisplay, shareContext, &error)
+                   : VRORivePanelEGL::create(&error);
     if (egl == nullptr) {
         failGpu(error);
         return false;
@@ -270,6 +309,7 @@ bool VRORivePanel::Impl::initializeGpu() {
         failGpu(error);
         return false;
     }
+    if (ringMode && !createRing()) return false;
     gpuFailed = false;
     restoreContent();
     return true;
@@ -421,6 +461,11 @@ void VRORivePanel::Impl::apply(CmdPointer &cmd) {
 
 void VRORivePanel::Impl::apply(CmdActive &cmd) {
     active = cmd.active;
+    if (active && ringMode && gpuFailed) {
+        // No window to re-attach in ring mode: activation is the recovery.
+        tearDownGpu();
+        if (!initializeGpu()) return;
+    }
     if (active) {
         needsFrame = true;
         idle = true;
@@ -430,6 +475,14 @@ void VRORivePanel::Impl::apply(CmdActive &cmd) {
 void VRORivePanel::Impl::apply(CmdResize &cmd) {
     width = cmd.width;
     height = cmd.height;
+    if (ringMode) {
+        if (egl != nullptr && scene != nullptr) {
+            scene->releaseRenderTarget();
+            ring->destroy();
+            createRing();
+        }
+        return;
+    }
     if (egl != nullptr) {
         std::string error;
         if (!egl->resizeWindow(width, height, &error)) report("resize: " + error);
@@ -473,8 +526,36 @@ void VRORivePanel::Impl::renderFrame() {
     }
     const bool more = scene->advance(dt);
     std::string error;
+    if (ringMode) {
+        const int slot = ring->beginWrite();
+        if (slot < 0) {
+            // Unreachable with three slots while the ring is alive.
+            needsFrame = false;
+            report("ring: no free slot");
+            return;
+        }
+        if (!scene->render(width, height, artboardToPanel(), options.cornerRadiusPx,
+                           options.clearColor, ring->texture(slot), &error)) {
+            failGpu("render: " + error);
+            return;
+        }
+        const uint64_t sequence = ring->endWrite(slot);
+        if (sequence != 0 && frameListener) {
+            try {
+                frameListener(sequence);
+            } catch (...) {
+                __android_log_print(ANDROID_LOG_ERROR, RIVE_PANEL_LOG_TAG,
+                                    "frame listener threw; ignored");
+            }
+        }
+        lastFrame = now;
+        nextFrame = now + frameInterval;
+        idle = !more;
+        needsFrame = more;
+        return;
+    }
     if (!scene->render(width, height, artboardToPanel(), options.cornerRadiusPx,
-                       options.clearColor, &error)) {
+                       options.clearColor, 0, &error)) {
         failGpu("render: " + error);
         return;
     }
@@ -615,9 +696,57 @@ std::shared_ptr<VRORivePanel> VRORivePanel::create(ANativeWindow *window, int wi
     return nullptr;
 }
 
+std::shared_ptr<VRORivePanel> VRORivePanel::createTextureRing(EGLDisplay display,
+                                                              EGLContext shareContext,
+                                                              int widthPx, int heightPx,
+                                                              VRORivePanelOptions options,
+                                                              StatusListener listener,
+                                                              FrameListener frameListener) {
+    if (!validDimension(widthPx) || !validDimension(heightPx)) {
+        __android_log_print(ANDROID_LOG_ERROR, RIVE_PANEL_LOG_TAG,
+                            "createTextureRing: size %dx%d outside 1..%d", widthPx, heightPx,
+                            kMaxDimension);
+        return nullptr;
+    }
+    if (display == EGL_NO_DISPLAY || shareContext == EGL_NO_CONTEXT) {
+        __android_log_print(ANDROID_LOG_ERROR, RIVE_PANEL_LOG_TAG,
+                            "createTextureRing: no EGL display or share context");
+        return nullptr;
+    }
+    try {
+        auto impl = std::make_shared<Impl>(sanitize(options), widthPx, heightPx,
+                                           std::move(listener), true, display, shareContext,
+                                           std::move(frameListener));
+        {
+            std::lock_guard<std::mutex> lock(impl->threadMutex);
+            impl->thread = std::thread([impl] { impl->run(); });
+            impl->workerId.store(impl->thread.get_id());
+        }
+        return std::shared_ptr<VRORivePanel>(new VRORivePanel(std::move(impl)));
+    } catch (const std::exception &e) {
+        __android_log_print(ANDROID_LOG_ERROR, RIVE_PANEL_LOG_TAG, "createTextureRing: %s",
+                            e.what());
+    } catch (...) {
+        __android_log_print(ANDROID_LOG_ERROR, RIVE_PANEL_LOG_TAG,
+                            "createTextureRing: unknown exception");
+    }
+    return nullptr;
+}
+
 VRORivePanel::VRORivePanel(std::shared_ptr<Impl> impl) : _impl(std::move(impl)) {}
 
 VRORivePanel::~VRORivePanel() { dispose(); }
+
+bool VRORivePanel::isTextureRing() const { return _impl->ringMode; }
+
+bool VRORivePanel::beginFrameRead(VRORivePanelFrame *frame) {
+    if (!_impl->ringMode || frame == nullptr) return false;
+    return _impl->ring->beginRead(frame);
+}
+
+void VRORivePanel::endFrameRead() {
+    if (_impl->ringMode) _impl->ring->endRead();
+}
 
 VRORivePanelState VRORivePanel::getState() const { return _impl->state.load(); }
 
@@ -734,7 +863,7 @@ bool VRORivePanel::resize(int widthPx, int heightPx) {
 }
 
 bool VRORivePanel::attachSurface(ANativeWindow *window) {
-    if (window == nullptr) return false;
+    if (window == nullptr || _impl->ringMode) return false;
     try {
         return _impl->enqueue(CmdAttach{VRORivePanelWindowRef(window)}, false);
     } catch (...) {
@@ -743,6 +872,7 @@ bool VRORivePanel::attachSurface(ANativeWindow *window) {
 }
 
 bool VRORivePanel::surfaceLost() {
+    if (_impl->ringMode) return false;
     try {
         auto done = std::make_shared<std::promise<void>>();
         std::future<void> finished = done->get_future();
@@ -811,5 +941,15 @@ bool VRORivePanel::resize(int, int) { return false; }
 bool VRORivePanel::surfaceLost() { return false; }
 bool VRORivePanel::attachSurface(ANativeWindow *) { return false; }
 void VRORivePanel::dispose() {}
+std::shared_ptr<VRORivePanel> VRORivePanel::createTextureRing(EGLDisplay, EGLContext, int, int,
+                                                              VRORivePanelOptions, StatusListener,
+                                                              FrameListener) {
+    __android_log_print(ANDROID_LOG_WARN, RIVE_PANEL_LOG_TAG,
+                        "createTextureRing: rive-runtime is not built for this ABI");
+    return nullptr;
+}
+bool VRORivePanel::isTextureRing() const { return false; }
+bool VRORivePanel::beginFrameRead(VRORivePanelFrame *) { return false; }
+void VRORivePanel::endFrameRead() {}
 
 #endif
