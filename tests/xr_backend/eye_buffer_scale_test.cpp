@@ -124,6 +124,119 @@ int main() {
         check(near(q.eyeBufferScale, 1.3f), "quality default scale");
         check(q.foveationLevel == VROOpenXRFoveationLevel::LOW, "quality default LOW");
         check(q.foveationDynamic, "quality default dynamic");
+        check(q.displayRefreshRate.mode == VRODisplayRefreshRateMode::NONE,
+              "quality default makes no refresh-rate request");
+    }
+
+    // display refresh rate: Quest 3 style list (the spec orders it low to high)
+    {
+        const float rates[] = { 72.0f, 80.0f, 90.0f, 120.0f };
+        const size_t n = sizeof(rates) / sizeof(rates[0]);
+
+        // unset: never request
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest(), rates, n);
+            check(c.outcome == VRODisplayRefreshRateOutcome::NO_REQUEST, "unset is NO_REQUEST");
+            check(!c.shouldRequest(), "unset never calls xrRequestDisplayRefreshRateFB");
+        }
+        // highest: the max of the enumeration
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::highest(), rates, n);
+            check(c.outcome == VRODisplayRefreshRateOutcome::CHOSEN && c.shouldRequest(),
+                  "highest is CHOSEN");
+            check(near(c.rateHz, 120.0f), "highest picks 120");
+        }
+        // highest does not rely on the list being sorted
+        {
+            const float shuffled[] = { 90.0f, 120.0f, 72.0f };
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::highest(), shuffled, 3);
+            check(near(c.rateHz, 120.0f), "highest on an unsorted list");
+        }
+        // exact match
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::atMostHz(90.0f), rates, n);
+            check(c.outcome == VRODisplayRefreshRateOutcome::CHOSEN, "exact is CHOSEN");
+            check(near(c.rateHz, 90.0f), "exact match picks 90");
+        }
+        // a hair above a supported rate still matches it (float noise)
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::atMostHz(89.999f), rates, n);
+            check(near(c.rateHz, 90.0f), "89.999 matches 90");
+        }
+        // between rates: closest not above
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::atMostHz(100.0f), rates, n);
+            check(c.outcome == VRODisplayRefreshRateOutcome::CHOSEN, "between is CHOSEN");
+            check(near(c.rateHz, 90.0f), "100 picks 90, never 120");
+        }
+        // above all rates: the highest
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::atMostHz(240.0f), rates, n);
+            check(near(c.rateHz, 120.0f), "240 picks 120");
+        }
+        // below all rates: the lowest, flagged so the caller logs it
+        {
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::atMostHz(60.0f), rates, n);
+            check(c.outcome == VRODisplayRefreshRateOutcome::BELOW_ALL_RATES, "60 is BELOW_ALL_RATES");
+            check(c.shouldRequest(), "below all rates still requests");
+            check(near(c.rateHz, 72.0f), "60 falls back to the lowest, 72");
+        }
+        // empty list: nothing to request
+        {
+            VRODisplayRefreshRateChoice a = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::highest(), nullptr, 0);
+            VRODisplayRefreshRateChoice b = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::atMostHz(90.0f), rates, 0);
+            check(a.outcome == VRODisplayRefreshRateOutcome::NO_SUPPORTED_RATES && !a.shouldRequest(),
+                  "empty list, highest");
+            check(b.outcome == VRODisplayRefreshRateOutcome::NO_SUPPORTED_RATES && !b.shouldRequest(),
+                  "empty list, hz");
+        }
+        // junk entries in the enumeration are skipped
+        {
+            const float junk[] = { std::numeric_limits<float>::quiet_NaN(), 0.0f, -90.0f,
+                                   std::numeric_limits<float>::infinity() };
+            VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                VRODisplayRefreshRateRequest::highest(), junk, 4);
+            check(c.outcome == VRODisplayRefreshRateOutcome::NO_SUPPORTED_RATES,
+                  "a list of only non-positive or non-finite rates counts as empty");
+        }
+        // NaN, infinite, zero and negative requests are rejected, never requested
+        {
+            const float bad[] = { std::numeric_limits<float>::quiet_NaN(),
+                                  std::numeric_limits<float>::infinity(),
+                                  -std::numeric_limits<float>::infinity(),
+                                  0.0f, -90.0f };
+            for (float hz : bad) {
+                VRODisplayRefreshRateChoice c = VROPickDisplayRefreshRate(
+                    VRODisplayRefreshRateRequest::atMostHz(hz), rates, n);
+                check(c.outcome == VRODisplayRefreshRateOutcome::INVALID_REQUEST, "bad hz rejected");
+                check(!c.shouldRequest(), "bad hz never requested");
+            }
+        }
+    }
+
+    // display refresh rate JNI codes: 0 = none, 1 = highest, 2 = hz
+    {
+        VRODisplayRefreshRateRequest r;
+        check(VRODisplayRefreshRateRequestFromCode(0, 0.0f, &r) &&
+              r.mode == VRODisplayRefreshRateMode::NONE, "code 0 NONE");
+        check(VRODisplayRefreshRateRequestFromCode(1, 0.0f, &r) &&
+              r.mode == VRODisplayRefreshRateMode::HIGHEST, "code 1 HIGHEST");
+        check(VRODisplayRefreshRateRequestFromCode(2, 90.0f, &r) &&
+              r.mode == VRODisplayRefreshRateMode::HZ && near(r.hz, 90.0f), "code 2 HZ 90");
+        r = VRODisplayRefreshRateRequest::highest();
+        check(!VRODisplayRefreshRateRequestFromCode(3, 90.0f, &r) &&
+              r.mode == VRODisplayRefreshRateMode::HIGHEST, "code 3 rejected, output untouched");
+        check(!VRODisplayRefreshRateRequestFromCode(-1, 90.0f, &r), "code -1 rejected");
     }
 
     if (failures == 0) {
