@@ -21,7 +21,7 @@ for f in "$RIVE"/src/math/*.cpp; do
     MATH_OBJS+=("$o")
 done
 "$CXX" -std=c++17 -fno-rtti -fno-exceptions -Wall -Wextra -Werror \
-    -I"$SRC" -I"$ROOT/ViroRenderer" -isystem "$RIVE/include" \
+    -I"$SRC" -I"$ROOT/ViroRenderer" -I"$ROOT/tests/host_shims" -isystem "$RIVE/include" \
     "$SRC/VRORivePanelGeometry.cpp" \
     "$ROOT/tests/rive/rive_panel_geometry_test.cpp" \
     "$BUILD_DIR/renderer.o" "${MATH_OBJS[@]}" \

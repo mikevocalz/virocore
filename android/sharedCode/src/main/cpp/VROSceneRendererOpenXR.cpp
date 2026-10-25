@@ -1868,7 +1868,7 @@ bool VROSceneRendererOpenXR::removeCompositorPanel(const std::string &id) {
 // Connects a Rive worker's frame callbacks to compositor invalidation and to
 // the scene fallback. The worker only touches `pending`; every other member
 // is read and written on the XR render thread alone.
-struct VRORiveCompositorLink {
+struct __attribute__((visibility("hidden"))) VRORiveCompositorLink {
     std::atomic<bool> pending{false};
     std::weak_ptr<VROOpenXRRivePanelProducer> producer;
     VROOpenXRPanelCompositor *compositor = nullptr;

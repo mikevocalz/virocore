@@ -1,6 +1,6 @@
 // Host test for VROOpenXRPanelCompositor eviction reporting. Builds the real
 // compositor against the vendored OpenXR headers, minimal EGL/GLES/JNI type
-// shims (tests/xr_backend/host_shims) and the fake runtime below, which
+// shims (tests/host_shims) and the fake runtime below, which
 // grants every acquire, wait and release. Run by
 // scripts/test-openxr-panel-eviction.sh.
 

@@ -11,7 +11,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 # -Wno-missing-field-initializers: the OpenXR `{ XR_TYPE_... }` idiom zero-fills the rest.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers \
-    -I"$ROOT/tests/xr_backend/host_shims" -I"$SRC" -isystem "$SRC/include" \
+    -I"$ROOT/tests/host_shims" -I"$SRC" -isystem "$SRC/include" \
     "$SRC/VROOpenXRPanelCompositor.cpp" \
     "$ROOT/tests/xr_backend/panel_eviction_test.cpp" \
     -o "$BUILD_DIR/panel_eviction_test"

@@ -2,8 +2,10 @@
 
 ViroCore links Rive's C++ runtime and its GLES renderer statically into
 `libviro_renderer.so` on Android arm64-v8a. This is the build step from
-viro-external ADR 0001, decision D3. The scene-panel producer `VRORivePanel` (route B1) is
-the code that uses it; see [VRORivePanel](#vrorivepanel) below.
+viro-external ADR 0001, decision D3. `VRORivePanel` is the code that uses it: the
+scene-panel producer (route B1) and, in texture-ring mode, the source for the OpenXR
+compositor finish pass (route B2); see [VRORivePanel](#vrorivepanel) and
+[Texture-ring mode](#texture-ring-mode-route-b2) below.
 
 | | |
 | --- | --- |
@@ -103,11 +105,11 @@ different defines would disagree with the archives about class layout. Any Rive 
 added later must be listed in `viro_rive_sources()`.
 
 Check on the AAR (`llvm-nm` from the NDK). `grep -i rive` alone also matches ViroCore's
-own `Driver` and `derive` symbols and the exported `VRORivePanel` API, so they are
-filtered out:
+own `Driver` and `derive` symbols and the exported `VRORivePanel` and
+`*RiveCompositorPanel*` APIs, so they are filtered out:
 
 ```sh
-nm -D jni/arm64-v8a/libviro_renderer.so | grep -i rive | grep -vi driver | grep -v derive | grep -v VRORivePanel
+nm -D jni/arm64-v8a/libviro_renderer.so | grep -i rive | grep -vi driver | grep -v derive | grep -v RivePanel
 # (no output)
 nm -D -C jni/arm64-v8a/libviro_renderer.so | grep -c 'rive::'          # 0
 nm -D jni/arm64-v8a/libviro_renderer.so | grep -cE ' (rive_)?hb_'     # 0
@@ -156,8 +158,11 @@ rive. On armeabi-v7a, or with `-DVIRO_WITH_RIVE=OFF`, the same symbols exist,
 | --- | --- | --- |
 | `VRORivePanel.cpp` | Facade, command queue, worker thread, state machine | C++17, exceptions |
 | `VRORivePanelEGL.cpp` | EGL display/config/context, pbuffer, window surface, window ref | C++17, exceptions |
-| `VRORivePanelGeometry.cpp` | Fit/alignment transform, rounded shape, pointer routing | C++17 |
+| `VRORivePanelGeometry.cpp` | Fit/alignment transform, corner hit test, pointer routing | C++17 |
+| `VRORivePanelRing.cpp` | Texture ring for route B2: three RGBA8 textures and their fences | C++17 |
 | `VRORivePanelScene.cpp` | Render context, File, artboard, state machine, view model | `viro_rive_sources()` |
+| `VROOpenXRRivePanelProducer.cpp` | Route B2 finish pass on the XR render thread | C++14, all ABIs |
+| `VROOpenXRRivePanelFallback.cpp` | Scene-mesh fallback texture for an evicted B2 panel | C++14, all ABIs |
 
 ### Ownership and threads
 
@@ -197,10 +202,16 @@ one advance.
   stated explicitly when the extension exists). Rive's GL backend writes sRGB-encoded bytes
   into UNORM targets and the scene route samples the Surface as sRGB-encoded bytes (D6), so
   nothing re-encodes them. An sRGB window surface would encode twice.
-- Alpha: cleared to transparent, Rive's output is premultiplied, corners are clipped with
-  `RiveRenderer::clipPath` on a rounded-rect path in panel pixels before the artboard
-  transform. The material that samples this Surface must use `PremultiplyAlpha` blending
-  (feat/premultiply-blend-mode).
+- Alpha: cleared to transparent, and Rive's output is premultiplied. The material that
+  samples this Surface must use `PremultiplyAlpha` blending, and the `ExternalSurfaceTexture`
+  must be told the input is premultiplied (`setPremultipliedAlpha(true)`) so the resolve
+  copy keeps it exact on sRGB storage (see `VROAndroidViewTexture.h`).
+- Corners: drawn square. The consumer rounds them with the shared coverage function
+  (`ViroRenderer/VROPanelCoverage.h`): `ExternalSurfaceTexture.setCornerRadius(radiusM,
+  widthM, heightM)` in the scene route, the finish pass in route B2 (ADR 0001 "Corner
+  ownership"). `cornerRadiusPx` makes Rive clip its own corners with `clipPath`; it defaults
+  to 0 and is only for displays that do not round at the consumer, since with Viro it would
+  round twice.
 - Rows: `FramebufferRenderTargetGL::bottomUp()` is true (`render_target_gl.hpp:207`), so
   Rive draws in the usual GL window orientation. Not yet checked through Viro's
   SurfaceTexture sampling; see the device list.
@@ -209,12 +220,15 @@ one advance.
 
 `pointerDown/Move/Up` take panel pixels (origin top-left). The worker maps them to
 artboard space with the inverse of `VRORiveComputeAlignment`, the same matrix the frame is
-drawn with, so a hit lands where the pixel was drawn. A press that starts outside the
-rounded rect is dropped; a press that started inside keeps its moves and release even in a
+drawn with, so a hit lands where the pixel was drawn. The corner test is
+`VROPanelCoverage >= 0.5` with the consumer's per-axis radii (`coverageRadiusXPx/YPx`,
+set from `VROPanelCornerRadiiPx`; `addRiveCompositorPanel` fills them in), falling back to
+`cornerRadiusPx`. A press that starts in a transparent corner is dropped; a press that started inside keeps its moves and release even in a
 corner. Hover that leaves the shape becomes one `pointerExit`.
 `scripts/test-rive-panel-geometry.sh` checks the transform is bit-identical to
-`rive::computeAlignment` (linked from the vendored source) and covers the corner test and
-routing.
+`rive::computeAlignment` (linked from the vendored source) and covers the corner test,
+the per-axis radii and routing. `scripts/test-panel-coverage.sh` tests the coverage function
+itself and compiles its GLSL with the NDK's glslc.
 
 ### Lifecycle
 
@@ -228,6 +242,39 @@ file with its artboard, state machine and the view-model values written since it
 `dispose()` is idempotent and joins the worker; from inside the status listener it returns
 at once and the worker finishes teardown after the listener returns. `eglTerminate` is never
 called: the display is process-wide and Viro uses it.
+
+### Texture-ring mode (route B2)
+
+`VRORivePanel::createTextureRing(display, shareContext, w, h, options, listener,
+frameListener)`; normally called through `VROSceneRendererOpenXR::addRiveCompositorPanel`.
+
+| Object | Owner | Created, used, destroyed on |
+| --- | --- | --- |
+| `EGLContext` (GLES 3, shares the XR render context), 1x1 pbuffer | worker | worker |
+| Three immutable `GL_RGBA8` ring textures, producer and consumer fences | worker | created and deleted on the worker; sampled and fenced on the XR thread |
+| Ring slot table (newest, being read, fences) | `VRORivePanelRing` | one mutex, no GL call under it |
+| `TextureRenderTargetGL` on the current slot | worker | worker |
+| Finish-pass program, framebuffer, vertex array and buffer | `VROOpenXRRivePanelProducer` | XR thread, XR context |
+
+- Frames are rendered under the same rules as the window mode: only while
+  `advanceAndApply` returns true or after input, data, load or lifecycle changes. After
+  each one the worker fences and flushes, publishes the slot, and calls `FrameListener`,
+  which posts one compositor invalidation to the XR thread.
+- The XR thread reads with `beginFrameRead` (GPU wait on the producer fence) and
+  `endFrameRead` (consumer fence). The worker never renders into the newest slot or the
+  one being read, and GPU-waits on a slot's consumer fence before reusing it.
+- Pixels: premultiplied, sRGB-encoded, square corners, rows bottom-up. The finish pass
+  converts them for the swapchain format and applies the corners; see
+  `docs/OPENXR_PANEL_COMPOSITOR.md`.
+- No window: `attachSurface` and `surfaceLost` return false. `resize` rebuilds the ring.
+  After a GPU failure the state is `lost` and `setActive(true)` rebuilds the context and
+  ring and re-imports the file.
+- Teardown: the ring and the shared context are destroyed by the worker in `dispose()`,
+  which the finish pass triggers only after the compositor has destroyed the swapchain
+  (or later, if the host still holds the panel).
+- Eviction: when the compositor has no layer slot for the panel, the renderer fills
+  `VROOpenXRRivePanelFallback` from the same ring for a scene quad. The host binding for
+  that quad does not exist yet.
 
 ### Needs a device
 
@@ -243,6 +290,11 @@ None of the following has run yet. Each needs Quest 3 and PICO 4 Ultra:
 - The panel is upright, not mirrored vertically, in the scene.
 - Pointer hits on BoardChrome buttons at the panel edges and corners with `contain` fit.
 - Frame time per Rive frame, against the `TextureRenderTargetGL` + blit alternative.
+- Route B2: that both runtimes accept a worker context sharing the XR context with a
+  different config; first frame through `addRiveCompositorPanel` on an sRGB and an RGBA8
+  swapchain with the swatch gate; upright orientation of the ring copy; finish-pass GPU
+  time; no producer call while the state machine is settled; `removeCompositorPanel`
+  followed by `dispose()` with no GL errors; behaviour across session STOPPING and loss.
 
 ## Updating the pin
 

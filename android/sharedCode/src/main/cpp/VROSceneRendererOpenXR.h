@@ -56,7 +56,7 @@ class VROARScene;
 class VROSceneController;
 class VRONode;
 class VROTexture;
-struct VRORiveCompositorLink;
+struct __attribute__((visibility("hidden"))) VRORiveCompositorLink;
 
 namespace gvr { class AudioApi; }
 

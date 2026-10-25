@@ -6,7 +6,7 @@ on:
       - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
       - "tests/xr_backend/panel_image_state_test.cpp"
       - "tests/xr_backend/panel_eviction_test.cpp"
-      - "tests/xr_backend/host_shims/**"
+      - "tests/host_shims/**"
       - "scripts/test-openxr-panel-eviction.sh"
       - ".github/workflows/openxr-panel-policy.yml"
   push:
