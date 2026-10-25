@@ -645,6 +645,13 @@ target_link_libraries( # Specifies the target library.
 
 # rive-runtime, linked statically with hidden symbols (arm64-v8a only). See
 # docs/RIVE_RUNTIME.md and android/rive/ViroRive.cmake.
+# VRORivePanel's own sources use C++17 (std::variant); the rest of viro_renderer is C++14
+# (cppFlags in viroreact/build.gradle; the later flag wins). Its public header stays C++14.
+set_source_files_properties(
+    ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelEGL.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelGeometry.cpp
+    PROPERTIES COMPILE_OPTIONS "-std=c++17")
 option(VIRO_WITH_RIVE "Link rive-runtime statically into viro_renderer" ON)
 if(VIRO_WITH_RIVE)
     include(${CMAKE_SOURCE_DIR}/../rive/ViroRive.cmake)
