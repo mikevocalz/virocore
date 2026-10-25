@@ -642,6 +642,15 @@ target_link_libraries( # Specifies the target library.
                        "-Wl,-z,max-page-size=16384"
         )
 
+# rive-runtime, linked statically with hidden symbols (arm64-v8a only). See
+# docs/RIVE_RUNTIME.md and android/rive/ViroRive.cmake.
+option(VIRO_WITH_RIVE "Link rive-runtime statically into viro_renderer" ON)
+if(VIRO_WITH_RIVE)
+    include(${CMAKE_SOURCE_DIR}/../rive/ViroRive.cmake)
+else()
+    target_compile_definitions(viro_renderer PRIVATE VRO_HAS_RIVE_RUNTIME=0)
+endif()
+
 if(VIRO_ENABLE_ESKIU_GEOMETRY)
     target_compile_definitions(viro_renderer PRIVATE VRO_ENGINE_ESKIU_GEOMETRY_AVAILABLE=1)
 endif()
