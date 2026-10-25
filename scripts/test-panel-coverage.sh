@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Host unit test for ViroRenderer/VROPanelCoverage.h, the shared rounded-rect
 # coverage function. Builds and runs tests/panel/panel_coverage_test.cpp, then
-# compiles the GLSL string with the NDK's glslc (when an NDK is installed).
+# compiles the GLSL string with the NDK's glslc. Without glslc that step is
+# skipped, unless REQUIRE_GLSLC=1 (CI), which makes a missing glslc a failure.
+# GLSLC names a specific glslc; otherwise the last NDK under the SDK is used.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CXX="${CXX:-c++}"
@@ -17,8 +19,12 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 "$BUILD_DIR/panel_coverage_test"
 
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-GLSLC="$(ls -1 "$SDK"/ndk/*/shader-tools/*/glslc 2>/dev/null | tail -n 1 || true)"
-if [[ -z "$GLSLC" ]]; then
+GLSLC="${GLSLC:-$(ls -1 "$SDK"/ndk/*/shader-tools/*/glslc 2>/dev/null | tail -n 1 || true)}"
+if [[ -z "$GLSLC" || ! -x "$GLSLC" ]]; then
+    if [[ "${REQUIRE_GLSLC:-0}" == "1" ]]; then
+        echo "glslc not found (GLSLC='$GLSLC', searched $SDK/ndk) and REQUIRE_GLSLC=1" >&2
+        exit 1
+    fi
     echo "glslc not found under $SDK/ndk; GLSL compile check skipped"
     exit 0
 fi

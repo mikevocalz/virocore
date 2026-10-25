@@ -11,6 +11,12 @@ on:
       - "android/sharedCode/src/main/cpp/jni/RiveCompositorPanel*"
       - "tests/xr_backend/compositor_panel_mapping_test.cpp"
       - "scripts/test-compositor-panel-mapping.sh"
+      - "android/sharedCode/src/main/cpp/VROPanelShaderSources.h"
+      - "ViroRenderer/VROPanelCoverage.h"
+      - "tests/panel/**"
+      - "scripts/test-panel-shaders.sh"
+      - "scripts/test-panel-coverage.sh"
+      - "android/viroreact/build.gradle"
       - ".github/workflows/openxr-panel-policy.yml"
   push:
     paths:
@@ -19,6 +25,9 @@ on:
       - "tests/xr_backend/panel_eviction_test.cpp"
       - "android/sharedCode/src/main/cpp/jni/RiveCompositorPanel*"
       - "tests/xr_backend/compositor_panel_mapping_test.cpp"
+      - "android/sharedCode/src/main/cpp/VROPanelShaderSources.h"
+      - "ViroRenderer/VROPanelCoverage.h"
+      - "tests/panel/**"
     branches:
       - main
 
@@ -37,3 +46,29 @@ jobs:
         run: CXX=g++ scripts/test-openxr-panel-eviction.sh
       - name: JNI codes of RiveCompositorPanel
         run: CXX=g++ scripts/test-compositor-panel-mapping.sh
+
+  # Compiles every panel shader variant and the shared coverage snippet with
+  # the glslc of the NDK that android/viroreact/build.gradle pins
+  # (27.1.12297006 when this job was added). REQUIRE_GLSLC=1 turns a missing
+  # glslc into a failure instead of a skip.
+  panel-shaders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve and install pinned NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_VER="$(sed -nE 's/^[[:space:]]*ndkVersion[[:space:]]*=?[[:space:]]*"([0-9.]+)".*/\1/p' android/viroreact/build.gradle | head -1)"
+          test -n "$NDK_VER"
+          echo "Installing NDK $NDK_VER"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VER"
+          GLSLC="$ANDROID_HOME/ndk/$NDK_VER/shader-tools/linux-x86_64/glslc"
+          test -x "$GLSLC"
+          "$GLSLC" --version
+          echo "GLSLC=$GLSLC" >> "$GITHUB_ENV"
+      - name: Panel shader variants
+        run: CXX=g++ REQUIRE_GLSLC=1 scripts/test-panel-shaders.sh
+      - name: Panel coverage function and GLSL snippet
+        run: CXX=g++ REQUIRE_GLSLC=1 scripts/test-panel-coverage.sh

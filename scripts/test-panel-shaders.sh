@@ -13,9 +13,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CXX="${CXX:-c++}"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-GLSLC="$(ls -1 "$SDK"/ndk/*/shader-tools/*/glslc 2>/dev/null | tail -n 1 || true)"
-if [[ -z "$GLSLC" ]]; then
-    echo "glslc not found under $SDK/ndk" >&2
+# GLSLC names a specific glslc (CI points it at the NDK build.gradle pins);
+# otherwise the last NDK under the SDK in ls order is used. This script needs
+# glslc either way, so it fails without one whatever REQUIRE_GLSLC says.
+GLSLC="${GLSLC:-$(ls -1 "$SDK"/ndk/*/shader-tools/*/glslc 2>/dev/null | tail -n 1 || true)}"
+if [[ -z "$GLSLC" || ! -x "$GLSLC" ]]; then
+    echo "glslc not found (GLSLC='$GLSLC', searched $SDK/ndk)" >&2
     exit 1
 fi
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/viro-panel-shaders.XXXXXX")"
