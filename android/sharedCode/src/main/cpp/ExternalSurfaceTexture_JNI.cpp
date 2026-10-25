@@ -33,7 +33,8 @@ VRO_METHOD(VRO_REF(VROAndroidViewTexture), nativeCreateExternalSurfaceTexture)(V
     VRO_METHOD_PREAMBLE;
     std::weak_ptr<ViroContext> context_w = VRO_REF_GET(ViroContext, context_j);
     std::shared_ptr<VROAndroidViewTexture> texture
-            = std::make_shared<VROAndroidViewTexture>(obj, width, height);
+            = std::make_shared<VROAndroidViewTexture>(obj, width, height,
+                                                      VROAndroidViewTextureKind::ExternalSurface);
 
     VROPlatformDispatchAsyncRenderer([texture, context_w] {
         std::shared_ptr<ViroContext> context = context_w.lock();

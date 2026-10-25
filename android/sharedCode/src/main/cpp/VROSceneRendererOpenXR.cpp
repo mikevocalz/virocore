@@ -14,6 +14,7 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -165,6 +166,11 @@ static constexpr uint32_t kPicoControllerExtensionCount =
             return false;                                                        \
         }                                                                        \
     } while (0)
+
+// Eye swapchains alive across every renderer in the process, logged when a
+// session creates or destroys them (never per frame). Two per live session;
+// more after a reload or background cycle means a session leaked its pair.
+static std::atomic<int> sLiveEyeSwapchains{0};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Conversion helpers
@@ -1076,6 +1082,7 @@ bool VROSceneRendererOpenXR::createSwapchains() {
         scInfo.mipCount    = 1;
 
         XR_RETURN_FALSE(xrCreateSwapchain(_session, &scInfo, &sc.handle));
+        ++sLiveEyeSwapchains;
 
         // Enumerate swapchain images (GL textures)
         uint32_t imgCount = 0;
@@ -1086,6 +1093,7 @@ bool VROSceneRendererOpenXR::createSwapchains() {
 
         ALOGV("Eye %u: swapchain %ux%u  %u images", eye, sc.width, sc.height, imgCount);
     }
+    ALOGI("OpenXR eye swapchains: live=%d (session created)", sLiveEyeSwapchains.load());
 
     // Initialise fixed foveation once swapchains exist. Non-fatal on failure:
     // a runtime without FB_foveation simply renders unfoveated.
@@ -1688,12 +1696,19 @@ void VROSceneRendererOpenXR::pushARTrackingState() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 void VROSceneRendererOpenXR::destroySwapchains() {
+    int destroyed = 0;
     for (auto &sc : _swapchains) {
         if (sc.handle != XR_NULL_HANDLE) {
             xrDestroySwapchain(sc.handle);
             sc.handle = XR_NULL_HANDLE;
+            --sLiveEyeSwapchains;
+            ++destroyed;
         }
         sc.images.clear();
+    }
+    if (destroyed > 0) {
+        ALOGI("OpenXR eye swapchains: live=%d (session destroyed %d)",
+              sLiveEyeSwapchains.load(), destroyed);
     }
 }
 

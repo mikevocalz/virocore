@@ -1,6 +1,9 @@
 #include "VROOpenXRPanelCompositor.h"
 
+#include <android/log.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <utility>
 
@@ -96,6 +99,15 @@ void VROOpenXRPanelCompositor::present(Panel &panel, VROOpenXRPanelPresentation 
     }
 }
 
+namespace {
+
+// Panel swapchains alive across every compositor in the process. Logged on
+// each create and destroy (never per frame) so a count that does not return
+// to its baseline after a reload or background cycle shows a leak.
+std::atomic<int> sLivePanelSwapchains{0};
+
+} // namespace
+
 bool VROOpenXRPanelCompositor::createSwapchain(Panel &panel) {
     XrSwapchainCreateInfo info = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
     info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
@@ -109,6 +121,9 @@ bool VROOpenXRPanelCompositor::createSwapchain(Panel &panel) {
     info.mipCount = 1;
     if (XR_FAILED(xrCreateSwapchain(_session, &info, &panel.swapchain)))
         return false;
+    __android_log_print(ANDROID_LOG_INFO, "VRORendererOpenXR",
+                        "OpenXR panel swapchains: live=%d (created %ux%u)",
+                        ++sLivePanelSwapchains, info.width, info.height);
     uint32_t count = 0;
     if (XR_FAILED(xrEnumerateSwapchainImages(panel.swapchain, 0, &count, nullptr)) || count == 0) {
         destroySwapchain(panel);
@@ -137,6 +152,9 @@ void VROOpenXRPanelCompositor::destroySwapchain(Panel &panel) {
         finishPendingGpuWork();
         xrDestroySwapchain(panel.swapchain);
         panel.swapchain = XR_NULL_HANDLE;
+        __android_log_print(ANDROID_LOG_INFO, "VRORendererOpenXR",
+                            "OpenXR panel swapchains: live=%d (destroyed)",
+                            --sLivePanelSwapchains);
     }
     panel.images.clear();
     panel.imageState.reset();

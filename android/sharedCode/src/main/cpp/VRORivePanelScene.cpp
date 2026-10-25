@@ -77,6 +77,52 @@ rive::rcp<rive::RenderPath> makePanelShapePath(rive::Factory *factory, float w, 
     return factory->makeRenderPath(path, rive::FillRule::nonZero);
 }
 
+const char *interlockModeName(rive::gpu::InterlockMode mode) {
+    switch (mode) {
+        case rive::gpu::InterlockMode::rasterOrdering: return "rasterOrdering";
+        case rive::gpu::InterlockMode::atomics: return "atomics";
+        case rive::gpu::InterlockMode::clockwise: return "clockwise";
+        case rive::gpu::InterlockMode::clockwiseAtomic: return "clockwiseAtomic";
+        case rive::gpu::InterlockMode::depthStencil: return "depthStencil";
+    }
+    return "unknown";
+}
+
+const char *glString(GLenum name) {
+    const GLubyte *value = glGetString(name);
+    return value != nullptr ? reinterpret_cast<const char *>(value) : "?";
+}
+
+// Logs, once per render context, the mode rive-runtime will draw this panel
+// in. render() leaves msaaSampleCount, clockwiseFillOverride and
+// disableRasterOrdering at their defaults in every FrameDescriptor, so
+// RenderContext::selectInterlockMode (render_context.hpp:159) on a default
+// descriptor returns the mode beginFrame picks for every frame
+// (render_context.cpp:395 and :461). depthStencil chosen without MSAA is
+// drawn with 4x MSAA (render_context.cpp:462-478). On Android the GL backend
+// offers rasterOrdering only through EXT_shader_pixel_local_storage plus
+// framebuffer fetch, and not on PowerVR drivers 1.15 and later
+// (render_context_gl_impl.cpp:4025-4043, pls_impl_ext_native.cpp:88).
+void logRenderMode(rive::gpu::RenderContext *context, const void *scene) {
+    const rive::gpu::RenderContext::FrameDescriptor frame;
+    const rive::gpu::InterlockMode mode = context->selectInterlockMode(frame);
+    const int msaa = mode == rive::gpu::InterlockMode::depthStencil ? 4 : 0;
+    const rive::gpu::PlatformFeatures &features = context->platformFeatures();
+    const GLCapabilities &caps =
+        context->static_impl_cast<rive::gpu::RenderContextGLImpl>()->capabilities();
+    __android_log_print(
+        ANDROID_LOG_INFO, RIVE_PANEL_LOG_TAG,
+        "render mode scene=%p interlock=%s msaa=%d "
+        "supports=rasterOrdering:%d,atomics:%d,clockwise:%d,clockwiseAtomic:%d "
+        "ext=pls:%d,pls2:%d,fbfetchEXT:%d,fbfetchARM:%d "
+        "GL_RENDERER=\"%s\" GL_VERSION=\"%s\"",
+        scene, interlockModeName(mode), msaa, features.supportsRasterOrderingMode ? 1 : 0,
+        features.supportsAtomicMode ? 1 : 0, features.supportsClockwiseMode ? 1 : 0,
+        features.supportsClockwiseAtomicMode ? 1 : 0, caps.EXT_shader_pixel_local_storage ? 1 : 0,
+        caps.EXT_shader_pixel_local_storage2 ? 1 : 0, caps.EXT_shader_framebuffer_fetch ? 1 : 0,
+        caps.ARM_shader_framebuffer_fetch ? 1 : 0, glString(GL_RENDERER), glString(GL_VERSION));
+}
+
 } // namespace
 
 struct VRORivePanelScene::State {
@@ -107,6 +153,7 @@ std::unique_ptr<VRORivePanelScene> VRORivePanelScene::create(std::string *error)
                  "extensions missing)";
         return nullptr;
     }
+    logRenderMode(state->context.get(), state.get());
     return std::unique_ptr<VRORivePanelScene>(new VRORivePanelScene(std::move(state)));
 }
 

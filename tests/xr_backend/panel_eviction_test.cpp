@@ -6,7 +6,10 @@
 
 #include "VROOpenXRPanelCompositor.h"
 
+#include <android/log.h>
+
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -21,6 +24,25 @@ int gFinishCalls = 0;
 
 void glFlush() {}
 void glFinish() { ++gFinishCalls; }
+
+// The compositor logs its live panel swapchain count on each create and
+// destroy. Keep the last value so main() can check it returns to 0.
+namespace {
+int gLoggedLivePanelSwapchains = -1;
+} // namespace
+
+int __android_log_print(int, const char *, const char *fmt, ...) {
+    char line[256];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+    int live = 0;
+    if (std::sscanf(line, "OpenXR panel swapchains: live=%d", &live) == 1) {
+        gLoggedLivePanelSwapchains = live;
+    }
+    return 0;
+}
 
 extern "C" {
 XRAPI_ATTR XrResult XRAPI_CALL xrCreateSwapchain(XrSession, const XrSwapchainCreateInfo *,
@@ -256,6 +278,8 @@ int main() {
     testBudgetEviction();
     testHiddenAndPendingPanels();
     testValidatePanel();
+    // Every compositor above has been destroyed, so every swapchain it made.
+    expect(gLoggedLivePanelSwapchains == 0, "logged panel swapchain count returns to 0");
     if (gFailures != 0) {
         std::fprintf(stderr, "panel eviction: %d of %d checks failed\n", gFailures, gChecks);
         return 1;

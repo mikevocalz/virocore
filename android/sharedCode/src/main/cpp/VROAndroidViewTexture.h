@@ -68,13 +68,23 @@ class VRODriverOpenGL;
  channels for premultiplied input. Radius 0, the default, leaves every texel
  unchanged.
  */
+/*
+ Which Java class owns the texture. Only used to name the live-count log
+ lines; both kinds behave the same.
+ */
+enum class VROAndroidViewTextureKind {
+    AndroidView,     // com.viro.core.AndroidViewTexture
+    ExternalSurface, // com.viro.core.ExternalSurfaceTexture
+};
+
 class VROAndroidViewTexture : public VROTexture {
 public:
     /*
      Constructs the VROAndroidViewTexture. After construction, init() must be
      asynchronously called on the rendering thread (from the UI thread).
      */
-    VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int width, int height);
+    VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int width, int height,
+                          VROAndroidViewTextureKind kind = VROAndroidViewTextureKind::AndroidView);
     ~VROAndroidViewTexture();
 
     /*
@@ -146,6 +156,8 @@ private:
     std::atomic<bool> _premultipliedAlpha;
 
     std::weak_ptr<VRODriverOpenGL> _driver;
+
+    const VROAndroidViewTextureKind _kind;
 
     bool createResolveResources(bool sRGBStorage);
     void resolve();

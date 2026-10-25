@@ -34,6 +34,7 @@
 #include "VROPanelGLStateGuard.h"
 #include "VROPanelShaderSources.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -54,6 +55,23 @@ constexpr GLfloat kResolveAnisotropy = 4.0f;
 // updateTexImage(); pruned from any thread when a texture is destroyed.
 std::mutex sRegistryMutex;
 std::unordered_map<GLuint, std::weak_ptr<VROTexture>> sRegistry;
+
+// Live instances per kind, logged when one is created or destroyed (never per
+// frame). Each instance owns one SurfaceTexture/Surface pair (the VideoSink
+// made in init() and destroyed in the destructor), so after a reload or a
+// background/foreground cycle the count should return to its earlier value.
+std::atomic<int> sLiveAndroidView{0};
+std::atomic<int> sLiveExternalSurface{0};
+
+std::atomic<int> &liveCount(VROAndroidViewTextureKind kind) {
+    return kind == VROAndroidViewTextureKind::ExternalSurface ? sLiveExternalSurface
+                                                              : sLiveAndroidView;
+}
+
+const char *kindName(VROAndroidViewTextureKind kind) {
+    return kind == VROAndroidViewTextureKind::ExternalSurface ? "ExternalSurfaceTexture"
+                                                              : "AndroidViewTexture";
+}
 
 GLuint compileShader(GLenum type, const std::string &source) {
     GLuint shader = glCreateShader(type);
@@ -116,7 +134,8 @@ Java_com_viro_core_internal_VideoSink_nativeOnFrameLatched(JNIEnv *env, jclass c
 
 } // extern "C"
 
-VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int width, int height):
+VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int width, int height,
+                                             VROAndroidViewTextureKind kind):
         // Materials sample the mipmapped GL_TEXTURE_2D copy, not the OES image,
         // so this is an ordinary 2D texture to the shader pipeline.
         VROTexture(VROTextureType::Texture2D, VROTextureInternalFormat::RGBA8, VROStereoMode::None),
@@ -133,13 +152,16 @@ VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int 
         _premultipliedUniform(-1),
         _cornerRadiusXPx(0.0f),
         _cornerRadiusYPx(0.0f),
-        _premultipliedAlpha(false) {
+        _premultipliedAlpha(false),
+        _kind(kind) {
 
     JNIEnv *env = VROPlatformGetJNIEnv();
     _jAndroidViewTexture = env->NewGlobalRef(jRenderableTexture);
     _jVideoSinkSurface = NULL;
     _height = height;
     _width = width;
+    const int live = ++liveCount(_kind);
+    pinfo("%s: live=%d (created %dx%d)", kindName(_kind), live, width, height);
 }
 
 VROAndroidViewTexture::~VROAndroidViewTexture() {
@@ -149,6 +171,8 @@ VROAndroidViewTexture::~VROAndroidViewTexture() {
     VROPlatformDestroyVideoSink(_textureId);
     _jAndroidViewTexture = NULL;
     _jVideoSinkSurface = NULL;
+    const int live = --liveCount(_kind);
+    pinfo("%s: live=%d (destroyed %dx%d)", kindName(_kind), live, _width, _height);
 
     {
         // Our own entry is already expired (no strong references remain). A
