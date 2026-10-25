@@ -48,9 +48,10 @@ namespace {
 struct __attribute__((visibility("hidden"))) PanelHost {
     std::weak_ptr<VROSceneRendererOpenXR> renderer;
     std::string id;
-    // Written once on the render thread before Java hears onNativeCreated,
-    // through the application queue; never reset, so Java threads read it
-    // without a lock afterwards. Calls on a disposed VRORivePanel are refused.
+    // Stored once on the render thread when the panel is created; read from
+    // any Java thread. Access only through panelOf() and std::atomic_store:
+    // Java may call in before that store, and those calls see null and are
+    // refused. Calls on a disposed VRORivePanel are refused too.
     std::shared_ptr<VRORivePanel> panel;
     // Application thread only after construction.
     jweak javaPanel = nullptr;
@@ -79,16 +80,57 @@ std::shared_ptr<PanelHost> hostFor(jlong ref) {
     return ref == 0 ? nullptr : *handle(ref);
 }
 
+std::shared_ptr<VRORivePanel> panelOf(const std::shared_ptr<PanelHost> &host) {
+    return host ? std::atomic_load(&host->panel) : nullptr;
+}
+
+// A VRO_REF handle to a texture until Java takes it. Deleted with the task
+// that carries it when the call is not made: the Java panel is gone, its weak
+// ref was cleared, or the queue dropped the task.
+class __attribute__((visibility("hidden"))) TextureHandle {
+public:
+    explicit TextureHandle(jlong ref) : _ref(ref) {}
+    ~TextureHandle() {
+        if (_ref != 0) VRO_REF_DELETE(VROTexture, _ref);
+    }
+    TextureHandle(const TextureHandle &) = delete;
+    TextureHandle &operator=(const TextureHandle &) = delete;
+    jlong get() const { return _ref; }
+    // Java owns the handle from here on.
+    void release() { _ref = 0; }
+
+private:
+    jlong _ref;
+};
+
+// A JNI global ref, deleted with the task that carries it whether or not the
+// task ran.
+class __attribute__((visibility("hidden"))) GlobalRef {
+public:
+    GlobalRef(JNIEnv *env, jobject object) : _ref(env->NewGlobalRef(object)) {}
+    ~GlobalRef() {
+        if (_ref != nullptr) VROPlatformGetJNIEnv()->DeleteGlobalRef(_ref);
+    }
+    GlobalRef(const GlobalRef &) = delete;
+    GlobalRef &operator=(const GlobalRef &) = delete;
+    jobject get() const { return _ref; }
+
+private:
+    jobject _ref;
+};
+
 // Application thread. Calls `method` on the Java panel if it is still alive.
+// False when the call was not made.
 template <typename... Args>
-void callJava(const std::shared_ptr<PanelHost> &host, const char *method, const char *signature,
+bool callJava(const std::shared_ptr<PanelHost> &host, const char *method, const char *signature,
               Args... args) {
-    if (host->javaPanel == nullptr) return;
+    if (host->javaPanel == nullptr) return false;
     JNIEnv *env = VROPlatformGetJNIEnv();
     jobject panel = env->NewLocalRef(host->javaPanel);
-    if (panel == nullptr) return;
+    if (panel == nullptr) return false;
     VROPlatformCallHostFunction(panel, method, signature, args...);
     env->DeleteLocalRef(panel);
+    return true;
 }
 
 void postCreateFailed(const std::shared_ptr<PanelHost> &host, int32_t code,
@@ -115,23 +157,21 @@ void onPresentation(const std::weak_ptr<PanelRegistry> &weakRegistry, const std:
 
     // The renderer builds the fallback on the first eviction, before this
     // runs. Java gets one handle to it and keeps it; later evictions reuse it.
-    jlong textureRef = 0;
+    auto texture = std::make_shared<TextureHandle>(0);
     if (presentation == VROOpenXRPanelPresentation::Evicted && !host->fallbackDelivered) {
         std::shared_ptr<VROTexture> fallback = renderer->getRiveCompositorPanelFallbackTexture(id);
         if (fallback) {
-            textureRef = VRO_REF_NEW(VROTexture, fallback);
+            texture = std::make_shared<TextureHandle>(VRO_REF_NEW(VROTexture, fallback));
             host->fallbackDelivered = true;
         }
     }
     const jint presentationCode = RiveCompositorPanelMapping::presentationCode(presentation);
     const jint reasonCode = RiveCompositorPanelMapping::evictionReasonCode(reason);
-    VROPlatformDispatchAsyncApplication([host, presentationCode, reasonCode, textureRef] {
-        if (host->javaPanel == nullptr) {
-            if (textureRef != 0) VRO_REF_DELETE(VROTexture, textureRef);
-            return;
+    VROPlatformDispatchAsyncApplication([host, presentationCode, reasonCode, texture] {
+        if (callJava(host, "onNativePresentation", "(IIJ)V", presentationCode, reasonCode,
+                     texture->get())) {
+            texture->release();
         }
-        callJava(host, "onNativePresentation", "(IIJ)V", presentationCode, reasonCode,
-                 textureRef);
     });
 }
 
@@ -275,7 +315,7 @@ VRO_METHOD(jlong, nativeCreate)(JNIEnv *env, jobject obj, jlong rendererRef, jst
                              "the .riv file is empty or larger than 64 MiB");
             return;
         }
-        host->panel = panel;
+        std::atomic_store(&host->panel, panel);
         registryFor(renderer)->hosts[desc.id] = host;
         VROPlatformDispatchAsyncApplication(
             [host] { callJava(host, "onNativeCreated", "()V"); });
@@ -300,7 +340,7 @@ VRO_METHOD(void, nativeDispose)(JNIEnv *env, jobject obj, jlong ref) {
             renderer->removeCompositorPanel(host->id);
             unregister(renderer, host->id);
         }
-        if (std::shared_ptr<VRORivePanel> panel = host->panel) {
+        if (std::shared_ptr<VRORivePanel> panel = panelOf(host)) {
             VROPlatformDispatchAsyncBackground([panel] { panel->dispose(); });
         }
     });
@@ -345,60 +385,59 @@ VRO_METHOD(void, nativeSetVisible)(JNIEnv *env, jobject obj, jlong ref, jboolean
 
 VRO_METHOD(jboolean, nativeSetNumber)(JNIEnv *env, jobject obj, jlong ref, jstring path,
                                       jfloat value) {
-    std::shared_ptr<PanelHost> host = hostFor(ref);
-    return host && host->panel && host->panel->setNumber(VRO_STRING_STL(path), value);
+    std::shared_ptr<VRORivePanel> panel = panelOf(hostFor(ref));
+    return panel && panel->setNumber(VRO_STRING_STL(path), value);
 }
 
 VRO_METHOD(jboolean, nativeSetBoolean)(JNIEnv *env, jobject obj, jlong ref, jstring path,
                                        jboolean value) {
-    std::shared_ptr<PanelHost> host = hostFor(ref);
-    return host && host->panel && host->panel->setBoolean(VRO_STRING_STL(path), value);
+    std::shared_ptr<VRORivePanel> panel = panelOf(hostFor(ref));
+    return panel && panel->setBoolean(VRO_STRING_STL(path), value);
 }
 
 VRO_METHOD(jboolean, nativeSetString)(JNIEnv *env, jobject obj, jlong ref, jstring path,
                                       jstring value) {
-    std::shared_ptr<PanelHost> host = hostFor(ref);
-    return host && host->panel &&
-           host->panel->setString(VRO_STRING_STL(path), VRO_STRING_STL(value));
+    std::shared_ptr<VRORivePanel> panel = panelOf(hostFor(ref));
+    return panel && panel->setString(VRO_STRING_STL(path), VRO_STRING_STL(value));
 }
 
 VRO_METHOD(jboolean, nativeFireTrigger)(JNIEnv *env, jobject obj, jlong ref, jstring path) {
-    std::shared_ptr<PanelHost> host = hostFor(ref);
-    return host && host->panel && host->panel->fireTrigger(VRO_STRING_STL(path));
+    std::shared_ptr<VRORivePanel> panel = panelOf(hostFor(ref));
+    return panel && panel->fireTrigger(VRO_STRING_STL(path));
 }
 
 // action: 0 down, 1 move, 2 up (RiveCompositorPanel.POINTER_*).
 VRO_METHOD(jboolean, nativePointer)(JNIEnv *env, jobject obj, jlong ref, jint action, jfloat xPx,
                                     jfloat yPx, jint pointerId) {
-    std::shared_ptr<PanelHost> host = hostFor(ref);
-    if (!host || !host->panel) return false;
+    std::shared_ptr<VRORivePanel> panel = panelOf(hostFor(ref));
+    if (!panel) return false;
     switch (action) {
-        case 0: return host->panel->pointerDown(xPx, yPx, pointerId);
-        case 1: return host->panel->pointerMove(xPx, yPx, pointerId);
-        case 2: return host->panel->pointerUp(xPx, yPx, pointerId);
+        case 0: return panel->pointerDown(xPx, yPx, pointerId);
+        case 1: return panel->pointerMove(xPx, yPx, pointerId);
+        case 2: return panel->pointerUp(xPx, yPx, pointerId);
         default: return false;
     }
 }
 
 VRO_METHOD(jboolean, nativeSetActive)(JNIEnv *env, jobject obj, jlong ref, jboolean active) {
-    std::shared_ptr<PanelHost> host = hostFor(ref);
-    return host && host->panel && host->panel->setActive(active);
+    std::shared_ptr<VRORivePanel> panel = panelOf(hostFor(ref));
+    return panel && panel->setActive(active);
 }
 
 // Answers on the application thread through
 // RiveCompositorPanel.CapabilitiesCallback.onNativeCapabilities.
 VRO_METHOD(void, nativeGetCapabilities)(JNIEnv *env, jclass clazz, jlong rendererRef,
                                         jobject jcallback) {
-    jobject callback = env->NewGlobalRef(jcallback);
+    // Deleted when the last task holding it goes, delivered or dropped.
+    auto callback = std::make_shared<GlobalRef>(env, jcallback);
     std::weak_ptr<VROSceneRendererOpenXR> weakRenderer = openXRRenderer(rendererRef);
     auto deliver = [callback](VROOpenXRCompositorPanelCapabilities capabilities) {
         VROPlatformDispatchAsyncApplication([callback, capabilities] {
-            VROPlatformCallHostFunction(callback, "onNativeCapabilities", "(ZZIZ)V",
+            VROPlatformCallHostFunction(callback->get(), "onNativeCapabilities", "(ZZIZ)V",
                                         (jboolean) capabilities.sessionReady,
                                         (jboolean) capabilities.cylinder,
                                         (jint) capabilities.maxPanels,
                                         (jboolean) capabilities.rive);
-            VROPlatformGetJNIEnv()->DeleteGlobalRef(callback);
         });
     };
     if (weakRenderer.expired()) {
