@@ -1172,8 +1172,9 @@ void VROSceneRendererOpenXR::logRuntimeDiagnostics() {
           yn(_foveationAvailable), yn(_runtimeInfo.displayRefreshRateAvailable));
 
     // ── Display refresh rates (XR_FB_display_refresh_rate) ────────────────────
-    // Read-only: enumerate + current. Never xrRequestDisplayRefreshRateFB — that
-    // would change device state, and this is diagnostics.
+    // Read-only: enumerate + current. This dump never calls
+    // xrRequestDisplayRefreshRateFB; the only request is the opt-in one in
+    // applyDisplayRefreshRate(), made after xrBeginSession.
     if (_runtimeInfo.displayRefreshRateAvailable) {
         PFN_xrEnumerateDisplayRefreshRatesFB pfnEnumRates = nullptr;
         PFN_xrGetDisplayRefreshRateFB        pfnGetRate   = nullptr;
@@ -1202,6 +1203,108 @@ void VROSceneRendererOpenXR::logRuntimeDiagnostics() {
         }
     } else {
         ALOGI("[XR-DIAG] display refresh rate: ext absent");
+    }
+}
+
+// ── Display refresh rate (XR_FB_display_refresh_rate) ─────────────────────────
+// The spec (OpenXR 1.1, XR_FB_display_refresh_rate) defines the request as a
+// hint: the runtime may keep another rate, it rejects any value outside
+// xrEnumerateDisplayRefreshRatesFB with XR_ERROR_DISPLAY_REFRESH_RATE_UNSUPPORTED_FB,
+// and the extension must be enabled before any of these calls. So the rate
+// comes from the enumeration, the result and the rate the runtime reports
+// afterwards are both logged, and nothing here can fail the session.
+void VROSceneRendererOpenXR::applyDisplayRefreshRate() {
+    const VRODisplayRefreshRateRequest &request = _renderQuality.displayRefreshRate;
+    if (request.mode == VRODisplayRefreshRateMode::NONE) {
+        return;  // default: the runtime keeps its rate, no OpenXR call
+    }
+    char requested[32];
+    if (request.mode == VRODisplayRefreshRateMode::HIGHEST) {
+        std::snprintf(requested, sizeof(requested), "highest");
+    } else {
+        std::snprintf(requested, sizeof(requested), "%.2f Hz", request.hz);
+    }
+
+    if (!_runtimeInfo.displayRefreshRateAvailable) {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+              "XR_FB_display_refresh_rate is not enabled; keeping the runtime rate",
+              requested);
+        return;
+    }
+
+    PFN_xrEnumerateDisplayRefreshRatesFB pfnEnumRates = nullptr;
+    PFN_xrGetDisplayRefreshRateFB        pfnGetRate   = nullptr;
+    PFN_xrRequestDisplayRefreshRateFB    pfnRequest   = nullptr;
+    xrGetInstanceProcAddr(_instance, "xrEnumerateDisplayRefreshRatesFB",
+                          (PFN_xrVoidFunction *)&pfnEnumRates);
+    xrGetInstanceProcAddr(_instance, "xrGetDisplayRefreshRateFB",
+                          (PFN_xrVoidFunction *)&pfnGetRate);
+    xrGetInstanceProcAddr(_instance, "xrRequestDisplayRefreshRateFB",
+                          (PFN_xrVoidFunction *)&pfnRequest);
+    if (!pfnEnumRates || !pfnGetRate || !pfnRequest) {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+              "extension functions not loaded; keeping the runtime rate", requested);
+        return;
+    }
+
+    std::vector<float> rates;
+    uint32_t rateCount = 0;
+    XrResult enumResult = pfnEnumRates(_session, 0, &rateCount, nullptr);
+    if (XR_SUCCEEDED(enumResult) && rateCount > 0) {
+        rates.resize(rateCount);
+        enumResult = pfnEnumRates(_session, rateCount, &rateCount, rates.data());
+        rates.resize(XR_SUCCEEDED(enumResult) ? rateCount : 0);
+    }
+    if (XR_FAILED(enumResult)) {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+              "xrEnumerateDisplayRefreshRatesFB result=%d; keeping the runtime rate",
+              requested, (int)enumResult);
+        return;
+    }
+
+    const VRODisplayRefreshRateChoice choice =
+        VROPickDisplayRefreshRate(request, rates.data(), rates.size());
+    switch (choice.outcome) {
+        case VRODisplayRefreshRateOutcome::INVALID_REQUEST:
+            ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+                  "not a positive finite rate; keeping the runtime rate", requested);
+            return;
+        case VRODisplayRefreshRateOutcome::NO_SUPPORTED_RATES:
+            ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+                  "the runtime enumerated no rates; keeping the runtime rate", requested);
+            return;
+        case VRODisplayRefreshRateOutcome::BELOW_ALL_RATES:
+            ALOGW("[XR-QUALITY] display refresh rate: %s is below every supported rate; "
+                  "using the lowest, %.2f Hz", requested, choice.rateHz);
+            break;
+        case VRODisplayRefreshRateOutcome::NO_REQUEST:
+        case VRODisplayRefreshRateOutcome::CHOSEN:
+            break;
+    }
+    if (!choice.shouldRequest()) {
+        return;
+    }
+
+    const XrResult requestResult = pfnRequest(_session, choice.rateHz);
+    float current = 0.0f;
+    const XrResult getResult = pfnGetRate(_session, &current);
+    char currentText[32];
+    if (XR_SUCCEEDED(getResult)) {
+        std::snprintf(currentText, sizeof(currentText), "%.2f Hz", current);
+    } else {
+        std::snprintf(currentText, sizeof(currentText), "unknown (result=%d)", (int)getResult);
+    }
+    // The current rate can still read the old value here: the switch is
+    // asynchronous and XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB
+    // reports when it lands.
+    if (XR_SUCCEEDED(requestResult)) {
+        ALOGI("[XR-QUALITY] display refresh rate: requested %s, chosen %.2f Hz, current %s, "
+              "xrRequestDisplayRefreshRateFB result=%d",
+              requested, choice.rateHz, currentText, (int)requestResult);
+    } else {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen %.2f Hz, current %s, "
+              "xrRequestDisplayRefreshRateFB result=%d; keeping the runtime rate",
+              requested, choice.rateHz, currentText, (int)requestResult);
     }
 }
 
@@ -1932,6 +2035,13 @@ void VROSceneRendererOpenXR::pollEvents() {
                 ALOGV("Boundary visibility changed: %d", (int)_boundaryVisibility);
                 break;
             }
+            case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB: {
+                auto *rateEvent =
+                    reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB *>(&event);
+                ALOGI("[XR-QUALITY] display refresh rate changed: %.2f Hz -> %.2f Hz",
+                      rateEvent->fromDisplayRefreshRate, rateEvent->toDisplayRefreshRate);
+                break;
+            }
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB:
@@ -1969,10 +2079,19 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
             XrSessionBeginInfo beginInfo = { XR_TYPE_SESSION_BEGIN_INFO };
             beginInfo.primaryViewConfigurationType =
                 XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            XR_CHECK(xrBeginSession(_session, &beginInfo));
+            const XrResult beginResult = xrBeginSession(_session, &beginInfo);
+            if (XR_FAILED(beginResult)) {
+                ALOGE("OpenXR call failed at %s:%d  result=%d  expr: %s",
+                      __FILE__, __LINE__, (int)beginResult, "xrBeginSession");
+            }
             _sessionRunning = true;
             resetFloorDiagnostic();   // a resumed session re-settles its tracking
             ALOGV("Session began");
+            // The runtime may reset the rate across a pause, so the request is
+            // repeated on every begin, not only the first.
+            if (XR_SUCCEEDED(beginResult)) {
+                applyDisplayRefreshRate();
+            }
             break;
         }
         case XR_SESSION_STATE_FOCUSED:

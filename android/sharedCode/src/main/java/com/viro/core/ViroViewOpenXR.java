@@ -550,8 +550,9 @@ public class ViroViewOpenXR extends ViroView {
     }
 
     /**
-     * Set the startup render quality: the eye-buffer scale and the foveation
-     * level the OpenXR session starts with. Overrides the manifest meta-data
+     * Set the startup render quality: the eye-buffer scale, the foveation
+     * level the OpenXR session starts with, and the optional display refresh
+     * rate request ({@link OpenXRDisplayRefreshRate}). Overrides the manifest meta-data
      * read by {@link OpenXRRenderQualityManifest}.
      *
      * <p>Startup-only. The eye swapchains are created once, when this view

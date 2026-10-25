@@ -161,7 +161,9 @@ VRO_METHOD(jlong, nativeCreateRendererOpenXR)(VRO_ARGS
                                               jboolean enableBloom,
                                               jfloat eyeBufferScale,
                                               jint foveationLevel,
-                                              jboolean foveationDynamic) {
+                                              jboolean foveationDynamic,
+                                              jint displayRefreshRateMode,
+                                              jfloat displayRefreshRateHz) {
     VROPlatformSetType(VROPlatformType::AndroidOpenXR);
     VROPlatformSetEnv(env, android_context, asset_mgr, platform_util);
 
@@ -184,6 +186,13 @@ VRO_METHOD(jlong, nativeCreateRendererOpenXR)(VRO_ARGS
         pwarn("Ignoring foveation level code %d (valid: 0..3); keeping LOW", (int) foveationLevel);
     }
     renderQuality.foveationDynamic = (bool) foveationDynamic;
+    // An unknown mode code keeps the default: no refresh-rate request.
+    if (!VRODisplayRefreshRateRequestFromCode((int) displayRefreshRateMode,
+                                              (float) displayRefreshRateHz,
+                                              &renderQuality.displayRefreshRate)) {
+        pwarn("Ignoring display refresh rate mode %d (valid: 0..2); making no request",
+              (int) displayRefreshRateMode);
+    }
 
     std::shared_ptr<VROSceneRenderer> renderer
             = std::make_shared<VROSceneRendererOpenXR>(config, gvrAudio, view, activity, env,

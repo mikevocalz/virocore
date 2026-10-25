@@ -417,6 +417,11 @@ private:
     // One-shot runtime facts dump (ALOGI, "[XR-DIAG]" prefix). Pure logging, no
     // state change. Called once after createSwapchains() succeeds.
     void logRuntimeDiagnostics();
+    // Opt-in XR_FB_display_refresh_rate request from _renderQuality. Called
+    // after each successful xrBeginSession. Returns at once, with no OpenXR
+    // call, when no rate was requested (the default). Never fails the session:
+    // every error is logged and the runtime keeps its rate.
+    void applyDisplayRefreshRate();
     bool initPassthrough();
     void initBoundaryVisibility();
     bool initHandTracking();     // XR_EXT_hand_tracking — no-op if extension unavailable

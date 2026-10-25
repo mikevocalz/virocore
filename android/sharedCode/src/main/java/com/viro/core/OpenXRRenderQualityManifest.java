@@ -24,7 +24,12 @@ import java.util.Locale;
  * <meta-data android:name="com.viro.openxr.eyeBufferScale"   android:value="1.5"/>
  * <meta-data android:name="com.viro.openxr.foveationLevel"   android:value="medium"/>
  * <meta-data android:name="com.viro.openxr.foveationDynamic" android:value="false"/>
+ * <meta-data android:name="com.viro.openxr.displayRefreshRate" android:value="highest"/>
  * }</pre>
+ *
+ * <p>{@code displayRefreshRate} is {@code highest} or a number of Hz (see
+ * {@link OpenXRDisplayRefreshRate}). Without it the renderer makes no refresh
+ * rate request.
  *
  * <p>The Viro Expo config plugin writes these from
  * {@code android.openxr} and validates them at prebuild. A key that is absent
@@ -39,6 +44,8 @@ public final class OpenXRRenderQualityManifest {
     public static final String KEY_FOVEATION_LEVEL = "com.viro.openxr.foveationLevel";
     /** Boolean. */
     public static final String KEY_FOVEATION_DYNAMIC = "com.viro.openxr.foveationDynamic";
+    /** String {@code highest}, or a positive number of Hz. */
+    public static final String KEY_DISPLAY_REFRESH_RATE = "com.viro.openxr.displayRefreshRate";
 
     private static final String TAG = "VRORendererOpenXR";
 
@@ -66,7 +73,8 @@ public final class OpenXRRenderQualityManifest {
         float scale = readScale(metaData.get(KEY_EYE_BUFFER_SCALE));
         OpenXRFoveationLevel level = readLevel(metaData.get(KEY_FOVEATION_LEVEL));
         boolean dynamic = readDynamic(metaData.get(KEY_FOVEATION_DYNAMIC));
-        return new OpenXRRenderQuality(scale, level, dynamic);
+        OpenXRDisplayRefreshRate rate = readRefreshRate(metaData.get(KEY_DISPLAY_REFRESH_RATE));
+        return new OpenXRRenderQuality(scale, level, dynamic, rate);
     }
 
     @Nullable
@@ -138,6 +146,33 @@ public final class OpenXRRenderQualityManifest {
         }
         warnIgnored(KEY_FOVEATION_DYNAMIC, raw, "true or false");
         return OpenXRRenderQuality.DEFAULT_FOVEATION_DYNAMIC;
+    }
+
+    // aapt stores "highest" as String, "120" as Integer and "72.5" as Float.
+    @Nullable
+    private static OpenXRDisplayRefreshRate readRefreshRate(@Nullable Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        float hz = Float.NaN;
+        if (raw instanceof Number) {
+            hz = ((Number) raw).floatValue();
+        } else if (raw instanceof String) {
+            String value = ((String) raw).trim();
+            if (value.equalsIgnoreCase("highest")) {
+                return OpenXRDisplayRefreshRate.HIGHEST;
+            }
+            try {
+                hz = Float.parseFloat(value);
+            } catch (NumberFormatException ignored) {
+                // falls through to the warning below
+            }
+        }
+        if (Float.isNaN(hz) || Float.isInfinite(hz) || hz <= 0.0f) {
+            warnIgnored(KEY_DISPLAY_REFRESH_RATE, raw, "highest or a positive number of Hz");
+            return null;
+        }
+        return OpenXRDisplayRefreshRate.atMostHz(hz);
     }
 
     private static void warnIgnored(String key, Object raw, String expected) {

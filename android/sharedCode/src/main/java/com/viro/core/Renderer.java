@@ -141,7 +141,9 @@ public class Renderer {
         mNativeRef = nativeCreateRendererOpenXR(appClassLoader, context, view, activity, assets, platformUtil,
                 config.isShadowsEnabled(), config.isHDREnabled(), config.isPBREnabled(), config.isBloomEnabled(),
                 renderQuality.getEyeBufferScale(), renderQuality.getFoveationLevel().getCode(),
-                renderQuality.isFoveationDynamic());
+                renderQuality.isFoveationDynamic(),
+                renderQuality.getDisplayRefreshRateModeCode(),
+                renderQuality.getDisplayRefreshRate() == null ? 0.0f : renderQuality.getDisplayRefreshRate().getHz());
     }
 
     public void recenterTracking() { nativeRecenterTracking(mNativeRef); }
@@ -484,7 +486,8 @@ public class Renderer {
     private native long nativeCreateRendererOpenXR(ClassLoader appClassLoader, Context context,
                                                    ViroViewOpenXR view, Activity activity, AssetManager assets, PlatformUtil platformUtil,
                                                    boolean enableShadows, boolean enableHDR, boolean enablePBR, boolean enableBloom,
-                                                   float eyeBufferScale, int foveationLevel, boolean foveationDynamic);
+                                                   float eyeBufferScale, int foveationLevel, boolean foveationDynamic,
+                                                   int displayRefreshRateMode, float displayRefreshRateHz);
     private native long nativeCreateRendererSceneView(ClassLoader appClassLoader, Context context,
                                                       ViroViewScene view, AssetManager assets, PlatformUtil platformUtil,
                                                       boolean enableShadows, boolean enableHDR, boolean enablePBR, boolean enableBloom);
