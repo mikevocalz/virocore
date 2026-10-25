@@ -29,7 +29,27 @@ An evicted panel's producer is not called. Invalidations still mark it dirty, so
 
 `VROOpenXRPanelCompositor::setPresentationListener` runs inside `appendLayers`, before `xrEndFrame`, while the layer list points into the compositor. It must not add, remove or update panels. `VROSceneRendererOpenXR::setCompositorPanelPresentationListener` is the host-facing version: it is called at the start of the next frame, where the host may change panels and the scene graph.
 
-For Rive panels (`addRiveCompositorPanel`) the renderer builds `VROOpenXRRivePanelFallback` on first eviction. It is a mipmapped `VROTexture` filled from the same Rive ring with the same copy program and coverage function as the finish pass, refreshed on every published Rive frame while the panel is evicted. `getRiveCompositorPanelFallbackTexture(id)` returns it. Still missing: the host side that puts it on a quad of the panel's pose and size with a `PremultiplyAlpha` material, shows that quad while the panel is `Evicted` and hides it on `Compositor`. Viro's scene graph belongs to the host (Expo Modules 2.0, viro-external PR #58), so the renderer does not create that node itself. No Java binding exposes the texture yet.
+For Rive panels (`addRiveCompositorPanel`) the renderer builds `VROOpenXRRivePanelFallback` on first eviction. It is a mipmapped `VROTexture` filled from the same Rive ring with the same copy program and coverage function as the finish pass, refreshed on every published Rive frame while the panel is evicted. `getRiveCompositorPanelFallbackTexture(id)` returns it. Viro's scene graph belongs to the host, so the renderer does not create the fallback node itself. The Java API below hands the texture to the host, and viro-external `@viro-external/spatial-panels` puts it on a quad (or cylinder arc) of the panel's pose and size with a `PremultiplyAlpha` material, shows it while the panel is `Evicted` and hides it on `Compositor`.
+
+## Java API
+
+`com.viro.core.RiveCompositorPanel` (JNI in `android/sharedCode/src/main/cpp/jni/RiveCompositorPanel_JNI.cpp`):
+
+| Call | Thread it runs on |
+| --- | --- |
+| `getCapabilities(view, callback)`: session ready, cylinder, panel budget, Rive linked | XR render thread; answer on the main thread |
+| `create(view, config, listener, callback)`: `addRiveCompositorPanel`, then artboard, state machine and `.riv` | XR render thread; `onCreated` or `onFailed(CreateError, message)` on the main thread |
+| `setPose`, `setVisible`, `dispose` | Posted to the XR render thread |
+| `setNumber`, `setBoolean`, `setString`, `fireTrigger`, `pointer`, `setActive` | Queued to the Rive worker from the calling thread |
+| `Listener.onPresentationChanged`, `Listener.onStatus` | Main thread |
+
+Render-thread work waits while the render loop is paused. The renderer keeps one host presentation listener, so the JNI layer keeps a per-renderer registry of panels (render thread only) and dispatches by id.
+
+Fallback texture: on the first `Evicted` change the JNI layer wraps the renderer's fallback in one `com.viro.core.Texture` and Java caches it (`getFallbackTexture()`); later evictions reuse it. That texture holds a reference to the `VRORivePanel`, so the host disposes it after `dispose()`.
+
+Teardown: `dispose()` posts `removeCompositorPanel(id)` (swapchain first, then the finish pass), then `VRORivePanel::dispose()` on a background thread so joining the worker does not stall a frame. The ring and the shared context therefore still go after the swapchain. The Java object is held through a weak global ref that only the main thread reads and deletes, so callbacks queued after `dispose()` find it gone. A session teardown removes the layers without a Java callback.
+
+JNI integer codes are in `RiveCompositorPanelMapping.h`; `scripts/test-compositor-panel-mapping.sh` checks them against the Java enum order.
 
 ## Rive finish pass, the first producer
 
@@ -58,10 +78,12 @@ The renderer has no automatic dirty notification from the eventual React root. D
 ## Integration checklist
 
 - [ ] Runtime-gated Android Surface panel creation (only `xrDestroySwapchain` on those swapchains).
-- [ ] Expo Modules 2.0 Android SharedObject host, JNI render-queue ownership, RN root to virtual display.
+- [x] JNI render-queue ownership and a Java API for Rive compositor panels (`RiveCompositorPanel`, above). Release AAR builds, 16KB alignment passes, mapping host test passes; not run on a headset.
+- [x] Expo Modules 2.0 Android SharedObject host for Rive panels: viro-external `@viro-external/spatial-panels`. Kotlin compiled with kotlinc only; no app build, no headset.
+- [ ] RN root to virtual display (Android Surface swapchain kind).
 - [ ] Controller/hand ray to quad/cylinder pixel coordinates, reliable input capture and release.
 - [x] Native eviction reporting: per-panel presentation with reason (layer budget, `XR_ERROR_LAYER_LIMIT_EXCEEDED` cap), forwarded to the host at the next frame. Host-tested against a fake runtime (`scripts/test-openxr-panel-eviction.sh`, 30 checks, in the CI workflow); not yet run on a headset.
-- [ ] Reliable `scene` fallback: the Rive fallback texture exists and is kept current while evicted, but no host binds it to a quad yet (see above), and nothing covers non-Rive producers. Depth testing when supported is not started.
+- [ ] Reliable `scene` fallback. Done in source for Rive panels: the renderer keeps the fallback texture current while evicted, the Java API hands it to the host, and `@viro-external/spatial-panels` binds it to a `PremultiplyAlpha` quad or arc and toggles it on presentation changes (node tests with a fake native module). Not done: any device run (orientation, pose agreement with the layer, no visible change on swap), non-Rive producers, depth testing when supported.
 - [x] First real producer: the Rive finish pass, with the shared coverage function and the sRGB/premultiplied conversion above. Compiles in the arm64-v8a release AAR; not yet run on a headset.
 - [ ] Meta system windows and PICO WindowContainers validated separately in shared-space mode.
 - [ ] Device-verified lifecycle, sRGB, alpha, passthrough ordering, geometry and performance on Quest 3 and PICO 4 Ultra. For the Rive panel: the mid-grey and 50 % alpha swatch gate with no corner halo on both swapchain formats, upright orientation, cylinder corners at grazing angles, EGL context sharing accepted by both runtimes, zero producer calls over 10 s with a settled state machine, and an eviction that swaps to the fallback quad with no visible change.
