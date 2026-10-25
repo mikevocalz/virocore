@@ -423,6 +423,12 @@ private:
     // Rive compositor panels by id: frame-to-invalidation link and fallback
     // texture. Render thread only.
     std::map<std::string, std::shared_ptr<VRORiveCompositorLink>> _riveLinks;
+    // Every texture-ring Rive panel created on _eglContext, so
+    // destroyEGLContext() can dispose the ones still alive (held by a host or
+    // a fallback texture) before eglTerminate invalidates their shared
+    // contexts. Written on the render thread; read in destroyEGLContext()
+    // after that thread has been joined.
+    std::vector<std::weak_ptr<VRORivePanel>> _ringPanels;
     // Held by shared_ptr so tasks queued for the next frame can skip the
     // call once this renderer is gone (they capture a weak_ptr).
     std::shared_ptr<VROOpenXRPanelPresentationListener> _hostPresentationListener;

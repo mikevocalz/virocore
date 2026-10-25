@@ -1750,6 +1750,14 @@ void VROSceneRendererOpenXR::destroySession() {
 }
 
 void VROSceneRendererOpenXR::destroyEGLContext() {
+    // Each panel's worker owns a context that shares _eglContext's objects on
+    // _eglDisplay. dispose() returns once the worker has deleted its ring and
+    // destroyed that context, which eglTerminate would otherwise pull out
+    // from under it.
+    for (const std::weak_ptr<VRORivePanel> &weak : _ringPanels) {
+        if (std::shared_ptr<VRORivePanel> panel = weak.lock()) panel->dispose();
+    }
+    _ringPanels.clear();
     if (_eglDisplay != EGL_NO_DISPLAY) {
         eglMakeCurrent(_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (_eglSurface  != EGL_NO_SURFACE) eglDestroySurface(_eglDisplay, _eglSurface);
@@ -2007,6 +2015,12 @@ VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
         _eglDisplay, _eglContext, (int) desc.widthPixels, (int) desc.heightPixels, options,
         std::move(listener), onFrame);
     if (!panel) return VROOpenXRPanelError::ProducerUnavailable;
+    _ringPanels.erase(std::remove_if(_ringPanels.begin(), _ringPanels.end(),
+                                     [](const std::weak_ptr<VRORivePanel> &weak) {
+                                         return weak.expired();
+                                     }),
+                      _ringPanels.end());
+    _ringPanels.push_back(panel);
 
     std::string error;
     std::shared_ptr<VROOpenXRRivePanelProducer> producer =
