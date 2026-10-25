@@ -147,6 +147,20 @@ VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
     if (_session == XR_NULL_HANDLE) return VROOpenXRPanelError::SessionUnavailable;
     if (desc.id.empty()) return VROOpenXRPanelError::EmptyId;
     if (!producer) return VROOpenXRPanelError::MissingProducer;
+    const VROOpenXRPanelError invalid = validatePanel(desc);
+    if (invalid != VROOpenXRPanelError::None) return invalid;
+
+    Panel panel;
+    panel.desc = desc;
+    panel.producer = std::move(producer);
+    if (!createSwapchain(panel)) return VROOpenXRPanelError::SwapchainFailed;
+    _panels.push_back(std::move(panel));
+    return VROOpenXRPanelError::None;
+}
+
+VROOpenXRPanelError VROOpenXRPanelCompositor::validatePanel(const VROOpenXRPanelDesc &desc) const {
+    if (_session == XR_NULL_HANDLE) return VROOpenXRPanelError::SessionUnavailable;
+    if (desc.id.empty()) return VROOpenXRPanelError::EmptyId;
     if (find(desc.id)) return VROOpenXRPanelError::DuplicateId;
     if (_panels.size() >= _maxLayers) return VROOpenXRPanelError::LayerBudgetExceeded;
     if (!validPose(desc.pose)) return VROOpenXRPanelError::InvalidPose;
@@ -163,12 +177,6 @@ VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
         if (desc.widthMeters / desc.radiusMeters >= kFullCircle)
             return VROOpenXRPanelError::InvalidCylinderAngle;
     }
-
-    Panel panel;
-    panel.desc = desc;
-    panel.producer = std::move(producer);
-    if (!createSwapchain(panel)) return VROOpenXRPanelError::SwapchainFailed;
-    _panels.push_back(std::move(panel));
     return VROOpenXRPanelError::None;
 }
 

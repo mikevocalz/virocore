@@ -6,6 +6,7 @@
 
 #include "VROOpenXRPanelCompositor.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -195,11 +196,66 @@ void testHiddenAndPendingPanels() {
            "fast back on the compositor");
 }
 
+// validatePanel answers what addPanel would, without a producer and without
+// allocating a swapchain, so a caller can refuse a bad desc before building
+// one (addRiveCompositorPanel starts a Rive worker and a texture ring).
+void testValidatePanel() {
+    VROOpenXRPanelCompositor compositor(fakeSession(), GL_RGBA8, 2, false);
+    auto ok = [](GLuint, uint32_t, uint32_t) { return true; };
+    const uintptr_t handles = gNextHandle;
+    expect(compositor.validatePanel(quad("v")) == VROOpenXRPanelError::None, "valid desc");
+    expect(gNextHandle == handles, "validation allocates no swapchain");
+
+    VROOpenXRPanelDesc desc = quad("v");
+    desc.widthPixels = 15;
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::InvalidPixelSize, "15 px wide");
+    desc = quad("v");
+    desc.heightPixels = 4097;
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::InvalidPixelSize, "4097 px high");
+    desc = quad("v");
+    desc.widthPixels = 16;
+    desc.heightPixels = 4096;
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::None, "16 x 4096 px");
+    desc = quad("v");
+    desc.widthMeters = std::nanf("");
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::InvalidDimensions, "NaN width");
+    desc = quad("v");
+    desc.heightMeters = INFINITY;
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::InvalidDimensions,
+           "infinite height");
+    desc = quad("v");
+    desc.pose.orientation = {0, 0, 0, 0};
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::InvalidPose, "zero quaternion");
+    desc = quad("v");
+    desc.shape = VROOpenXRPanelShape::Cylinder;
+    expect(compositor.validatePanel(desc) == VROOpenXRPanelError::CylinderUnavailable,
+           "cylinder without the extension");
+    expect(compositor.validatePanel(quad("")) == VROOpenXRPanelError::EmptyId, "empty id");
+
+    expect(compositor.addPanel(quad("a"), ok) == VROOpenXRPanelError::None, "add a");
+    expect(compositor.validatePanel(quad("a")) == VROOpenXRPanelError::DuplicateId, "duplicate id");
+    expect(compositor.addPanel(quad("b"), ok) == VROOpenXRPanelError::None, "add b");
+    expect(compositor.validatePanel(quad("c")) == VROOpenXRPanelError::LayerBudgetExceeded,
+           "budget full");
+
+    // addPanel reports the same codes.
+    desc = quad("d");
+    desc.widthPixels = 8;
+    expect(compositor.addPanel(desc, ok) == VROOpenXRPanelError::LayerBudgetExceeded,
+           "addPanel checks the budget first, as before");
+    compositor.removePanel("b");
+    expect(compositor.addPanel(desc, ok) == VROOpenXRPanelError::InvalidPixelSize,
+           "addPanel refuses 8 px");
+    expect(compositor.addPanel(quad("e"), nullptr) == VROOpenXRPanelError::MissingProducer,
+           "addPanel still needs a producer");
+}
+
 } // namespace
 
 int main() {
     testBudgetEviction();
     testHiddenAndPendingPanels();
+    testValidatePanel();
     if (gFailures != 0) {
         std::fprintf(stderr, "panel eviction: %d of %d checks failed\n", gFailures, gChecks);
         return 1;

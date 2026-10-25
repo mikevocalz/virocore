@@ -111,6 +111,10 @@ public:
     // destruction at session startup/teardown after the render loop is stopped.
     VROOpenXRPanelError addPanel(const VROOpenXRPanelDesc &desc,
                                   VROOpenXRPanelProducer producer);
+    // What addPanel(desc, producer) would return for a producer, short of
+    // allocating the swapchain. Lets a caller refuse a bad desc before it
+    // builds a costly producer.
+    VROOpenXRPanelError validatePanel(const VROOpenXRPanelDesc &desc) const;
     // Call when the producer has new pixels; pose changes need no redraw.
     bool invalidatePanelContent(const std::string &id);
     bool updatePanelPose(const std::string &id, const XrPosef &pose);

@@ -14,6 +14,7 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -1962,6 +1963,14 @@ VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
     }
     if (outPanel == nullptr) return VROOpenXRPanelError::MissingProducer;
     if (!VRORivePanel::isAvailable()) return VROOpenXRPanelError::ProducerUnavailable;
+    // Before the Rive worker, its EGL context and a ring of up to three
+    // 4096x4096 textures exist: addPanel would refuse the same desc after
+    // all of that was built.
+    const VROOpenXRPanelError invalid = _panelCompositor->validatePanel(desc);
+    if (invalid != VROOpenXRPanelError::None) return invalid;
+    if (!std::isfinite(cornerRadiusMeters) || cornerRadiusMeters < 0.0f) {
+        return VROOpenXRPanelError::InvalidDimensions;
+    }
 
     // The consumer rounds; Rive draws square (ADR 0001 "Corner ownership").
     const VROPanelCornerRadii radii = VROPanelCornerRadiiPx(
