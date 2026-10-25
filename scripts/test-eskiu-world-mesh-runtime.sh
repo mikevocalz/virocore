@@ -26,6 +26,7 @@ fi
   -I"$ROOT/ViroRenderer/extension" \
   "$ROOT/ViroRenderer/extension/VROEngineGeometryABI.cpp" \
   "$ROOT/ViroRenderer/extension/VROEngineWorldMeshABI.cpp" \
+  "$ROOT/ViroRenderer/extension/VROEngineGeometryBackend.cpp" \
   "$ROOT/ViroRenderer/extension/VROEngineBackendSelector.cpp" \
   "$ROOT/ViroRenderer/extension/VROEngineWorldMeshBackend.cpp" \
   "$ROOT/tests/eskiu/world_mesh_runtime_backend_test.cpp" \
