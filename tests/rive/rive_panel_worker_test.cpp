@@ -1,4 +1,5 @@
-// Host test for VRORivePanel's worker thread and dispose(). Builds the real
+// Host test for VRORivePanel's worker thread, dispose() and pointer
+// routing. Builds the real
 // VRORivePanel.cpp (VRO_HAS_RIVE_RUNTIME=1) and VRORivePanelGeometry.cpp
 // against link-time fakes of VRORivePanelEGL, VRORivePanelScene and
 // VRORivePanelRing defined below, so the command queue, the worker loop and
@@ -100,6 +101,9 @@ namespace {
 std::atomic<bool> gHasArtboard{true};
 std::mutex gPointerMutex;
 std::vector<VRORivePointerAction> gPointerActions;  // guarded by gPointerMutex
+// Counts view-model number writes; a test enqueues one to know when the
+// commands queued before it were applied.
+std::atomic<int> gNumberWrites{0};
 } // namespace
 
 struct VRORivePanelScene::State {};
@@ -121,7 +125,10 @@ bool VRORivePanelScene::selectStateMachine(const std::string &, std::string *) {
 bool VRORivePanelScene::hasFile() const { return true; }
 bool VRORivePanelScene::hasArtboard() const { return gHasArtboard.load(); }
 VRORiveRect VRORivePanelScene::artboardBounds() const { return VRORiveRect{0, 0, 64, 64}; }
-bool VRORivePanelScene::setNumber(const std::string &, float, std::string *) { return true; }
+bool VRORivePanelScene::setNumber(const std::string &, float, std::string *) {
+    ++gNumberWrites;
+    return true;
+}
 bool VRORivePanelScene::setBoolean(const std::string &, bool, std::string *) { return true; }
 bool VRORivePanelScene::setString(const std::string &, const std::string &, std::string *) {
     return true;
@@ -275,12 +282,54 @@ void testLastReferenceDroppedInListener() {
     });
 }
 
+std::vector<VRORivePointerAction> pointerActions() {
+    std::lock_guard<std::mutex> lock(gPointerMutex);
+    return gPointerActions;
+}
+
+// Waits until every command queued so far has been applied.
+bool drainCommands(VRORivePanel &panel) {
+    const int target = gNumberWrites.load() + 1;
+    if (!panel.setNumber("marker", 1.0f)) return false;
+    return waitFor([&] { return gNumberWrites.load() >= target; });
+}
+
+// A pointer up that arrives while no artboard is loaded must still release
+// the router's capture, or the next press on that pointer is routed as a
+// move into the new artboard.
+void testPointerUpWithoutArtboard() {
+    runWithWatchdog("pointer up without an artboard", [] {
+        {
+            std::lock_guard<std::mutex> lock(gPointerMutex);
+            gPointerActions.clear();
+        }
+        gHasArtboard.store(true);
+        std::shared_ptr<VRORivePanel> panel = VRORivePanel::createTextureRing(
+            fakeDisplay(), fakeContext(), 64, 64, VRORivePanelOptions());
+        expect(panel->pointerDown(32.0f, 32.0f, 7), "down queued");
+        expect(drainCommands(*panel), "down applied");
+        gHasArtboard.store(false);
+        expect(panel->pointerUp(32.0f, 32.0f, 7), "up queued");
+        expect(drainCommands(*panel), "up applied");
+        expect(pointerActions().size() == 1, "up without an artboard is not sent to rive");
+        gHasArtboard.store(true);
+        expect(panel->pointerDown(32.0f, 32.0f, 7), "second down queued");
+        expect(drainCommands(*panel), "second down applied");
+        const std::vector<VRORivePointerAction> actions = pointerActions();
+        expect(actions.size() == 2 && actions[0] == VRORivePointerAction::Down &&
+                   actions[1] == VRORivePointerAction::Down,
+               "the press after the released up is a fresh down");
+        panel->dispose();
+    });
+}
+
 } // namespace
 
 int main() {
     testDisposeFromListenerWhileJoined();
     testDisposeFromListenerAlone();
     testLastReferenceDroppedInListener();
+    testPointerUpWithoutArtboard();
     if (gFailures != 0) {
         std::fprintf(stderr, "rive panel worker: %d of %d checks failed\n", gFailures, gChecks);
         return 1;

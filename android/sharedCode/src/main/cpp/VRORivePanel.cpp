@@ -461,7 +461,8 @@ void VRORivePanel::Impl::apply(CmdTrigger &cmd) {
 }
 
 void VRORivePanel::Impl::apply(CmdPointer &cmd) {
-    if (scene == nullptr || !scene->hasArtboard()) return;
+    // Routed even with no artboard to send it to, so an up still releases a
+    // captured pointer and its next press starts fresh.
     // Hits follow the corner the consumer draws (coverage >= 0.5).
     float radiusX = 0.0f, radiusY = 0.0f;
     VRORivePanelHitRadii(options, &radiusX, &radiusY);
@@ -472,6 +473,7 @@ void VRORivePanel::Impl::apply(CmdPointer &cmd) {
                                                          radiusX, radiusY);
     const VRORivePointerAction action = router.route(cmd.phase, inside, cmd.id);
     if (action == VRORivePointerAction::Drop) return;
+    if (scene == nullptr || !scene->hasArtboard()) return;
     VRORiveAffine inverse;
     if (!VRORiveInvert(artboardToPanel(), &inverse)) return;
     float artboardX = 0.0f, artboardY = 0.0f;
