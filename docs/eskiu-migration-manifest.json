@@ -192,7 +192,7 @@
     }
   ],
   "requiredGates": [
-    "eskiu-v0.9.2-abi-smoke",
+    "eskiu-v0.14.0-abi-smoke",
     "platform-target-readiness",
     "official-viro-mcp-audit",
     "reactviro-find-native-bridge-map",
@@ -202,8 +202,8 @@
     "before-after-benchmark"
   ],
   "toolchain": {
-    "repository": "doranteseduardo/eskiu",
-    "version": "v0.9.2",
+    "repository": "eskiu-lang/eskiu",
+    "version": "v0.14.0",
     "compiler": "eskiuc",
     "sourceExtension": ".esk",
     "llvm": "21+",
@@ -251,7 +251,7 @@
     "gltfCppContractAdapter": "landed"
   },
   "gateStatus": {
-    "eskiu-v0.9.2-abi-smoke": "green",
+    "eskiu-v0.14.0-abi-smoke": "green-local-macos-arm64-ci-pending",
     "platform-target-readiness": "green-for-build-probes",
     "official-viro-mcp-audit": "public-api-audit-done-native-platform-mcp-not-connected-in-session",
     "reactviro-find-native-bridge-map": "required-per-production-swap",

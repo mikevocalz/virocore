@@ -20,6 +20,33 @@ Release used for the initial integration:
 
 The pinned release asset hashes are stored in `tools/eskiu/toolchain.json`.
 
+## Toolchain update: v0.14.0 (2026-10-25)
+
+The upstream repository moved to `eskiu-lang/eskiu` (the old
+`doranteseduardo/eskiu` URLs redirect). Releases v0.9.2 through v0.12 and
+their tags are gone; v0.13.0 is described upstream as the first public
+release, and v0.13.0 and v0.14.0 are the only published versions. The old
+v0.9.2 asset URL returns 404.
+
+Current pin:
+- tag: `v0.14.0`
+- tag object: `8d26e5978851ca61e44c323d40755e7adb6f168e`
+- release commit: `61f138468ee0d49e31289b9a8cdba3852c3a42e1`
+- published: 2026-10-23
+- compiler reports: `Eskiu 0.14.0 (LLVM 22.1.8)`
+- archive hashes: taken from the release `SHA256SUMS` and matched against
+  GitHub's asset digests
+
+The upstream changelog has no entries for 0.10 through 0.12 and no
+breaking-change section for 0.13 or 0.14, so compatibility was established
+by recompiling every `.esk` source and running the host test suites with
+0.14.0. All sources compiled unchanged. The patched WebAssembly build
+(`tools/eskiu/patch-eskiu-wasm.py`) was removed because the release
+compiler now registers the WebAssembly backend; see
+`ESKIU-WASM-ENABLEMENT.md`.
+
+The v0.9.2 facts below remain the record of the initial integration.
+
 ## Public ABI facts verified from Eskiu v0.9.2
 
 From `docs/dev/abi.md` and the compiler documentation:
@@ -138,7 +165,7 @@ The public Eskiu repository is sufficient to establish the language/toolchain/C-
 
 ## What is proven in this fork
 
-The `Eskiu ABI probe` workflow proves against pinned v0.9.2:
+The `Eskiu ABI probe` workflow proves against the pinned toolchain (v0.9.2 at the audit date, v0.14.0 since 2026-10-25):
 
 1. the release binary downloads and matches the pinned checksum;
 2. `eskiuc` runs;
