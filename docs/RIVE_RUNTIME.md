@@ -103,10 +103,11 @@ different defines would disagree with the archives about class layout. Any Rive 
 added later must be listed in `viro_rive_sources()`.
 
 Check on the AAR (`llvm-nm` from the NDK). `grep -i rive` alone also matches ViroCore's
-own `Driver` and `derive` symbols, so they are filtered out:
+own `Driver` and `derive` symbols and the exported `VRORivePanel` API, so they are
+filtered out:
 
 ```sh
-nm -D jni/arm64-v8a/libviro_renderer.so | grep -i rive | grep -vi driver | grep -v derive
+nm -D jni/arm64-v8a/libviro_renderer.so | grep -i rive | grep -vi driver | grep -v derive | grep -v VRORivePanel
 # (no output)
 nm -D -C jni/arm64-v8a/libviro_renderer.so | grep -c 'rive::'          # 0
 nm -D jni/arm64-v8a/libviro_renderer.so | grep -cE ' (rive_)?hb_'     # 0

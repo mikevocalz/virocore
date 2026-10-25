@@ -120,7 +120,9 @@ VRORivePanelOptions sanitize(VRORivePanelOptions options) {
 
 } // namespace
 
-struct VRORivePanel::Impl {
+// Hidden: a nested class takes VRORivePanel's default visibility otherwise,
+// which would export every worker method.
+struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
     Impl(const VRORivePanelOptions &opts, int w, int h, StatusListener statusListener)
         : options(opts), listener(std::move(statusListener)), width(w), height(h) {
         frameInterval = std::chrono::duration_cast<Clock::duration>(
@@ -771,7 +773,7 @@ void VRORivePanel::dispose() {
 
 #else // Rive is not built for this ABI (armeabi-v7a, or VIRO_WITH_RIVE=OFF).
 
-struct VRORivePanel::Impl {};
+struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {};
 
 bool VRORivePanel::isAvailable() { return false; }
 
