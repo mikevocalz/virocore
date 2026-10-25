@@ -1,0 +1,45 @@
+#ifndef _RIVE_DATA_CONVERTER_HPP_
+#define _RIVE_DATA_CONVERTER_HPP_
+#include "rive/generated/data_bind/converters/data_converter_base.hpp"
+#include "rive/data_bind/data_values/data_value.hpp"
+#include "rive/data_bind/data_context.hpp"
+#include "rive/data_bind/data_bind_container.hpp"
+#include <stdio.h>
+namespace rive
+{
+class DataBind;
+class DataConverter : public DataConverterBase, public DataBindContainer
+{
+public:
+#ifdef WITH_RIVE_EDITOR
+  void editorPrepareForDestruction() override;
+#endif
+  ~DataConverter();
+  virtual DataValue* convert(DataValue* value, DataBind* dataBind)
+  {
+    return value;
+  };
+  virtual DataValue* reverseConvert(DataValue* value, DataBind* dataBind)
+  {
+    return value;
+  };
+  virtual DataType outputType() { return DataType::none; };
+  virtual void bindFromContext(DataContext* dataContext, DataBind* dataBind);
+  virtual void unbind();
+  StatusCode import(ImportStack& importStack) override;
+  void markConverterDirty();
+  virtual void update();
+  void copy(const DataConverter& object);
+  virtual bool advance(float elapsedTime);
+  // Whether advance can do work: false for converters whose advance is the
+  // base no-op, so a bind using one never needs advancing.
+  virtual bool mayAdvance() const { return false; }
+  void addDirtyDataBind(DataBind*) override;
+  virtual void reset() {};
+
+protected:
+  DataBind* m_parentDataBind = nullptr;
+};
+} // namespace rive
+
+#endif

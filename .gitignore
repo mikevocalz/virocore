@@ -130,3 +130,12 @@ wasm/MIGRATION.md
 # Python bytecode (scripts/test_verify_16kb_alignment.py, desktop/tools)
 __pycache__/
 *.pyc
+
+# rive-runtime: its build/ dirs are vendored scripts, not outputs. Build outputs from
+# scripts/build-rive-runtime.sh are re-ignored below.
+!/ViroRenderer/rive-runtime/build/
+!/ViroRenderer/rive-runtime/decoders/build/
+/android/rive/out/
+/android/rive/dependencies/
+/ViroRenderer/rive-runtime/build/dependencies/premake-core/
+/ViroRenderer/rive-runtime/build/dependencies/premake-ninja/
