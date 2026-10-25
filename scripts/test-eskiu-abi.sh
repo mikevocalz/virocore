@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ESKIUC="${ESKIUC:-eskiuc}"
 CXX="${CXX:-c++}"
-EXPECTED_VERSION="${ESKIU_EXPECTED_VERSION:-0.9.2}"
+EXPECTED_VERSION="${ESKIU_EXPECTED_VERSION:-0.14.0}"
 
 if ! command -v "$ESKIUC" >/dev/null 2>&1; then
   echo "error: eskiuc was not found. Install Eskiu v$EXPECTED_VERSION or set ESKIUC." >&2

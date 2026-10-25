@@ -7,7 +7,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 ESKIUC="${ESKIUC:-eskiuc}"
 CXX="${CXX:-c++}"
-EXPECTED_VERSION="${ESKIU_EXPECTED_VERSION:-0.9.2}"
+EXPECTED_VERSION="${ESKIU_EXPECTED_VERSION:-0.14.0}"
 
 version="$("$ESKIUC" --version 2>&1)"
 actual="$(printf '%s\n' "$version" | sed -nE 's/^Eskiu[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]].*)?$/\1/p' | head -n 1)"

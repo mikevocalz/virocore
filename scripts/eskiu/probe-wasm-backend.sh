@@ -6,8 +6,8 @@ LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-22/lib/cmake/llvm}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/viro-eskiu-wasm.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-ESKIU_REPO="${ESKIU_REPO:-https://github.com/doranteseduardo/eskiu.git}"
-ESKIU_COMMIT="${ESKIU_COMMIT:-95d7ece7ea8d72bc106a141bc031a1648ed8f2ac}"
+ESKIU_REPO="${ESKIU_REPO:-https://github.com/eskiu-lang/eskiu.git}"
+ESKIU_COMMIT="${ESKIU_COMMIT:-61f138468ee0d49e31289b9a8cdba3852c3a42e1}"
 
 git clone --quiet "$ESKIU_REPO" "$WORK/eskiu"
 git -C "$WORK/eskiu" checkout --quiet "$ESKIU_COMMIT"
