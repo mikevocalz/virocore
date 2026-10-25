@@ -25,7 +25,9 @@
 
 #include "VROSceneRenderer.h"
 #include "VROARHitTestResult.h"
+#include <map>
 #include <memory>
+#include <string>
 #include <thread>
 #include <atomic>
 #include <vector>
@@ -53,6 +55,8 @@ class VROARSessionOpenXR;
 class VROARScene;
 class VROSceneController;
 class VRONode;
+class VROTexture;
+struct VRORiveCompositorLink;
 
 namespace gvr { class AudioApi; }
 
@@ -151,6 +155,22 @@ public:
                                                VRORivePanelOptions options,
                                                VRORivePanel::StatusListener listener,
                                                std::shared_ptr<VRORivePanel> *outPanel);
+
+    // Presentation changes of compositor panels (Compositor <-> Evicted, with
+    // the reason). Called on the XR render thread at the start of the frame
+    // after the change, outside layer submission, so the listener may add,
+    // remove or update panels and change the scene graph. Replaces any
+    // previous listener; null removes it.
+    void setCompositorPanelPresentationListener(VROOpenXRPanelPresentationListener listener);
+    VROOpenXRPanelPresentation getCompositorPanelPresentation(const std::string &id) const;
+
+    // Scene-mesh fallback for a Rive compositor panel: a texture with the same
+    // pixels and corners as its layer (VROOpenXRRivePanelFallback), kept
+    // current while the panel is Evicted. Null until the panel is first
+    // evicted, and for panels not added through addRiveCompositorPanel.
+    // Put it on a quad of the panel's size and pose, with a PremultiplyAlpha
+    // material, while the panel is Evicted. Render thread.
+    std::shared_ptr<VROTexture> getRiveCompositorPanelFallbackTexture(const std::string &id) const;
 
     /*
      Per-eye swapchain dimensions, or 0 until the session has created them.
@@ -379,6 +399,19 @@ private:
     bool _cylinderLayerAvailable = false;
     uint32_t _maxCompositorLayers = 0;
     int64_t _panelSwapchainFormat = 0;
+    // Layer count the runtime last accepted after rejecting a frame with
+    // XR_ERROR_LAYER_LIMIT_EXCEEDED; 0 when no such cap applies. Cleared when
+    // a panel is removed, since that may be what made room.
+    uint32_t _layerLimitCap = 0;
+    // Rive compositor panels by id: frame-to-invalidation link and fallback
+    // texture. Render thread only.
+    std::map<std::string, std::shared_ptr<VRORiveCompositorLink>> _riveLinks;
+    // Held by shared_ptr so tasks queued for the next frame can skip the
+    // call once this renderer is gone (they capture a weak_ptr).
+    std::shared_ptr<VROOpenXRPanelPresentationListener> _hostPresentationListener;
+    void onCompositorPanelPresentation(const std::string &id,
+                                       VROOpenXRPanelPresentation presentation,
+                                       VROOpenXRPanelEvictionReason reason);
 
     // Passthrough extension handles (XR_FB_passthrough)
     XrPassthroughFB      _passthrough      = XR_NULL_HANDLE;

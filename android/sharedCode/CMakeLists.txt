@@ -145,6 +145,7 @@ add_library( # Sets the name of the library.
              ${VIRO_ANDROID_SRC}/VROSceneRendererOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROOpenXRPanelCompositor.cpp
              ${VIRO_ANDROID_SRC}/VROOpenXRRivePanelProducer.cpp
+             ${VIRO_ANDROID_SRC}/VROOpenXRRivePanelFallback.cpp
              ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXRSharedFrame.cpp

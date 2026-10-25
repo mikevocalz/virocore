@@ -5,6 +5,7 @@
 // MIT License — see LICENSE file.
 
 #include "VROSceneRendererOpenXR.h"
+#include "VROOpenXRRivePanelFallback.h"
 #include "VROOpenXRRivePanelProducer.h"
 #include "VROPanelCoverage.h"
 
@@ -712,6 +713,12 @@ bool VROSceneRendererOpenXR::createSession() {
     _panelCompositor = std::make_unique<VROOpenXRPanelCompositor>(
         _session, _panelSwapchainFormat,
         panelLayerBudget, _cylinderLayerAvailable);
+    _layerLimitCap = 0;
+    _panelCompositor->setPresentationListener(
+        [this](const std::string &id, VROOpenXRPanelPresentation presentation,
+               VROOpenXRPanelEvictionReason reason) {
+            onCompositorPanelPresentation(id, presentation, reason);
+        });
 
     // "Facts before code": one-shot dump of the runtime's actual capabilities
     // (reference spaces, swapchain formats, requested API version, refresh
@@ -1710,6 +1717,7 @@ void VROSceneRendererOpenXR::destroySession() {
         _passthrough = XR_NULL_HANDLE;
     }
     _panelCompositor.reset(); // destroy panel swapchains before xrDestroySession
+    _riveLinks.clear();       // fallback textures; GL deletion is queued on the driver
     destroySwapchains();
     if (_appSpace != XR_NULL_HANDLE) {
         xrDestroySpace(_appSpace);
@@ -1849,20 +1857,82 @@ bool VROSceneRendererOpenXR::invalidateCompositorPanelContent(const std::string 
 }
 
 bool VROSceneRendererOpenXR::removeCompositorPanel(const std::string &id) {
-    return _panelCompositor && _panelCompositor->removePanel(id);
+    if (!_panelCompositor || !_panelCompositor->removePanel(id)) return false;
+    // After the swapchain and the finish pass are gone; the fallback texture
+    // keeps its own reference to the Rive panel until the host drops it.
+    _riveLinks.erase(id);
+    _layerLimitCap = 0;
+    return true;
 }
 
-namespace {
-// Connects a Rive worker's frame callbacks to compositor invalidation. The
-// worker only touches `pending`; `producer` and `compositor` are read and
-// written on the XR render thread alone.
+// Connects a Rive worker's frame callbacks to compositor invalidation and to
+// the scene fallback. The worker only touches `pending`; every other member
+// is read and written on the XR render thread alone.
 struct VRORiveCompositorLink {
     std::atomic<bool> pending{false};
     std::weak_ptr<VROOpenXRRivePanelProducer> producer;
     VROOpenXRPanelCompositor *compositor = nullptr;
     std::string id;
+    int widthPx = 0;
+    int heightPx = 0;
+    VROPanelCornerRadii radii;
+    bool evicted = false;
+    std::shared_ptr<VROOpenXRRivePanelFallback> fallback;
 };
-} // namespace
+
+void VROSceneRendererOpenXR::setCompositorPanelPresentationListener(
+    VROOpenXRPanelPresentationListener listener) {
+    _hostPresentationListener =
+        listener ? std::make_shared<VROOpenXRPanelPresentationListener>(std::move(listener))
+                 : nullptr;
+}
+
+VROOpenXRPanelPresentation VROSceneRendererOpenXR::getCompositorPanelPresentation(
+    const std::string &id) const {
+    return _panelCompositor ? _panelCompositor->presentation(id)
+                            : VROOpenXRPanelPresentation::Pending;
+}
+
+std::shared_ptr<VROTexture> VROSceneRendererOpenXR::getRiveCompositorPanelFallbackTexture(
+    const std::string &id) const {
+    auto it = _riveLinks.find(id);
+    return it == _riveLinks.end() ? nullptr : it->second->fallback;
+}
+
+// Inside appendLayers, before xrEndFrame: must not touch the compositor's
+// panel list. GL work on this context is fine (the finish pass does it here).
+void VROSceneRendererOpenXR::onCompositorPanelPresentation(
+    const std::string &id, VROOpenXRPanelPresentation presentation,
+    VROOpenXRPanelEvictionReason reason) {
+    ALOGI("compositor panel %s: %s (%s)", id.c_str(),
+          VROOpenXRPanelPresentationName(presentation), VROOpenXRPanelEvictionReasonName(reason));
+    auto it = _riveLinks.find(id);
+    if (it != _riveLinks.end()) {
+        VRORiveCompositorLink &link = *it->second;
+        link.evicted = presentation == VROOpenXRPanelPresentation::Evicted;
+        std::shared_ptr<VROOpenXRRivePanelProducer> producer = link.producer.lock();
+        if (link.evicted && !link.fallback && producer && _openxrDriver) {
+            auto fallback = std::make_shared<VROOpenXRRivePanelFallback>(
+                producer->panel(), link.widthPx, link.heightPx, link.radii);
+            if (fallback->init(_openxrDriver)) {
+                link.fallback = fallback;
+            } else {
+                ALOGE("compositor panel %s: scene fallback texture could not be built", id.c_str());
+            }
+        }
+        // Show the current frame at once; later frames update it while evicted.
+        if (link.evicted && link.fallback) link.fallback->update();
+    }
+    // The host hears about it at the start of the next frame, where it may
+    // change panels and the scene graph freely.
+    std::weak_ptr<VROOpenXRPanelPresentationListener> host = _hostPresentationListener;
+    if (host.expired()) return;
+    VROPlatformDispatchAsyncRenderer([host, id, presentation, reason] {
+        if (std::shared_ptr<VROOpenXRPanelPresentationListener> listener = host.lock()) {
+            (*listener)(id, presentation, reason);
+        }
+    });
+}
 
 VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
     const VROOpenXRPanelDesc &desc, float cornerRadiusMeters, VRORivePanelOptions options,
@@ -1884,6 +1954,9 @@ VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
     auto link = std::make_shared<VRORiveCompositorLink>();
     link->compositor = _panelCompositor.get();
     link->id = desc.id;
+    link->widthPx = (int) desc.widthPixels;
+    link->heightPx = (int) desc.heightPixels;
+    link->radii = radii;
     // Worker thread: at most one invalidation in flight per panel. The task
     // runs on this thread from VROPlatformDrainRendererQueue (direct queue,
     // enabled for OpenXR). A live producer means its compositor panel, and so
@@ -1892,9 +1965,11 @@ VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
         if (link->pending.exchange(true)) return;
         VROPlatformDispatchAsyncRenderer([link] {
             link->pending.store(false);
-            if (link->producer.lock()) {
-                link->compositor->invalidatePanelContent(link->id);
-            }
+            if (!link->producer.lock()) return;
+            link->compositor->invalidatePanelContent(link->id);
+            // While evicted the compositor does not call the producer, so the
+            // fallback is the only copy that tracks the animation.
+            if (link->evicted && link->fallback) link->fallback->update();
         });
     };
 
@@ -1919,6 +1994,7 @@ VROOpenXRPanelError VROSceneRendererOpenXR::addRiveCompositorPanel(
         panel->dispose();
         return result;
     }
+    _riveLinks[desc.id] = link;
     *outPanel = std::move(panel);
     return VROOpenXRPanelError::None;
 }
@@ -2430,12 +2506,17 @@ void VROSceneRendererOpenXR::renderFrame() {
 
     // Native compositor panels are independent OpenXR swapchains, not Viro
     // scene meshes. Fail closed if runtime advertises no remaining layer slots.
+    // Panels left without a slot are reported Evicted (and given a scene
+    // fallback) instead of being dropped silently.
     if (_panelCompositor && frameState.shouldRender && viewsValid) {
         const uint32_t used = static_cast<uint32_t>(layers.size());
-        const uint32_t freeSlots = _maxCompositorLayers > used
-                                      ? _maxCompositorLayers - used : 0;
+        const bool capped = _layerLimitCap != 0 && _layerLimitCap < _maxCompositorLayers;
+        const uint32_t maxLayers = capped ? _layerLimitCap : _maxCompositorLayers;
+        const uint32_t freeSlots = maxLayers > used ? maxLayers - used : 0;
         _panelCompositor->appendLayers(_appSpace, freeSlots,
-                                       frameState.predictedDisplayPeriod, layers);
+                                       frameState.predictedDisplayPeriod, layers,
+                                       capped ? VROOpenXRPanelEvictionReason::LayerLimitExceeded
+                                              : VROOpenXRPanelEvictionReason::LayerBudget);
     }
 
     XrFrameEndInfo endInfo = { XR_TYPE_FRAME_END_INFO };
@@ -2462,6 +2543,14 @@ void VROSceneRendererOpenXR::renderFrame() {
     }
 
     XrResult endResult = xrEndFrame(_session, &endInfo);
+    if (endResult == XR_ERROR_LAYER_LIMIT_EXCEEDED && endInfo.layerCount > 1) {
+        // The runtime accepted fewer layers than maxLayerCount promised. Cap
+        // the next frames one below this count; the panels that no longer fit
+        // are reported Evicted with this reason. This frame is lost.
+        _layerLimitCap = endInfo.layerCount - 1;
+        ALOGE("xrEndFrame: XR_ERROR_LAYER_LIMIT_EXCEEDED with %u layers; capping at %u",
+              endInfo.layerCount, _layerLimitCap);
+    }
     if (XR_FAILED(endResult)) {
         ALOGE("xrEndFrame FAILED: result=%d state=%d shouldRender=%d layerCount=%u",
               (int)endResult, (int)_sessionState,

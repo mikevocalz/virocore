@@ -5,11 +5,15 @@ on:
     paths:
       - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
       - "tests/xr_backend/panel_image_state_test.cpp"
+      - "tests/xr_backend/panel_eviction_test.cpp"
+      - "tests/xr_backend/host_shims/**"
+      - "scripts/test-openxr-panel-eviction.sh"
       - ".github/workflows/openxr-panel-policy.yml"
   push:
     paths:
       - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
       - "tests/xr_backend/panel_image_state_test.cpp"
+      - "tests/xr_backend/panel_eviction_test.cpp"
     branches:
       - main
 
@@ -24,3 +28,5 @@ jobs:
             tests/xr_backend/panel_image_state_test.cpp \
             -o "$RUNNER_TEMP/panel_image_state_test"
           "$RUNNER_TEMP/panel_image_state_test"
+      - name: Eviction reporting against a fake runtime
+        run: CXX=g++ scripts/test-openxr-panel-eviction.sh

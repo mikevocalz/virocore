@@ -71,6 +71,32 @@ struct VROOpenXRPanelDesc {
  */
 using VROOpenXRPanelProducer = std::function<bool(GLuint, uint32_t, uint32_t)>;
 
+// Where a visible panel's pixels were shown on the last frame that composed
+// layers. Pending until the panel first gets a slot or is first refused one.
+enum class VROOpenXRPanelPresentation { Pending, Compositor, Evicted };
+
+enum class VROOpenXRPanelEvictionReason {
+    None,
+    // No free layer slot this frame: the runtime's maxLayerCount, minus
+    // projection and passthrough and the panels ahead in registration order.
+    LayerBudget,
+    // The runtime rejected a frame with XR_ERROR_LAYER_LIMIT_EXCEEDED and the
+    // renderer lowered its layer cap below maxLayerCount.
+    LayerLimitExceeded,
+};
+const char *VROOpenXRPanelPresentationName(VROOpenXRPanelPresentation presentation);
+const char *VROOpenXRPanelEvictionReasonName(VROOpenXRPanelEvictionReason reason);
+
+// XR render thread, from appendLayers, on every change of a visible panel's
+// presentation. An Evicted panel is not on screen until the host shows its
+// scene-mesh fallback; it returns to Compositor by itself when a slot frees.
+// Runs between appendLayers and xrEndFrame, while the layer list points into
+// this compositor: it must not add, remove or update panels. Post such work
+// to the next frame (VROSceneRendererOpenXR forwards to its host that way).
+using VROOpenXRPanelPresentationListener =
+    std::function<void(const std::string &id, VROOpenXRPanelPresentation presentation,
+                       VROOpenXRPanelEvictionReason reason)>;
+
 class VROOpenXRPanelCompositor final {
 public:
     // maxLayers is the panel budget, already excluding projection/passthrough.
@@ -95,11 +121,18 @@ public:
     // Required before releasing that context at render-thread shutdown.
     void finishPendingGpuWork();
 
+    void setPresentationListener(VROOpenXRPanelPresentationListener listener);
+    VROOpenXRPanelPresentation presentation(const std::string &id) const;
+
     // After projection/passthrough setup, before xrEndFrame. Produces layer
-    // pointers owned by this object, valid until the next mutation.
+    // pointers owned by this object, valid until the next mutation. Visible
+    // panels that get no slot are reported Evicted with shortReason; panels
+    // earlier in registration order take slots first.
     void appendLayers(XrSpace appSpace, uint32_t remainingLayerSlots,
                       XrDuration predictedDisplayPeriod,
-                      std::vector<const XrCompositionLayerBaseHeader *> &layers);
+                      std::vector<const XrCompositionLayerBaseHeader *> &layers,
+                      VROOpenXRPanelEvictionReason shortReason =
+                          VROOpenXRPanelEvictionReason::LayerBudget);
     bool supportsCylinder() const { return _cylinderEnabled; }
     size_t count() const { return _panels.size(); }
 
@@ -112,6 +145,7 @@ private:
         VROOpenXRPanelImageState imageState;
         XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         XrCompositionLayerCylinderKHR cylinder = { XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR };
+        VROOpenXRPanelPresentation presentation = VROOpenXRPanelPresentation::Pending;
     };
 
     XrSession _session;
@@ -120,8 +154,12 @@ private:
     bool _cylinderEnabled;
     bool _hasPendingGpuWork = false;
     std::vector<Panel> _panels;
+    VROOpenXRPanelPresentationListener _presentationListener;
 
     Panel *find(const std::string &id);
+    const Panel *find(const std::string &id) const;
+    void present(Panel &panel, VROOpenXRPanelPresentation presentation,
+                 VROOpenXRPanelEvictionReason reason);
     bool createSwapchain(Panel &panel);
     void destroySwapchain(Panel &panel);
 };
