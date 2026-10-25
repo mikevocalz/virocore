@@ -31,6 +31,7 @@
 #include "VRODriverOpenGL.h"
 #include "VROLog.h"
 #include "VROPanelCoverage.h"
+#include "VROPanelGLStateGuard.h"
 #include "VROPanelShaderSources.h"
 
 #include <cmath>
@@ -75,76 +76,6 @@ bool hasExtension(const char *name) {
     const char *extensions = (const char *) glGetString(GL_EXTENSIONS);
     return extensions != nullptr && strstr(extensions, name) != nullptr;
 }
-
-/*
- Captures the GL state the resolve pass touches and puts it back on scope
- exit. The resolve runs between frames from a Java FrameListener, and
- VRODriverOpenGL caches GL state on the CPU side, so the pass must leave GL
- exactly as it found it.
- */
-class GLStateGuard {
-public:
-    GLStateGuard() {
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &_drawFramebuffer);
-        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &_readFramebuffer);
-        glGetIntegerv(GL_VIEWPORT, _viewport);
-        glGetIntegerv(GL_CURRENT_PROGRAM, &_program);
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &_vertexArray);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_arrayBuffer);
-        glGetIntegerv(GL_ACTIVE_TEXTURE, &_activeTexture);
-        glActiveTexture(GL_TEXTURE0);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &_texture2D);
-        glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &_textureExternal);
-        glGetIntegerv(GL_SAMPLER_BINDING, &_sampler);
-        glGetBooleanv(GL_COLOR_WRITEMASK, _colorMask);
-        _blend = glIsEnabled(GL_BLEND);
-        _depthTest = glIsEnabled(GL_DEPTH_TEST);
-        _cullFace = glIsEnabled(GL_CULL_FACE);
-        _scissorTest = glIsEnabled(GL_SCISSOR_TEST);
-        _stencilTest = glIsEnabled(GL_STENCIL_TEST);
-    }
-
-    ~GLStateGuard() {
-        setEnabled(GL_BLEND, _blend);
-        setEnabled(GL_DEPTH_TEST, _depthTest);
-        setEnabled(GL_CULL_FACE, _cullFace);
-        setEnabled(GL_SCISSOR_TEST, _scissorTest);
-        setEnabled(GL_STENCIL_TEST, _stencilTest);
-        glColorMask(_colorMask[0], _colorMask[1], _colorMask[2], _colorMask[3]);
-        glActiveTexture(GL_TEXTURE0);
-        glBindSampler(0, (GLuint) _sampler);
-        glBindTexture(GL_TEXTURE_EXTERNAL_OES, (GLuint) _textureExternal);
-        glBindTexture(GL_TEXTURE_2D, (GLuint) _texture2D);
-        glActiveTexture((GLenum) _activeTexture);
-        glBindVertexArray((GLuint) _vertexArray);
-        glBindBuffer(GL_ARRAY_BUFFER, (GLuint) _arrayBuffer);
-        glUseProgram((GLuint) _program);
-        glViewport(_viewport[0], _viewport[1], _viewport[2], _viewport[3]);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint) _readFramebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) _drawFramebuffer);
-    }
-
-    GLStateGuard(const GLStateGuard &) = delete;
-    GLStateGuard &operator=(const GLStateGuard &) = delete;
-
-private:
-    static void setEnabled(GLenum cap, GLboolean enabled) {
-        if (enabled) {
-            glEnable(cap);
-        } else {
-            glDisable(cap);
-        }
-    }
-
-    GLint _drawFramebuffer = 0, _readFramebuffer = 0;
-    GLint _viewport[4] = { 0, 0, 0, 0 };
-    GLint _program = 0, _vertexArray = 0, _arrayBuffer = 0;
-    GLint _activeTexture = GL_TEXTURE0;
-    GLint _texture2D = 0, _textureExternal = 0, _sampler = 0;
-    GLboolean _colorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
-    GLboolean _blend = GL_FALSE, _depthTest = GL_FALSE, _cullFace = GL_FALSE;
-    GLboolean _scissorTest = GL_FALSE, _stencilTest = GL_FALSE;
-};
 
 } // namespace
 
@@ -245,7 +176,7 @@ VROAndroidViewTexture::~VROAndroidViewTexture() {
 
 void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
     _driver = driver;
-    GLStateGuard guard;
+    VROPanelGLStateGuard guard;
 
     // Generate the GL Texture on which to render Android Views.
     glGenTextures(1, &_textureId);
@@ -438,7 +369,7 @@ void VROAndroidViewTexture::resolve() {
     if (!_resolveReady) {
         return;
     }
-    GLStateGuard guard;
+    VROPanelGLStateGuard guard;
 
     glBindFramebuffer(GL_FRAMEBUFFER, _resolveFramebuffer);
     // The copy overwrites every texel, so skip loading the old tile contents.
