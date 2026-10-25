@@ -93,9 +93,14 @@ endforeach()
 # Colon-separated: -Wl, splits on commas, which would hand lld the names as input files.
 string(REPLACE ";" ":" VIRO_RIVE_EXCLUDE "${VIRO_RIVE_EXCLUDE}")
 
-# Link check only: see the comment at the top of VRORiveRuntimeProbe.cpp. No runtime behaviour.
-target_sources(viro_renderer PRIVATE ${VIRO_ANDROID_SRC}/VRORiveRuntimeProbe.cpp)
-viro_rive_sources(${VIRO_ANDROID_SRC}/VRORiveRuntimeProbe.cpp)
+# VRORivePanel (scene-panel producer). VRORivePanel.cpp itself is in the main source list so the
+# exported API exists on every ABI; these are the parts that only exist with rive. Only
+# VRORivePanelScene.cpp includes rive headers, so only it takes the archive flags.
+target_sources(viro_renderer PRIVATE
+    ${VIRO_ANDROID_SRC}/VRORivePanelGeometry.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelEGL.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
+viro_rive_sources(${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
 
 target_link_libraries(viro_renderer
     ${VIRO_RIVE_IMPORTED}

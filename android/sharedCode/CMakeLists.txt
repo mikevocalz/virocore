@@ -144,6 +144,7 @@ add_library( # Sets the name of the library.
              # dependency, which was not 16 KB-page compliant (see viro#491).
              ${VIRO_ANDROID_SRC}/VROSceneRendererOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROOpenXRPanelCompositor.cpp
+             ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXRSharedFrame.cpp
              ${VIRO_ANDROID_SRC}/Colocation_JNI.cpp

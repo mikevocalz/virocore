@@ -11,8 +11,9 @@
 //  imported library (the Nitro HybridObjects in @viro-external/native-panels).
 //  No rive-runtime type appears here; rive is linked with hidden visibility.
 //
-//  Threading: every method may be called from any thread except the status
-//  listener's own thread (see setStatusListener). Calls enqueue a command for
+//  Threading: every method may be called from any thread, including from the
+//  status listener (see StatusListener for the two that then do not block).
+//  Calls enqueue a command for
 //  the panel's worker thread, which owns all Rive objects, its own EGL context
 //  and the EGL window surface. Nothing is shared with Viro's GL context; the
 //  Surface's buffer queue is the hand-off.
@@ -77,8 +78,10 @@ struct VRORivePanelOptions {
     // rive::Alignment: -1 left/top, 0 centre, 1 right/bottom.
     float alignmentX = 0.0f;
     float alignmentY = 0.0f;
-    // Premultiplied 0xAARRGGBB written before Rive draws. Transparent by
-    // default so the panel's corners and empty areas show the scene.
+    // Background fill inside the rounded rect, drawn before the artboard, as
+    // a straight (unpremultiplied) 0xAARRGGBB like rive::ColorInt. Alpha 0,
+    // the default, draws nothing: the frame is cleared to transparent either
+    // way, so corners and letterbox areas show the scene.
     uint32_t clearColor = 0x00000000u;
     // Upper bound on frames per second while the state machine is animating.
     // Settled content produces no frames at all. Match the display rate.
