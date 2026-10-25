@@ -5,6 +5,8 @@
 
 #include "VRORivePanelGeometry.h"
 
+#include "VROPanelCoverage.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -119,17 +121,12 @@ bool VRORiveRoundedRectContains(float x, float y, float width, float height, flo
         y > height) {
         return false;
     }
+    // The shared coverage function decides, so a hit lands exactly where the
+    // finish pass and the resolve copy draw the panel: coverage >= 0.5 is the
+    // geometric edge and inward. The radius is clamped to half the shorter
+    // side first, so the corner stays circular.
     const float r = VRORiveClampCornerRadius(radiusPx, width, height);
-    if (r == 0.0f) {
-        return true;
-    }
-    // Distance from the nearest corner-circle centre, measured only in the
-    // corner squares; everywhere else inside the rect is inside the shape.
-    const float cx = x < r ? r : (x > width - r ? width - r : x);
-    const float cy = y < r ? r : (y > height - r ? height - r : y);
-    const float dx = x - cx;
-    const float dy = y - cy;
-    return dx * dx + dy * dy <= r * r;
+    return VROPanelCoverage(x, y, width, height, r, r) >= 0.5f;
 }
 
 VRORivePointerRouter::Slot *VRORivePointerRouter::find(int pointerId) {

@@ -50,8 +50,8 @@ __attribute__((visibility("hidden")))
 float VRORiveClampCornerRadius(float radiusPx, float width, float height);
 
 // Inside the rounded rect [0, w] x [0, h] with the clamped radius, boundary
-// inclusive. This is the geometric edge, where the anti-aliased clip's
-// coverage is one half.
+// inclusive: VROPanelCoverage (ViroRenderer/VROPanelCoverage.h) >= 0.5, the
+// geometric edge where the anti-aliased coverage is one half.
 __attribute__((visibility("hidden")))
 bool VRORiveRoundedRectContains(float x, float y, float width, float height, float radiusPx);
 
