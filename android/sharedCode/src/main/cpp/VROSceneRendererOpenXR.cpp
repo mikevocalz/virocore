@@ -1899,6 +1899,17 @@ std::shared_ptr<VROTexture> VROSceneRendererOpenXR::getRiveCompositorPanelFallba
     return it == _riveLinks.end() ? nullptr : it->second->fallback;
 }
 
+VROOpenXRCompositorPanelCapabilities
+VROSceneRendererOpenXR::getCompositorPanelCapabilities() const {
+    VROOpenXRCompositorPanelCapabilities capabilities;
+    if (!_panelCompositor) return capabilities;
+    capabilities.sessionReady = true;
+    capabilities.cylinder = _panelCompositor->supportsCylinder();
+    capabilities.maxPanels = _panelCompositor->maxPanels();
+    capabilities.rive = VRORivePanel::isAvailable() && _eglContext != EGL_NO_CONTEXT;
+    return capabilities;
+}
+
 // Inside appendLayers, before xrEndFrame: must not touch the compositor's
 // panel list. GL work on this context is fine (the finish pass does it here).
 void VROSceneRendererOpenXR::onCompositorPanelPresentation(

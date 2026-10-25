@@ -134,6 +134,9 @@ public:
                       VROOpenXRPanelEvictionReason shortReason =
                           VROOpenXRPanelEvictionReason::LayerBudget);
     bool supportsCylinder() const { return _cylinderEnabled; }
+    // The panel budget given at construction. A ceiling, not a promise that
+    // this many panels composite every frame (see appendLayers).
+    uint32_t maxPanels() const { return _maxLayers; }
     size_t count() const { return _panels.size(); }
 
 private:

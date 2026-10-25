@@ -68,6 +68,19 @@ struct VROOpenXRSwapchain {
     std::vector<XrSwapchainImageOpenGLESKHR> images;
 };
 
+// What the current session can do with compositor panels. Facts from the
+// runtime, read on the XR render thread.
+struct VROOpenXRCompositorPanelCapabilities {
+    // A session exists and its compositor accepts panels.
+    bool sessionReady = false;
+    // XR_KHR_composition_layer_cylinder was enabled at instance creation.
+    bool cylinder = false;
+    // Runtime maxLayerCount minus the projection and passthrough slots.
+    uint32_t maxPanels = 0;
+    // rive-runtime is linked into this ABI (VRORivePanel::isAvailable()).
+    bool rive = false;
+};
+
 class VROSceneRendererOpenXR : public VROSceneRenderer,
                                public std::enable_shared_from_this<VROSceneRendererOpenXR> {
 public:
@@ -171,6 +184,10 @@ public:
     // Put it on a quad of the panel's size and pose, with a PremultiplyAlpha
     // material, while the panel is Evicted. Render thread.
     std::shared_ptr<VROTexture> getRiveCompositorPanelFallbackTexture(const std::string &id) const;
+
+    // Render thread. sessionReady is false before the session exists and
+    // after teardown; the other fields are then zero or false.
+    VROOpenXRCompositorPanelCapabilities getCompositorPanelCapabilities() const;
 
     /*
      Per-eye swapchain dimensions, or 0 until the session has created them.
