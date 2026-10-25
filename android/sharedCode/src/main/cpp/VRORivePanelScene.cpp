@@ -6,8 +6,8 @@
 //  rive-runtime pin: android/rive/RIVE_RUNTIME_COMMIT (8b3ca41b).
 //
 //  Render target: FramebufferRenderTargetGL on the window surface's
-//  framebuffer 0 (render_target_gl.hpp:191). This is the path rive-android
-//  takes on its own SurfaceView/TextureView surfaces. When the device has
+//  framebuffer 0 (render_target_gl.hpp:188), the target rive-runtime provides
+//  for a framebuffer the client cannot read or modify. When the device has
 //  EXT_shader_pixel_local_storage Rive draws straight into FBO 0; otherwise it
 //  renders into an internal texture and blits back at the end of the pass
 //  (allocateOffscreenTargetTexture, render_target_gl.cpp:327), which is the

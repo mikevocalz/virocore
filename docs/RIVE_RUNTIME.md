@@ -2,9 +2,8 @@
 
 ViroCore links Rive's C++ runtime and its GLES renderer statically into
 `libviro_renderer.so` on Android arm64-v8a. This is the build step from
-viro-external ADR 0001, decision D3. No Rive producer exists yet: the library is linked,
-and a link-check table keeps the import and GL render-context paths in the binary,
-but nothing calls them.
+viro-external ADR 0001, decision D3. The scene-panel producer `VRORivePanel` (route B1) is
+the code that uses it; see [VRORivePanel](#vrorivepanel) below.
 
 | | |
 | --- | --- |
@@ -27,7 +26,8 @@ but nothing calls them.
 - `android/rive/ViroRive.cmake`, included from `android/sharedCode/CMakeLists.txt`,
   imports the archives, links them into `viro_renderer` with `--exclude-libs`, and
   defines `viro_rive_sources()` for any source that includes rive headers.
-- `android/sharedCode/src/main/cpp/VRORiveRuntimeProbe.cpp` is the link check.
+- `android/sharedCode/src/main/cpp/VRORivePanel*.{h,cpp}` is the producer.
+  `VRORivePanelScene.cpp` is the only one that includes rive headers.
 
 Outputs go to `android/rive/out/android_arm64_release/` and fetched sources to
 `android/rive/dependencies/`. Both are gitignored.
@@ -92,7 +92,7 @@ the other way round:
 3. ViroCore sources that include rive headers go through `viro_rive_sources()`, which
    adds hidden visibility for that TU. Without it the first build exported one symbol,
    the inline `rive::File::import(..., FileAssetLoader*, ...)` overload instantiated in
-   the probe, because `viro_renderer` itself builds with default visibility and
+   the former link-check probe, because `viro_renderer` itself builds with default visibility and
    `--exclude-libs` only covers archive members.
 
 `viro_rive_sources()` also applies the defines and flags the archives were built with:
@@ -133,7 +133,7 @@ Stripped arm64-v8a `libviro_renderer.so` from `viroreact-release.aar`:
 | With rive-runtime | 10,547,328 | 6,234,796 | 680,588 | 1,021,504 |
 | Delta | +2,979,184 (+2.84 MiB, +39.4%) | +2,057,524 | +185,600 | +285,936 |
 
-This is the size with the probe's two entry points retained: `rive::File::import` (the
+This was measured with the former link-check probe, which retained two entry points: `rive::File::import` (the
 whole object model, text shaping and layout) and
 `rive::gpu::RenderContextGLImpl::MakeContext` (the GLES renderer and its embedded
 shaders). A real producer will reach roughly the same code. The armeabi-v7a `.so`
@@ -142,6 +142,106 @@ compare against.
 
 The base is the `.so` supplied with the task rather than one rebuilt from this branch
 with `-DVIRO_WITH_RIVE=OFF`, so the delta assumes that build matches `70e95fd8`.
+
+## VRORivePanel
+
+Scene-panel producer for ADR 0001 route B1. The exported API is
+`android/sharedCode/src/main/cpp/VRORivePanel.h`; it names no rive type, so the Nitro
+HybridObjects in `@viro-external/native-panels` link `libviro_renderer.so` without seeing
+rive. On armeabi-v7a, or with `-DVIRO_WITH_RIVE=OFF`, the same symbols exist,
+`isAvailable()` is false and `create()` returns null.
+
+| File | Role | Flags |
+| --- | --- | --- |
+| `VRORivePanel.cpp` | Facade, command queue, worker thread, state machine | C++17, exceptions |
+| `VRORivePanelEGL.cpp` | EGL display/config/context, pbuffer, window surface, window ref | C++17, exceptions |
+| `VRORivePanelGeometry.cpp` | Fit/alignment transform, rounded shape, pointer routing | C++17 |
+| `VRORivePanelScene.cpp` | Render context, File, artboard, state machine, view model | `viro_rive_sources()` |
+
+### Ownership and threads
+
+| Object | Owner | Created, used, destroyed on |
+| --- | --- | --- |
+| Command queue | `VRORivePanel::Impl` | any thread pushes (one mutex), worker drains |
+| `EGLContext` (GLES 3, not shared with Viro), 1x1 pbuffer | worker | worker |
+| `EGLSurface` on the ANativeWindow | worker | worker |
+| ANativeWindow reference | worker (`ANativeWindow_acquire` on the caller thread, released on the worker after the EGL surface) | caller acquires, worker releases |
+| `RenderContextGLImpl`, `FramebufferRenderTargetGL`, `File`, `ArtboardInstance`, `StateMachineInstance`, `ViewModelInstanceRuntime` | worker | worker, context current |
+| Surface buffer queue | Android BufferQueue | producer: worker via `eglSwapBuffers`; consumer: Viro's SurfaceTexture |
+
+Hand-off: the worker renders into the window surface and calls `eglSwapBuffers`, which
+queues the buffer; Viro latches it with `updateTexImage`. No texture or context is shared,
+so no fence crosses between the two. Swap interval is 0, which puts the producer in async
+mode: an unlatched frame is replaced by the next one and the worker never blocks on Viro.
+Frame pacing comes from the worker: it sleeps on a condition variable, untimed while the
+state machine is settled and until `last frame + 1 / maxFrameRateHz` while it animates.
+Elapsed time per advance is clamped to 0.1 s, and the first advance after a settled frame
+uses 0.
+
+A frame is drawn only when `advanceAndApply` returned true on the previous frame, or after
+a pointer event, view-model write, load or selection, resize, surface attach or
+`setActive(true)`. Commands queued since the last wake are applied together before that
+one advance.
+
+### Pixels
+
+- Target: `FramebufferRenderTargetGL` on the window's FBO 0. With `EXT_shader_pixel_local_storage` Rive draws into FBO 0 directly; without it,
+  Rive renders to an internal texture and blits back. The alternative,
+  `TextureRenderTargetGL` on a texture the panel owns plus one blit, always pays the blit but
+  could also feed the B2 compositor ring. Which is cheaper has to be measured on Quest 3 and
+  PICO 4 Ultra.
+- Format: RGBA8 config with exactly 8 bits per channel, depth 24 and stencil 8 when the
+  device offers them, window buffers `WINDOW_FORMAT_RGBA_8888` at the panel size.
+- Colour: the window surface is created with `EGL_GL_COLORSPACE_LINEAR_KHR` (EGL's default,
+  stated explicitly when the extension exists). Rive's GL backend writes sRGB-encoded bytes
+  into UNORM targets and the scene route samples the Surface as sRGB-encoded bytes (D6), so
+  nothing re-encodes them. An sRGB window surface would encode twice.
+- Alpha: cleared to transparent, Rive's output is premultiplied, corners are clipped with
+  `RiveRenderer::clipPath` on a rounded-rect path in panel pixels before the artboard
+  transform. The material that samples this Surface must use `PremultiplyAlpha` blending
+  (feat/premultiply-blend-mode).
+- Rows: `FramebufferRenderTargetGL::bottomUp()` is true (`render_target_gl.hpp:207`), so
+  Rive draws in the usual GL window orientation. Not yet checked through Viro's
+  SurfaceTexture sampling; see the device list.
+
+### Input
+
+`pointerDown/Move/Up` take panel pixels (origin top-left). The worker maps them to
+artboard space with the inverse of `VRORiveComputeAlignment`, the same matrix the frame is
+drawn with, so a hit lands where the pixel was drawn. A press that starts outside the
+rounded rect is dropped; a press that started inside keeps its moves and release even in a
+corner. Hover that leaves the shape becomes one `pointerExit`.
+`scripts/test-rive-panel-geometry.sh` checks the transform is bit-identical to
+`rive::computeAlignment` (linked from the vendored source) and covers the corner test and
+routing.
+
+### Lifecycle
+
+States: `initializing` → `waitingForSurface` → `active` / `suspended`, plus `lost` and the
+terminal `disposed`. `surfaceLost()` blocks until the EGL surface is destroyed and the window
+reference released, then returns; File, artboard and state machine stay. A swap error that
+means the Surface was abandoned (`EGL_BAD_SURFACE`, `EGL_BAD_NATIVE_WINDOW`) drops the
+window and reports `lost`; context loss, a render error or an exception tears down every
+GPU object and reports `lost`. `attachSurface()` recovers from either, re-importing the last
+file with its artboard, state machine and the view-model values written since it loaded.
+`dispose()` is idempotent and joins the worker; from inside the status listener it returns
+at once and the worker finishes teardown after the listener returns. `eglTerminate` is never
+called: the display is process-wide and Viro uses it.
+
+### Needs a device
+
+None of the following has run yet. Each needs Quest 3 and PICO 4 Ultra:
+
+- First frame of `moyo_board_chrome.riv` through CanvasSourceBridge, with the material in
+  `PremultiplyAlpha`: mid-grey and 50 % alpha swatches over passthrough with no corner halo.
+- Which interlock mode Rive picks on Adreno (log line from `RenderContextGLImpl`), and
+  whether FBO 0 renders directly or through the offscreen blit.
+- That a settled state machine produces zero swaps (count `eglSwapBuffers` over 10 s idle).
+- `surfaceLost()` then `SurfaceTexture.release()` with no `EGL_BAD_NATIVE_WINDOW` in logcat;
+  `attachSurface()` afterwards shows the same artboard state.
+- The panel is upright, not mirrored vertically, in the scene.
+- Pointer hits on BoardChrome buttons at the panel edges and corners with `contain` fit.
+- Frame time per Rive frame, against the `TextureRenderTargetGL` + blit alternative.
 
 ## Updating the pin
 
