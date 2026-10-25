@@ -95,13 +95,17 @@ string(REPLACE ";" ":" VIRO_RIVE_EXCLUDE "${VIRO_RIVE_EXCLUDE}")
 
 # VRORivePanel (scene-panel producer). VRORivePanel.cpp itself is in the main source list so the
 # exported API exists on every ABI; these are the parts that only exist with rive. Only
-# VRORivePanelScene.cpp includes rive headers, so only it takes the archive flags.
+# VRORivePanelScene.cpp and VRORivePanelContent.cpp include rive headers, so only they take the
+# archive flags.
 target_sources(viro_renderer PRIVATE
     ${VIRO_ANDROID_SRC}/VRORivePanelGeometry.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelEGL.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelRing.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelContent.cpp
     ${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
-viro_rive_sources(${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
+viro_rive_sources(
+    ${VIRO_ANDROID_SRC}/VRORivePanelContent.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelScene.cpp)
 
 target_link_libraries(viro_renderer
     ${VIRO_RIVE_IMPORTED}

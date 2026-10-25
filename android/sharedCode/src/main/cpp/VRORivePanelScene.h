@@ -2,12 +2,13 @@
 //  VRORivePanelScene.h
 //  ViroRenderer
 //
-//  The rive-runtime half of VRORivePanel: render context, File, artboard,
-//  state machine and view-model instance. Lives on the panel's worker thread
+//  The rive-runtime half of VRORivePanel: render context, File, and the
+//  artboard, state machine and view-model instance (VRORivePanelContent). Lives on the panel's worker thread
 //  and requires that thread's EGL context to be current for every call,
-//  including destruction. No rive type appears in this header; the .cpp is
-//  the only VRORivePanel source that includes rive headers and is compiled
-//  through viro_rive_sources() (C++17, no RTTI or exceptions, hidden).
+//  including destruction. No rive type appears in this header; the .cpp and
+//  VRORivePanelContent.cpp are the only VRORivePanel sources that include
+//  rive headers and are compiled through viro_rive_sources() (C++17, no RTTI
+//  or exceptions, hidden).
 //
 
 #pragma once

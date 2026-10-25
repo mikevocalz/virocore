@@ -31,31 +31,20 @@
 
 #include "VRORivePanelScene.h"
 
-#include "rive/animation/state_machine_instance.hpp"
-#include "rive/artboard.hpp"
-#include "rive/file.hpp"
+#include "VRORivePanelContent.h"
+
 #include "rive/math/circle_constant.hpp"
 #include "rive/math/raw_path.hpp"
 #include "rive/renderer/gl/render_context_gl_impl.hpp"
 #include "rive/renderer/gl/render_target_gl.hpp"
 #include "rive/renderer/render_context.hpp"
 #include "rive/renderer/rive_renderer.hpp"
-#include "rive/viewmodel/runtime/viewmodel_instance_runtime.hpp"
-#include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
 
 #include <android/log.h>
 
 #define RIVE_PANEL_LOG_TAG "ViroRivePanel"
 
 namespace {
-
-struct Content {
-    // Destroyed bottom-up: view model, state machine, then the artboard the
-    // state machine points into.
-    std::unique_ptr<rive::ArtboardInstance> artboard;
-    std::unique_ptr<rive::StateMachineInstance> stateMachine;
-    rive::rcp<rive::ViewModelInstanceRuntime> viewModel;
-};
 
 const char *importResultName(rive::ImportResult result) {
     switch (result) {
@@ -64,61 +53,6 @@ const char *importResultName(rive::ImportResult result) {
         case rive::ImportResult::malformed: return "malformed";
     }
     return "unknown";
-}
-
-std::unique_ptr<rive::StateMachineInstance> makeStateMachine(rive::ArtboardInstance *artboard,
-                                                             const std::string &name) {
-    if (!name.empty()) {
-        return artboard->stateMachineNamed(name);
-    }
-    // defaultStateMachine() is null unless the designer marked one.
-    std::unique_ptr<rive::StateMachineInstance> machine = artboard->defaultStateMachine();
-    if (machine == nullptr && artboard->stateMachineCount() > 0) {
-        machine = artboard->stateMachineAt(0);
-    }
-    return machine;
-}
-
-// Binds the artboard's default view-model instance. Files without a view model
-// linked to the artboard get none, and view-model writes report that.
-void bindViewModel(const rive::File &file, Content &content) {
-    // File owns the ViewModelRuntime it returns (file.cpp:2343-2366).
-    rive::ViewModelRuntime *viewModel = file.defaultArtboardViewModel(content.artboard.get());
-    if (viewModel == nullptr) return;
-    content.viewModel = viewModel->createDefaultInstance();
-    if (content.viewModel == nullptr) return;
-    if (content.stateMachine != nullptr) {
-        content.stateMachine->bindViewModelInstance(content.viewModel->instance());
-    } else {
-        content.artboard->bindViewModelInstance(content.viewModel->instance());
-    }
-}
-
-bool instantiate(const rive::File &file, const std::string &artboardName,
-                 const std::string &stateMachineName, Content *out, std::string *error) {
-    Content content;
-    content.artboard = artboardName.empty() ? file.artboardDefault()
-                                            : file.artboardNamed(artboardName);
-    if (content.artboard == nullptr) {
-        *error = artboardName.empty() ? "file has no artboard"
-                                      : "no artboard named \"" + artboardName + "\"";
-        return false;
-    }
-    content.stateMachine = makeStateMachine(content.artboard.get(), stateMachineName);
-    if (content.stateMachine == nullptr && !stateMachineName.empty()) {
-        *error = "artboard \"" + content.artboard->name() + "\" has no state machine named \"" +
-                 stateMachineName + "\"; using its default";
-        content.stateMachine = makeStateMachine(content.artboard.get(), std::string());
-    }
-    bindViewModel(file, content);
-    // Apply the initial state so the first frame is not the setup pose.
-    if (content.stateMachine != nullptr) {
-        content.stateMachine->advanceAndApply(0.0f);
-    } else {
-        content.artboard->advance(0.0f);
-    }
-    *out = std::move(content);
-    return true;
 }
 
 // The panel's shape in panel pixels: a rect, or a rounded rect for r > 0.
@@ -155,7 +89,8 @@ struct VRORivePanelScene::State {
     rive::rcp<rive::gpu::TextureRenderTargetGL> textureTarget;
 
     rive::rcp<rive::File> file;
-    Content content;
+    // Reset before file is replaced: instances point into the file they came from.
+    VRORivePanelContent content;
 
     rive::rcp<rive::RenderPath> shapePath;
     float shapeWidth = 0.0f, shapeHeight = 0.0f, shapeRadius = -1.0f;
@@ -190,13 +125,13 @@ bool VRORivePanelScene::load(const uint8_t *bytes, size_t length, const std::str
         *error = std::string("rive::File::import: ") + importResultName(result);
         return false;
     }
-    Content content;
+    VRORivePanelContent content;
     std::string instantiateNote;
-    if (!instantiate(*file, artboard, stateMachine, &content, &instantiateNote)) {
+    if (!VRORivePanelInstantiate(*file, artboard, stateMachine, &content, &instantiateNote)) {
         *error = instantiateNote;
         return false;
     }
-    _state->content = Content();
+    _state->content.reset();
     _state->file = std::move(file);
     _state->content = std::move(content);
     *error = instantiateNote;
@@ -208,8 +143,8 @@ bool VRORivePanelScene::selectArtboard(const std::string &artboard, const std::s
     if (_state->file == nullptr) {
         return true; // Applied when a file loads.
     }
-    Content content;
-    if (!instantiate(*_state->file, artboard, stateMachine, &content, error)) {
+    VRORivePanelContent content;
+    if (!VRORivePanelInstantiate(*_state->file, artboard, stateMachine, &content, error)) {
         return false;
     }
     _state->content = std::move(content);
@@ -221,7 +156,7 @@ bool VRORivePanelScene::selectStateMachine(const std::string &stateMachine, std:
         return true;
     }
     std::unique_ptr<rive::StateMachineInstance> machine =
-        makeStateMachine(_state->content.artboard.get(), stateMachine);
+        VRORivePanelMakeStateMachine(_state->content.artboard.get(), stateMachine);
     if (machine == nullptr) {
         *error = stateMachine.empty()
                      ? "artboard \"" + _state->content.artboard->name() + "\" has no state machine"
@@ -249,7 +184,8 @@ VRORiveRect VRORivePanelScene::artboardBounds() const {
 
 namespace {
 
-bool requireViewModel(const Content &content, const std::string &path, std::string *error) {
+bool requireViewModel(const VRORivePanelContent &content, const std::string &path,
+                      std::string *error) {
     if (content.viewModel != nullptr) return true;
     *error = content.artboard == nullptr
                  ? "view-model write to \"" + path + "\" before any artboard is loaded"

@@ -1,0 +1,79 @@
+<Rive version="1" kind="fragment">
+  <!--
+    Host-test fixture for VRORivePanelContent (tests/rive/rive_panel_content_test.cpp).
+    Two artboards, each with a looping state machine and a shape whose opacity is bound to
+    the view model. Main's animation also binds a keyframe value to the view model: the
+    LinearAnimationInstance parks that bind on the artboard and removes it again in its
+    destructor, so the state machine must be destroyed before its artboard.
+  -->
+  <Artboard defaultStateMachineId="0:7" viewModelId="0:40" viewModelInstanceId="0:44" styleId="0:5" x="0" y="0" width="64" height="64" name="Main" id="0:2">
+    <LayoutComponentStyle name="Main Style" id="0:5"/>
+    <Node x="32" y="32" name="Root">
+      <Shape name="Square" id="0:100">
+        <DataBindContext sourcePathIds="0:40-0:42" propertyKey="18"/>
+        <Rectangle width="32" height="32" name="Square Path" id="0:101"/>
+        <Fill name="Square Fill">
+          <SolidColor colorValue="FF0047FF" name="Cobalt"/>
+        </Fill>
+      </Shape>
+    </Node>
+    <StateMachine name="Spin" id="0:7">
+      <StateMachineLayer name="Motion" id="0:8">
+        <AnyState x="200" y="-160"/>
+        <ExitState x="400" y="-160"/>
+        <EntryState x="0" y="0">
+          <StateTransition stateToId="0:20" duration="0"/>
+        </EntryState>
+        <AnimationState x="200" y="0" animationId="0:30" id="0:20"/>
+      </StateMachineLayer>
+    </StateMachine>
+    <LinearAnimation loopValue="loop" fps="60" duration="60" name="Grow" id="0:30">
+      <KeyedObject objectId="0:101">
+        <KeyedProperty propertyKey="20">
+          <KeyFrameDouble frame="0" value="16" interpolationType="linear"/>
+          <KeyFrameDouble frame="60" value="48" interpolationType="linear">
+            <DataBindContext sourcePathIds="0:40-0:43" propertyKey="70"/>
+          </KeyFrameDouble>
+        </KeyedProperty>
+      </KeyedObject>
+    </LinearAnimation>
+  </Artboard>
+
+  <Artboard defaultStateMachineId="0:9" viewModelId="0:40" viewModelInstanceId="0:44" styleId="0:6" x="200" y="0" width="32" height="32" name="Second" id="0:3">
+    <LayoutComponentStyle name="Second Style" id="0:6"/>
+    <Shape x="16" y="16" name="Dot" id="0:110">
+      <DataBindContext sourcePathIds="0:40-0:42" propertyKey="18"/>
+      <Ellipse width="16" height="16" name="Dot Path" id="0:111"/>
+      <Fill name="Dot Fill">
+        <SolidColor colorValue="FFF4F1EA" name="Mineral"/>
+      </Fill>
+    </Shape>
+    <StateMachine name="Blink" id="0:9">
+      <StateMachineLayer name="Motion" id="0:10">
+        <AnyState x="200" y="-160"/>
+        <ExitState x="400" y="-160"/>
+        <EntryState x="0" y="0">
+          <StateTransition stateToId="0:21" duration="0"/>
+        </EntryState>
+        <AnimationState x="200" y="0" animationId="0:31" id="0:21"/>
+      </StateMachineLayer>
+    </StateMachine>
+    <LinearAnimation loopValue="loop" fps="60" duration="30" name="Pulse" id="0:31">
+      <KeyedObject objectId="0:111">
+        <KeyedProperty propertyKey="20">
+          <KeyFrameDouble frame="0" value="8" interpolationType="linear"/>
+          <KeyFrameDouble frame="30" value="24" interpolationType="linear"/>
+        </KeyedProperty>
+      </KeyedObject>
+    </LinearAnimation>
+  </Artboard>
+
+  <ViewModel defaultInstanceId="0:44" name="Panel" id="0:40">
+    <ViewModelPropertyNumber name="level" id="0:42"/>
+    <ViewModelPropertyNumber name="size" id="0:43"/>
+    <ViewModelInstance exports="true" name="Default" id="0:44">
+      <ViewModelInstanceNumber propertyValue="0.5" viewModelPropertyId="0:42"/>
+      <ViewModelInstanceNumber propertyValue="48" viewModelPropertyId="0:43"/>
+    </ViewModelInstance>
+  </ViewModel>
+</Rive>
