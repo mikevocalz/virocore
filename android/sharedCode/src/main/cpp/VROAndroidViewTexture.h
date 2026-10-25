@@ -28,6 +28,7 @@
 
 #include "VROTexture.h"
 #include "VROOpenGL.h"
+#include <atomic>
 #include <memory>
 class VRORenderContext;
 class VROFrameSynchronizer;
@@ -47,6 +48,25 @@ class VRODriverOpenGL;
  copied into a mipmapped GL_TEXTURE_2D (sRGB storage when the renderer works
  in linear space), and materials sample that texture with trilinear,
  anisotropic filtering.
+
+ Alpha contract of the copy (viro-external ADR 0001 D6), chosen per texture:
+
+ - Straight alpha (default; Android Views and every existing caller). The
+   copy keeps colour and alpha as they are; sample it with VROBlendMode::Alpha.
+ - Premultiplied alpha (setPremultipliedAlpha(true); Canvas, Skia and Rive
+   producers). The copy stores premultiplied values and builds mips from
+   them; sample it with VROBlendMode::PremultiplyAlpha. With sRGB storage the
+   copy unpremultiplies, decodes to linear and premultiplies again, because
+   the hardware decode of a premultiplied sRGB byte is not premultiplied
+   linear: decode(a * s) != a * decode(s) for 0 < a < 1, and the difference is
+   a dark fringe on every anti-aliased edge. With RGBA8 storage (non-linear
+   rendering, blending in sRGB-encoded space) the bytes are already what the
+   blend expects and are copied unchanged.
+
+ Corners: setCornerRadius() makes the copy multiply by the shared coverage
+ function (VROPanelCoverage.h), alpha only for straight input and all four
+ channels for premultiplied input. Radius 0, the default, leaves every texel
+ unchanged.
  */
 class VROAndroidViewTexture : public VROTexture {
 public:
@@ -69,6 +89,20 @@ public:
      registered (for example the OES textures behind VROVideoTextureAVP).
      */
     static void onExternalFrameLatched(GLuint oesTextureId);
+
+    /*
+     Corner radius of the panel this texture is shown on, in meters, with the
+     panel's size in meters. Converted to per-axis pixel radii with
+     VROPanelCornerRadiiPx. 0 (the default) disables rounding. Any thread; the
+     last latched frame is copied again on the rendering thread.
+     */
+    void setCornerRadius(float radiusMeters, float widthMeters, float heightMeters);
+
+    /*
+     Declares that the producer writes premultiplied alpha. Default false.
+     Any thread; the last latched frame is copied again on the rendering thread.
+     */
+    void setPremultipliedAlpha(bool premultiplied);
 
 private:
     /*
@@ -99,11 +133,25 @@ private:
     GLuint _resolveVAO;
     GLuint _resolveVBO;
     bool _resolveReady;
+    // A frame has been latched since init(); before that the OES texture has
+    // no image and must not be sampled. Rendering thread only.
+    bool _hasLatchedFrame;
+    GLint _sizeUniform;
+    GLint _radiusUniform;
+    GLint _premultipliedUniform;
+
+    // Written from any thread, read by resolve() on the rendering thread.
+    std::atomic<float> _cornerRadiusXPx;
+    std::atomic<float> _cornerRadiusYPx;
+    std::atomic<bool> _premultipliedAlpha;
 
     std::weak_ptr<VRODriverOpenGL> _driver;
 
     bool createResolveResources(bool sRGBStorage);
     void resolve();
+    // Copies the last latched frame again with the current corner and alpha
+    // settings, on the rendering thread.
+    void scheduleResolve();
 };
 
 #endif /* VROAndroidViewTexture */

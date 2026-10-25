@@ -30,6 +30,8 @@
 #include "VROPlatformUtil.h"
 #include "VRODriverOpenGL.h"
 #include "VROLog.h"
+#include "VROPanelCoverage.h"
+#include "VROPanelShaderSources.h"
 
 #include <cmath>
 #include <cstring>
@@ -51,38 +53,6 @@ constexpr GLfloat kResolveAnisotropy = 4.0f;
 // updateTexImage(); pruned from any thread when a texture is destroyed.
 std::mutex sRegistryMutex;
 std::unordered_map<GLuint, std::weak_ptr<VROTexture>> sRegistry;
-
-const char *kResolveVertexShader =
-    "#version 100\n"
-    "attribute vec2 a_position;\n"
-    "varying vec2 v_texcoord;\n"
-    "void main() {\n"
-    "    v_texcoord = a_position * 0.5 + 0.5;\n"
-    "    gl_Position = vec4(a_position, 0.0, 1.0);\n"
-    "}\n";
-
-// The OES image holds sRGB-encoded values. When the destination has sRGB
-// storage, the hardware encodes on write, so decode first and the stored
-// bytes come out equal to the producer's bytes. Sampling then decodes to
-// linear in hardware, and mip levels are filtered in linear space.
-const char *kResolveFragmentShaderBody =
-    "#extension GL_OES_EGL_image_external : require\n"
-    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
-    "precision highp float;\n"
-    "#else\n"
-    "precision mediump float;\n"
-    "#endif\n"
-    "uniform samplerExternalOES source_texture;\n"
-    "varying vec2 v_texcoord;\n"
-    "void main() {\n"
-    "    vec4 color = texture2D(source_texture, v_texcoord);\n"
-    "#ifdef DECODE_SRGB\n"
-    "    vec3 lower = color.rgb / 12.92;\n"
-    "    vec3 higher = pow((color.rgb + 0.055) / 1.055, vec3(2.4));\n"
-    "    color.rgb = mix(higher, lower, vec3(lessThanEqual(color.rgb, vec3(0.04045))));\n"
-    "#endif\n"
-    "    gl_FragColor = color;\n"
-    "}\n";
 
 GLuint compileShader(GLenum type, const std::string &source) {
     GLuint shader = glCreateShader(type);
@@ -225,7 +195,14 @@ VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int 
         _resolveProgram(0),
         _resolveVAO(0),
         _resolveVBO(0),
-        _resolveReady(false) {
+        _resolveReady(false),
+        _hasLatchedFrame(false),
+        _sizeUniform(-1),
+        _radiusUniform(-1),
+        _premultipliedUniform(-1),
+        _cornerRadiusXPx(0.0f),
+        _cornerRadiusYPx(0.0f),
+        _premultipliedAlpha(false) {
 
     JNIEnv *env = VROPlatformGetJNIEnv();
     _jAndroidViewTexture = env->NewGlobalRef(jRenderableTexture);
@@ -361,10 +338,8 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     glClear(GL_COLOR_BUFFER_BIT);
     glGenerateMipmap(GL_TEXTURE_2D);
 
-    std::string fragmentSource = std::string("#version 100\n")
-                               + (sRGBStorage ? "#define DECODE_SRGB 1\n" : "")
-                               + kResolveFragmentShaderBody;
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kResolveVertexShader);
+    std::string fragmentSource = VROPanelResolveFragmentShader(sRGBStorage);
+    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kVROPanelResolveVertexShader);
     GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
     if (!vertexShader || !fragmentShader) {
         if (vertexShader) glDeleteShader(vertexShader);
@@ -390,6 +365,9 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     }
     glUseProgram(_resolveProgram);
     glUniform1i(glGetUniformLocation(_resolveProgram, "source_texture"), 0);
+    _sizeUniform = glGetUniformLocation(_resolveProgram, "u_size");
+    _radiusUniform = glGetUniformLocation(_resolveProgram, "u_radius");
+    _premultipliedUniform = glGetUniformLocation(_resolveProgram, "u_premultiplied");
 
     // One triangle that covers the whole target.
     const GLfloat triangle[] = { -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f, 3.0f };
@@ -418,8 +396,42 @@ void VROAndroidViewTexture::onExternalFrameLatched(GLuint oesTextureId) {
     }
     std::shared_ptr<VROTexture> texture = weak.lock();
     if (texture) {
-        std::static_pointer_cast<VROAndroidViewTexture>(texture)->resolve();
+        std::shared_ptr<VROAndroidViewTexture> viewTexture =
+                std::static_pointer_cast<VROAndroidViewTexture>(texture);
+        viewTexture->_hasLatchedFrame = true;
+        viewTexture->resolve();
     }
+}
+
+void VROAndroidViewTexture::setCornerRadius(float radiusMeters, float widthMeters,
+                                            float heightMeters) {
+    VROPanelCornerRadii radii = VROPanelCornerRadiiPx(radiusMeters, widthMeters, heightMeters,
+                                                      (float) _width, (float) _height);
+    _cornerRadiusXPx.store(radii.x);
+    _cornerRadiusYPx.store(radii.y);
+    scheduleResolve();
+}
+
+void VROAndroidViewTexture::setPremultipliedAlpha(bool premultiplied) {
+    _premultipliedAlpha.store(premultiplied);
+    scheduleResolve();
+}
+
+void VROAndroidViewTexture::scheduleResolve() {
+    // A static producer queues no new frame, so the last latched one is
+    // copied again. The OES texture keeps that image until the next latch.
+    std::weak_ptr<VROTexture> weak = shared_from_this();
+    VROPlatformDispatchAsyncRenderer([weak] {
+        std::shared_ptr<VROTexture> texture = weak.lock();
+        if (!texture) {
+            return;
+        }
+        std::shared_ptr<VROAndroidViewTexture> viewTexture =
+                std::static_pointer_cast<VROAndroidViewTexture>(texture);
+        if (viewTexture->_hasLatchedFrame) {
+            viewTexture->resolve();
+        }
+    });
 }
 
 void VROAndroidViewTexture::resolve() {
@@ -441,6 +453,9 @@ void VROAndroidViewTexture::resolve() {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
     glUseProgram(_resolveProgram);
+    glUniform2f(_sizeUniform, (GLfloat) _width, (GLfloat) _height);
+    glUniform2f(_radiusUniform, _cornerRadiusXPx.load(), _cornerRadiusYPx.load());
+    glUniform1f(_premultipliedUniform, _premultipliedAlpha.load() ? 1.0f : 0.0f);
     glBindVertexArray(_resolveVAO);
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0, 0);

@@ -58,4 +58,24 @@ VRO_METHOD(void, nativeDeleteExternalSurfaceTexture)(VRO_ARGS
     VRO_REF_DELETE(VROAndroidViewTexture, textureRef);
 }
 
+VRO_METHOD(void, nativeSetCornerRadius)(VRO_ARGS
+                                        VRO_REF(VROAndroidViewTexture) textureRef,
+                                        VRO_FLOAT radiusMeters,
+                                        VRO_FLOAT widthMeters,
+                                        VRO_FLOAT heightMeters) {
+    std::shared_ptr<VROAndroidViewTexture> texture = VRO_REF_GET(VROAndroidViewTexture, textureRef);
+    if (texture) {
+        texture->setCornerRadius(radiusMeters, widthMeters, heightMeters);
+    }
+}
+
+VRO_METHOD(void, nativeSetPremultipliedAlpha)(VRO_ARGS
+                                              VRO_REF(VROAndroidViewTexture) textureRef,
+                                              VRO_BOOL premultiplied) {
+    std::shared_ptr<VROAndroidViewTexture> texture = VRO_REF_GET(VROAndroidViewTexture, textureRef);
+    if (texture) {
+        texture->setPremultipliedAlpha(premultiplied);
+    }
+}
+
 } // extern "C"
