@@ -129,6 +129,23 @@ bool VRORiveRoundedRectContains(float x, float y, float width, float height, flo
     return VROPanelCoverage(x, y, width, height, r, r) >= 0.5f;
 }
 
+bool VRORiveRoundedRectContains(float x, float y, float width, float height, float radiusXPx,
+                                float radiusYPx) {
+    if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0f || y < 0.0f || x > width ||
+        y > height) {
+        return false;
+    }
+    const float rx = std::isfinite(radiusXPx) && radiusXPx > 0.0f ? radiusXPx : 0.0f;
+    const float ry = std::isfinite(radiusYPx) && radiusYPx > 0.0f ? radiusYPx : 0.0f;
+    return VROPanelCoverage(x, y, width, height, rx, ry) >= 0.5f;
+}
+
+void VRORivePanelHitRadii(const VRORivePanelOptions &options, float *radiusXPx, float *radiusYPx) {
+    const bool coverage = options.coverageRadiusXPx > 0.0f || options.coverageRadiusYPx > 0.0f;
+    *radiusXPx = coverage ? options.coverageRadiusXPx : options.cornerRadiusPx;
+    *radiusYPx = coverage ? options.coverageRadiusYPx : options.cornerRadiusPx;
+}
+
 VRORivePointerRouter::Slot *VRORivePointerRouter::find(int pointerId) {
     for (Slot &slot : _slots) {
         if (slot.used && slot.id == pointerId) return &slot;

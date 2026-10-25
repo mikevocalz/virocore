@@ -100,9 +100,10 @@ bool validPath(const std::string &path) { return !path.empty() && path.size() <=
 bool validDimension(int value) { return value >= 1 && value <= kMaxDimension; }
 
 VRORivePanelOptions sanitize(VRORivePanelOptions options) {
-    if (!std::isfinite(options.cornerRadiusPx) || options.cornerRadiusPx < 0.0f) {
-        options.cornerRadiusPx = 0.0f;
-    }
+    auto clampRadius = [](float v) { return std::isfinite(v) && v > 0.0f ? v : 0.0f; };
+    options.cornerRadiusPx = clampRadius(options.cornerRadiusPx);
+    options.coverageRadiusXPx = clampRadius(options.coverageRadiusXPx);
+    options.coverageRadiusYPx = clampRadius(options.coverageRadiusYPx);
     auto clampAlignment = [](float v) { return std::isfinite(v) ? std::clamp(v, -1.0f, 1.0f) : 0.0f; };
     options.alignmentX = clampAlignment(options.alignmentX);
     options.alignmentY = clampAlignment(options.alignmentY);
@@ -400,8 +401,14 @@ void VRORivePanel::Impl::apply(CmdTrigger &cmd) {
 
 void VRORivePanel::Impl::apply(CmdPointer &cmd) {
     if (scene == nullptr || !scene->hasArtboard()) return;
-    const bool inside = VRORiveRoundedRectContains(cmd.x, cmd.y, float(width), float(height),
-                                                   options.cornerRadiusPx);
+    // Hits follow the corner the consumer draws (coverage >= 0.5).
+    float radiusX = 0.0f, radiusY = 0.0f;
+    VRORivePanelHitRadii(options, &radiusX, &radiusY);
+    const bool inside = radiusX == radiusY
+                            ? VRORiveRoundedRectContains(cmd.x, cmd.y, float(width), float(height),
+                                                         radiusX)
+                            : VRORiveRoundedRectContains(cmd.x, cmd.y, float(width), float(height),
+                                                         radiusX, radiusY);
     const VRORivePointerAction action = router.route(cmd.phase, inside, cmd.id);
     if (action == VRORivePointerAction::Drop) return;
     VRORiveAffine inverse;

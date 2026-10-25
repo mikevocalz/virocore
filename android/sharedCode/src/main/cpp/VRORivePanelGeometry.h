@@ -55,6 +55,18 @@ float VRORiveClampCornerRadius(float radiusPx, float width, float height);
 __attribute__((visibility("hidden")))
 bool VRORiveRoundedRectContains(float x, float y, float width, float height, float radiusPx);
 
+// Per-axis form for the consumer's radii (VROPanelCornerRadiiPx): each radius
+// is clamped on its own axis inside VROPanelCoverage, so the hit shape is
+// exactly the drawn shape.
+__attribute__((visibility("hidden")))
+bool VRORiveRoundedRectContains(float x, float y, float width, float height, float radiusXPx,
+                                float radiusYPx);
+
+// The radii pointer hits are tested with: the consumer's coverage radii when
+// either is positive, otherwise the producer's own clip radius on both axes.
+__attribute__((visibility("hidden")))
+void VRORivePanelHitRadii(const VRORivePanelOptions &options, float *radiusXPx, float *radiusYPx);
+
 enum class VRORivePointerPhase : uint8_t { Down, Move, Up };
 enum class VRORivePointerAction : uint8_t { Drop, Down, Move, Up, Exit };
 

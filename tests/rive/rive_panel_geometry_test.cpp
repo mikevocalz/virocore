@@ -229,11 +229,53 @@ void testPointerRouter() {
 
 } // namespace
 
+// Hits use the consumer's per-axis coverage radii (ADR 0001 "Corner
+// ownership"): the producer draws square, VROPanelCoverage rounds.
+void testConsumerHitRadii() {
+    VRORivePanelOptions options;
+    float rx = -1.0f, ry = -1.0f;
+    VRORivePanelHitRadii(options, &rx, &ry);
+    expect(options.cornerRadiusPx == 0.0f, "producer clip radius defaults to 0");
+    expect(rx == 0.0f && ry == 0.0f, "no radii: square hit shape");
+
+    options.cornerRadiusPx = 12.0f;
+    VRORivePanelHitRadii(options, &rx, &ry);
+    expect(rx == 12.0f && ry == 12.0f, "producer clip radius is the fallback");
+
+    options.coverageRadiusXPx = 40.0f;
+    options.coverageRadiusYPx = 30.0f;
+    VRORivePanelHitRadii(options, &rx, &ry);
+    expect(rx == 40.0f && ry == 30.0f, "consumer coverage radii win");
+
+    const float w = 1024.0f, h = 576.0f;
+    expect(!VRORiveRoundedRectContains(2.0f, 2.0f, w, h, 40.0f, 30.0f), "elliptical corner misses");
+    expect(VRORiveRoundedRectContains(w * 0.5f, h * 0.5f, w, h, 40.0f, 30.0f), "centre hits");
+    expect(VRORiveRoundedRectContains(40.0f, 0.0f, w, h, 40.0f, 30.0f), "x tangent point hits");
+    expect(VRORiveRoundedRectContains(0.0f, 30.0f, w, h, 40.0f, 30.0f), "y tangent point hits");
+    // Point on the ellipse arc at 45 degrees from the corner centre.
+    const float ex = 40.0f - 40.0f * 0.70710678f, ey = 30.0f - 30.0f * 0.70710678f;
+    expect(VRORiveRoundedRectContains(ex + 0.6f, ey + 0.6f, w, h, 40.0f, 30.0f), "just inside the ellipse");
+    expect(!VRORiveRoundedRectContains(ex - 0.6f, ey - 0.6f, w, h, 40.0f, 30.0f), "just outside the ellipse");
+    expect(!VRORiveRoundedRectContains(NAN, 10.0f, w, h, 40.0f, 30.0f), "NaN misses (per axis)");
+    // Equal radii: same answer as the single-radius form everywhere sampled.
+    bool same = true;
+    for (float y = 0.0f; y <= 60.0f; y += 0.37f) {
+        for (float x = 0.0f; x <= 60.0f; x += 0.41f) {
+            if (VRORiveRoundedRectContains(x, y, w, h, 25.0f) !=
+                VRORiveRoundedRectContains(x, y, w, h, 25.0f, 25.0f)) {
+                same = false;
+            }
+        }
+    }
+    expect(same, "per-axis form with equal radii matches the single-radius form");
+}
+
 int main() {
     testAlignmentMatchesRive();
     testAlignmentKnownValues();
     testRoundedRect();
     testPointerRouter();
+    testConsumerHitRadii();
     if (gFailures != 0) {
         std::fprintf(stderr, "%d of %d checks failed\n", gFailures, gChecks);
         return 1;

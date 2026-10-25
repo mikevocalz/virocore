@@ -19,8 +19,16 @@
 //  Surface's buffer queue is the hand-off.
 //
 //  Output: premultiplied alpha, sRGB-encoded bytes in an RGBA8 (non-sRGB)
-//  window surface, cleared to transparent, corners clipped anti-aliased to
-//  cornerRadiusPx. This is the scene-panel contract in ADR 0001 D6.
+//  window surface, cleared to transparent. This is the scene-panel contract
+//  in ADR 0001 D6.
+//
+//  Corners (ADR 0001 "Corner ownership"): the producer draws square and the
+//  consumer rounds with the shared coverage function (VROPanelCoverage.h) in
+//  the scene resolve copy, the compositor finish pass and the scene-mesh
+//  fallback. Pass the consumer's radii as coverageRadiusXPx/YPx so pointer
+//  hits follow the drawn corners. cornerRadiusPx makes the producer clip its
+//  own corners and exists only for displays that do not round at the
+//  consumer; with Viro leave it 0.
 //
 //  Availability: arm64-v8a builds with VIRO_WITH_RIVE. Elsewhere isAvailable()
 //  is false and create() returns null.
@@ -69,11 +77,18 @@ enum class VRORivePanelState : int32_t {
 VRO_RIVE_PANEL_API const char *VRORivePanelStateName(VRORivePanelState state);
 
 struct VRORivePanelOptions {
-    // Corner radius in panel pixels, computed by the caller from the panel's
-    // radius in meters (radius * widthPixels / widthMeters). Clamped to half
-    // the shorter side. Pixels outside the rounded rect are transparent and
-    // pointer hits there do not reach Rive.
+    // Producer-side clip radius in panel pixels, clamped to half the shorter
+    // side. Default 0: the producer draws square and the Viro consumer rounds.
+    // Set it only when the panel is shown somewhere that does not apply the
+    // shared coverage function; with Viro it would round twice.
     float cornerRadiusPx = 0.0f;
+    // Per-axis corner radii, in panel pixels, that the consumer's coverage
+    // function applies (VROPanelCornerRadiiPx(radiusM, widthM, heightM,
+    // widthPx, heightPx)). Used only for pointer hit testing: a press inside a
+    // transparent corner does not reach Rive. When both are 0, hits are tested
+    // against cornerRadiusPx instead.
+    float coverageRadiusXPx = 0.0f;
+    float coverageRadiusYPx = 0.0f;
     VRORivePanelFit fit = VRORivePanelFit::Contain;
     // rive::Alignment: -1 left/top, 0 centre, 1 right/bottom.
     float alignmentX = 0.0f;
@@ -135,7 +150,7 @@ public:
 
     // Panel pixel coordinates, origin top-left. Mapped into artboard space
     // with the same fit and alignment Rive renders with. A press that starts
-    // in a transparent corner is dropped; a press that started inside keeps
+    // in a transparent corner (coverage < 0.5) is dropped; a press that started inside keeps
     // receiving move/up even if it slides into a corner.
     bool pointerDown(float xPx, float yPx, int pointerId);
     bool pointerMove(float xPx, float yPx, int pointerId);
