@@ -135,6 +135,10 @@ public class ViroViewOpenXR extends ViroView {
     // Foveation {level, dynamic?1:0} or null. Deferred like the props above;
     // without this a level set before renderer creation was silently dropped.
     private int[] mPendingFoveationLevel = null;
+    // Startup render quality set through setRenderQuality(). null = use the
+    // manifest meta-data (OpenXRRenderQualityManifest), which itself defaults
+    // to OpenXRRenderQuality.DEFAULT. Read once, in initRenderer().
+    private OpenXRRenderQuality mRenderQuality = null;
 
     // ── Constructors ─────────────────────────────────────────────────────────────
 
@@ -232,6 +236,9 @@ public class ViroViewOpenXR extends ViroView {
 
         // `this` is passed so C++ can call back onDrawFrame() each frame to drain
         // the Java render-thread queue (FrameListeners, PlatformUtil callbacks).
+        final OpenXRRenderQuality renderQuality = getRenderQuality();
+        android.util.Log.i("VRORendererOpenXR", "Startup render quality: " + renderQuality
+                + (mRenderQuality != null ? " (setRenderQuality)" : " (manifest/default)"));
         mNativeRenderer = new Renderer(
                 getClass().getClassLoader(),
                 activity.getApplicationContext(),
@@ -239,7 +246,8 @@ public class ViroViewOpenXR extends ViroView {
                 activity,
                 mAssetManager,
                 mPlatformUtil,
-                mRendererConfig);
+                mRendererConfig,
+                renderQuality);
 
         mNativeViroContext = new ViroContext(mNativeRenderer.mNativeRef);
 
@@ -539,6 +547,49 @@ public class ViroViewOpenXR extends ViroView {
         if (mNativeRenderer != null) {
             mNativeRenderer.setFoveationLevel(level, dynamic);
         }
+    }
+
+    /**
+     * Set the startup render quality: the eye-buffer scale and the foveation
+     * level the OpenXR session starts with. Overrides the manifest meta-data
+     * read by {@link OpenXRRenderQualityManifest}.
+     *
+     * <p>Startup-only. The eye swapchains are created once, when this view
+     * creates its native renderer (on the first resume of the Activity that
+     * hosts it), and are never recreated for the life of the view. Call this
+     * before the view is attached. To change foveation while the session runs,
+     * use {@link #setFoveationLevel(int, boolean)}; a level set that way before
+     * startup is applied after, and wins over, the startup level here.
+     *
+     * @throws IllegalStateException when the native renderer already exists, so
+     *                               the swapchains are already sized.
+     */
+    public void setRenderQuality(@NonNull OpenXRRenderQuality renderQuality) {
+        if (renderQuality == null) {
+            throw new NullPointerException("renderQuality");
+        }
+        if (mNativeRenderer != null) {
+            throw new IllegalStateException(
+                    "setRenderQuality() is startup-only: the OpenXR session already created its "
+                            + "eye swapchains. Call it before the view attaches, or set "
+                            + OpenXRRenderQualityManifest.KEY_EYE_BUFFER_SCALE
+                            + " in the manifest. For foveation, setFoveationLevel() works at runtime.");
+        }
+        mRenderQuality = renderQuality;
+    }
+
+    /**
+     * The startup render quality this view uses or will use: the value passed to
+     * {@link #setRenderQuality}, else the manifest meta-data, else
+     * {@link OpenXRRenderQuality#DEFAULT}. Reports the request; the per-axis
+     * clamp the renderer applies is in the {@code Eye N:} log line.
+     */
+    @NonNull
+    public OpenXRRenderQuality getRenderQuality() {
+        if (mRenderQuality != null) {
+            return mRenderQuality;
+        }
+        return OpenXRRenderQualityManifest.read(getContext());
     }
 
     /** -1: session pending; 0: no initialized plane source; 1: initialized source. */

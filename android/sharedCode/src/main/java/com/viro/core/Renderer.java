@@ -126,8 +126,22 @@ public class Renderer {
     public Renderer(ClassLoader appClassLoader, Context context,
                     ViroViewOpenXR view, Activity activity, AssetManager assets, PlatformUtil platformUtil,
                     RendererConfiguration config) {
+        this(appClassLoader, context, view, activity, assets, platformUtil, config,
+                OpenXRRenderQuality.DEFAULT);
+    }
+
+    /**
+     * Create the OpenXR renderer. The session and its eye swapchains are created
+     * inside this call, so {@code renderQuality} is the only point where the
+     * eye-buffer scale can be chosen.
+     */
+    public Renderer(ClassLoader appClassLoader, Context context,
+                    ViroViewOpenXR view, Activity activity, AssetManager assets, PlatformUtil platformUtil,
+                    RendererConfiguration config, OpenXRRenderQuality renderQuality) {
         mNativeRef = nativeCreateRendererOpenXR(appClassLoader, context, view, activity, assets, platformUtil,
-                config.isShadowsEnabled(), config.isHDREnabled(), config.isPBREnabled(), config.isBloomEnabled());
+                config.isShadowsEnabled(), config.isHDREnabled(), config.isPBREnabled(), config.isBloomEnabled(),
+                renderQuality.getEyeBufferScale(), renderQuality.getFoveationLevel().getCode(),
+                renderQuality.isFoveationDynamic());
     }
 
     public void recenterTracking() { nativeRecenterTracking(mNativeRef); }
@@ -469,7 +483,8 @@ public class Renderer {
                                                 boolean enableShadows, boolean enableHDR, boolean enablePBR, boolean enableBloom);
     private native long nativeCreateRendererOpenXR(ClassLoader appClassLoader, Context context,
                                                    ViroViewOpenXR view, Activity activity, AssetManager assets, PlatformUtil platformUtil,
-                                                   boolean enableShadows, boolean enableHDR, boolean enablePBR, boolean enableBloom);
+                                                   boolean enableShadows, boolean enableHDR, boolean enablePBR, boolean enableBloom,
+                                                   float eyeBufferScale, int foveationLevel, boolean foveationDynamic);
     private native long nativeCreateRendererSceneView(ClassLoader appClassLoader, Context context,
                                                       ViroViewScene view, AssetManager assets, PlatformUtil platformUtil,
                                                       boolean enableShadows, boolean enableHDR, boolean enablePBR, boolean enableBloom);

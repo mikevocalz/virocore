@@ -210,8 +210,10 @@ static VROMatrix4f xrFovToProjection(const XrFovf &fov,
 
 VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
                                                std::shared_ptr<gvr::AudioApi> gvrAudio,
-                                               jobject view, jobject activity, JNIEnv *env)
-    : _gvrAudio(gvrAudio)
+                                               jobject view, jobject activity, JNIEnv *env,
+                                               VROOpenXRRenderQuality renderQuality)
+    : _gvrAudio(gvrAudio),
+      _renderQuality(renderQuality)
 {
     // Hold global refs so these objects live as long as the renderer
     _activity = env->NewGlobalRef(activity);
@@ -1030,17 +1032,26 @@ bool VROSceneRendererOpenXR::createSwapchains() {
 
         // Render above the recommended size. The recommended rect is tuned
         // for 3D scenes; flat UI panels with small text alias and blur at
-        // that density. 1.3x per axis, clamped to what the runtime allows.
-        // Everything downstream (viewport, scissor, render targets, the
-        // projection layer's imageRect) reads sc.width/sc.height.
-        constexpr float kEyeBufferScale = 1.3f;
-        sc.width  = std::min(view.maxImageRectWidth,
-                             (uint32_t)(view.recommendedImageRectWidth * kEyeBufferScale + 0.5f));
-        sc.height = std::min(view.maxImageRectHeight,
-                             (uint32_t)(view.recommendedImageRectHeight * kEyeBufferScale + 0.5f));
-        ALOGI("Eye %u: recommended %ux%u, max %ux%u, rendering %ux%u", eye,
+        // that density. The scale comes from _renderQuality (default 1.3x)
+        // and is clamped per axis to [1, max / recommended]. Everything
+        // downstream (viewport, scissor, render targets, the projection
+        // layer's imageRect) reads sc.width/sc.height.
+        const VROEyeBufferResolution res = VROResolveEyeBufferSize(
+            _renderQuality.eyeBufferScale,
+            view.recommendedImageRectWidth, view.recommendedImageRectHeight,
+            view.maxImageRectWidth, view.maxImageRectHeight);
+        sc.width  = res.width;
+        sc.height = res.height;
+        ALOGI("Eye %u: recommended %ux%u, max %ux%u, scale requested %.3f%s, "
+              "applied %.3fx%.3f, size requested %ux%u, clamped %ux%u, rendering %ux%u",
+              eye,
               view.recommendedImageRectWidth, view.recommendedImageRectHeight,
-              view.maxImageRectWidth, view.maxImageRectHeight, sc.width, sc.height);
+              view.maxImageRectWidth, view.maxImageRectHeight,
+              res.requestedScale, res.rejectedNonFinite ? " (non-finite request rejected)" : "",
+              res.scaleX, res.scaleY,
+              res.requestedWidth, res.requestedHeight,
+              res.width, res.height,
+              sc.width, sc.height);
 
         XrSwapchainCreateInfo scInfo = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
         scInfo.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
@@ -1069,9 +1080,12 @@ bool VROSceneRendererOpenXR::createSwapchains() {
     // a runtime without FB_foveation simply renders unfoveated.
     if (_foveationAvailable && _swapchainUpdateStateAvailable) {
         if (initFoveation()) {
-            // LOW keeps the periphery of panel text legible; the larger eye
-            // buffer still leaves GPU headroom on Quest 3S. App can override.
-            setFoveationLevel(VROFoveationLevel::LOW, /*dynamic=*/true);
+            // Default LOW + dynamic keeps the periphery of panel text legible;
+            // the larger eye buffer still leaves GPU headroom on Quest 3S. The
+            // manifest or ViroViewOpenXR can pick another startup level, and
+            // setFoveationLevel() changes it at runtime.
+            setFoveationLevel(_renderQuality.foveationLevel,
+                              _renderQuality.foveationDynamic);
         }
     }
     return true;
