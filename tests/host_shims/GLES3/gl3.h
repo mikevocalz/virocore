@@ -5,6 +5,7 @@
 typedef unsigned int GLuint;
 typedef unsigned int GLenum;
 typedef int GLint;
+typedef struct __GLsync *GLsync;
 #define GL_SRGB8_ALPHA8 0x8C43
 #define GL_RGBA8 0x8058
 void glFlush();

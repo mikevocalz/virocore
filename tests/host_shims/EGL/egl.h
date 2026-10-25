@@ -11,3 +11,6 @@ typedef unsigned int EGLBoolean;
 typedef void *EGLClientBuffer;
 #define EGL_NO_CONTEXT ((EGLContext)0)
 #define EGL_NO_DISPLAY ((EGLDisplay)0)
+#define EGL_NO_SURFACE ((EGLSurface)0)
+// Defined by tests that link code calling it (tests/rive/rive_panel_worker_test.cpp).
+EGLBoolean eglReleaseThread(void);

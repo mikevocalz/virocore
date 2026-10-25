@@ -160,6 +160,11 @@ struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
     std::atomic<std::thread::id> workerId{};
     std::mutex threadMutex;          // guards `thread` join/detach
     std::thread thread;
+    // dispose() ran on the worker (status listener, or the last reference
+    // dropped there): run() detaches the thread on its way out.
+    std::atomic<bool> selfDisposing{false};
+    // Set under threadMutex by a dispose() that is about to join.
+    std::atomic<bool> joining{false};
 
     // ---- Worker thread only ----
     std::unique_ptr<VRORivePanelEGL> egl;
@@ -214,6 +219,7 @@ struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
         return active ? VRORivePanelState::Active : VRORivePanelState::Suspended;
     }
     bool createRing();
+    void detachSelf();
     void notify(VRORivePanelState s, const std::string &detail);
     void publishIfChanged();
     void report(const std::string &detail);
@@ -281,6 +287,21 @@ bool VRORivePanel::Impl::createRing() {
     needsFrame = true;
     idle = true;
     return true;
+}
+
+// Worker, after teardown, when dispose() ran on this thread. Detaches unless
+// another thread is joining. Never blocks on threadMutex, which a joiner holds
+// for the whole join; create() and a joiner that has not set `joining` yet
+// hold it only briefly.
+void VRORivePanel::Impl::detachSelf() {
+    while (!joining.load()) {
+        std::unique_lock<std::mutex> lock(threadMutex, std::try_to_lock);
+        if (lock.owns_lock()) {
+            if (!joining.load() && thread.joinable()) thread.detach();
+            return;
+        }
+        std::this_thread::yield();
+    }
 }
 
 void VRORivePanel::Impl::failGpu(const std::string &detail) {
@@ -662,7 +683,11 @@ void VRORivePanel::Impl::run() {
             lost->done->set_value();
         }
     }
+    if (selfDisposing.load()) detachSelf();
+    // The listener can still call dispose() (or drop the last reference) on
+    // this notification, so check once more after it returns.
     notify(VRORivePanelState::Disposed, std::string());
+    if (selfDisposing.load()) detachSelf();
 }
 
 bool VRORivePanel::isAvailable() { return true; }
@@ -896,15 +921,18 @@ void VRORivePanel::dispose() {
         impl.disposeRequested = true;
     }
     impl.wake.notify_all();
-    std::lock_guard<std::mutex> lock(impl.threadMutex);
-    if (!impl.thread.joinable()) return;
     if (impl.onWorkerThread()) {
         // From the listener (or the last reference dropped there): the
-        // worker finishes teardown after the listener returns. Its lambda
-        // holds Impl alive until then.
-        impl.thread.detach();
+        // worker finishes teardown after the listener returns, and its lambda
+        // holds Impl alive until then. threadMutex is not taken here: another
+        // thread may hold it while joining this one. run() detaches instead,
+        // unless that joiner is waiting for it.
+        impl.selfDisposing.store(true);
         return;
     }
+    std::lock_guard<std::mutex> lock(impl.threadMutex);
+    if (!impl.thread.joinable()) return;
+    impl.joining.store(true);
     impl.thread.join();
 }
 
