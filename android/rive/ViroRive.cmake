@@ -39,8 +39,10 @@ function(viro_rive_sources)
         INCLUDE_DIRECTORIES "${VIRO_RIVE_INCLUDE_DIRS}"
         # rive is built as C++17 without RTTI or exceptions, with yoga's and harfbuzz's symbols
         # renamed by force-included headers. Match all of it so types mangle the same way.
+        # Hidden visibility too: inline rive functions instantiated in a ViroCore TU would
+        # otherwise be exported from the .so as weak symbols (seen with File::import).
         COMPILE_OPTIONS
-            "-std=c++17;-fno-rtti;-fno-exceptions;-UDEBUG;--include=rive_yoga_renames.h;--include=rive_harfbuzz_renames.h")
+            "-std=c++17;-fno-rtti;-fno-exceptions;-UDEBUG;-fvisibility=hidden;-fvisibility-inlines-hidden;--include=rive_yoga_renames.h;--include=rive_harfbuzz_renames.h")
 endfunction()
 
 if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
