@@ -5,6 +5,10 @@ swapchain larger than the runtime's recommended size, and applies fixed
 foveation (`XR_FB_foveation`) once those swapchains exist. Both are configurable.
 The defaults are 1.3x per axis and `LOW` dynamic foveation.
 
+It can also request a display refresh rate through `XR_FB_display_refresh_rate`.
+That request is opt-in: by default the renderer never calls
+`xrRequestDisplayRefreshRateFB` and the runtime keeps its own rate.
+
 There is no JS runtime API. Configuration is native and build-time:
 
 | Layer | Where | Sets |
@@ -24,7 +28,8 @@ There is no JS runtime API. Configuration is native and build-time:
     "xRMode": ["QUEST"],
     "openxr": {
       "eyeBufferScale": 1.5,
-      "foveation": { "level": "medium", "dynamic": false }
+      "foveation": { "level": "medium", "dynamic": false },
+      "displayRefreshRate": "highest"
     }
   }
 }]
@@ -38,6 +43,8 @@ openxr?: {
     level: "off" | "low" | "medium" | "high";  // default "low"
     dynamic?: boolean;                          // default true
   };
+  /** "highest", or a rate in Hz (positive, at most 240). Default: no request. */
+  displayRefreshRate?: "highest" | number;
 };
 ```
 
@@ -51,11 +58,15 @@ Prebuild fails when a value is out of range or the wrong type, and when
 <meta-data android:name="com.viro.openxr.eyeBufferScale"   android:value="1.5"/>
 <meta-data android:name="com.viro.openxr.foveationLevel"   android:value="medium"/>
 <meta-data android:name="com.viro.openxr.foveationDynamic" android:value="false"/>
+<meta-data android:name="com.viro.openxr.displayRefreshRate" android:value="highest"/>
 ```
+
+`displayRefreshRate` takes `highest` or a number of Hz, such as `90`.
 
 `OpenXRRenderQualityManifest.read(Context)` reads these. A missing key keeps
 its default. An unreadable value (not a number, an unknown level name, not a
-boolean) also keeps its default and logs a warning under the
+boolean, a refresh rate that is neither `highest` nor a positive number) also
+keeps its default and logs a warning under the
 `VRORendererOpenXR` tag; it does not stop the renderer starting. The plugin
 validates values, so this only happens with a hand-edited manifest.
 
@@ -66,10 +77,22 @@ public final class OpenXRRenderQuality {
     public static final OpenXRRenderQuality DEFAULT;  // 1.3f, LOW, dynamic
     public OpenXRRenderQuality(float eyeBufferScale,
                                OpenXRFoveationLevel foveationLevel,
-                               boolean foveationDynamic);
+                               boolean foveationDynamic);              // no refresh-rate request
+    public OpenXRRenderQuality(float eyeBufferScale,
+                               OpenXRFoveationLevel foveationLevel,
+                               boolean foveationDynamic,
+                               @Nullable OpenXRDisplayRefreshRate displayRefreshRate);
     public float getEyeBufferScale();
     public OpenXRFoveationLevel getFoveationLevel();
     public boolean isFoveationDynamic();
+    @Nullable public OpenXRDisplayRefreshRate getDisplayRefreshRate();  // null: no request
+}
+
+public final class OpenXRDisplayRefreshRate {
+    public static final OpenXRDisplayRefreshRate HIGHEST;
+    public static OpenXRDisplayRefreshRate atMostHz(float hz);  // throws for NaN, infinite, <= 0
+    public boolean isHighest();
+    public float getHz();
 }
 
 public enum OpenXRFoveationLevel { OFF, LOW, MEDIUM, HIGH; public int getCode(); }
@@ -104,6 +127,16 @@ ViroViewOpenXR view = new ViroViewOpenXR(activity, startupListener);
 view.setRenderQuality(new OpenXRRenderQuality(1.6f, OpenXRFoveationLevel.MEDIUM, false));
 ```
 
+Refresh rate. Ask for the highest rate the headset offers, or for the closest
+rate at or below a ceiling:
+
+```java
+view.setRenderQuality(new OpenXRRenderQuality(1.3f, OpenXRFoveationLevel.LOW, true,
+        OpenXRDisplayRefreshRate.HIGHEST));
+view.setRenderQuality(new OpenXRRenderQuality(1.3f, OpenXRFoveationLevel.LOW, true,
+        OpenXRDisplayRefreshRate.atMostHz(90f)));
+```
+
 Clamped or unsupported. The request is honoured as far as the runtime allows
 and the log shows what changed. On a runtime whose maximum width is 1.4x the
 recommended width, a 2.0 request renders at 1.4x on that axis and 2.0x on any
@@ -116,6 +149,13 @@ view.setRenderQuality(new OpenXRRenderQuality(2.0f, OpenXRFoveationLevel.HIGH, t
 // IllegalStateException: setRenderQuality() is startup-only: the OpenXR session
 // already created its eye swapchains. ...
 view.setFoveationLevel(OpenXRFoveationLevel.HIGH.getCode(), true);  // works at runtime
+```
+
+A refresh-rate request on a runtime without `XR_FB_display_refresh_rate` is not
+an error. The session starts at the runtime rate and logs why:
+
+```
+[XR-QUALITY] display refresh rate: requested highest, chosen none: XR_FB_display_refresh_rate is not enabled; keeping the runtime rate
 ```
 
 ## Startup vs runtime
@@ -131,6 +171,41 @@ renderer exists rather than storing a value that would never apply.
 Foveation has two parts. The startup level is applied right after the
 swapchains are created. `setFoveationLevel()` rebuilds the foveation profile on
 the live swapchains through `xrUpdateSwapchainFB`, so it works at any time.
+
+## Display refresh rate
+
+`XR_FB_display_refresh_rate` (OpenXR 1.1 specification, extension 102) lists
+the rates a session supports with `xrEnumerateDisplayRefreshRatesFB`, lowest to
+highest and identical for the life of the session. `xrRequestDisplayRefreshRateFB`
+accepts `0.0` (no preference) or one of those rates and returns
+`XR_ERROR_DISPLAY_REFRESH_RATE_UNSUPPORTED_FB` for anything else. The spec calls
+it a request that does not guarantee a switch, and the extension must be enabled
+before any of these functions is called.
+
+The renderer follows those rules:
+
+1. With no request configured it returns before any OpenXR call.
+2. It only requests when the extension was enabled on the instance.
+3. It requests after each successful `xrBeginSession` (the `READY` state),
+   because the runtime can reset the rate across a pause.
+4. The rate always comes from the enumeration. `VROPickDisplayRefreshRate()` in
+   `VROOpenXRRenderQuality.h` picks the highest rate for `highest`, the closest
+   rate at or below the ceiling for a number (a request within 0.01 Hz above a
+   rate matches it), and the lowest rate when the ceiling is below all of them.
+   NaN, infinite, zero and negative ceilings, and an empty enumeration, request
+   nothing.
+5. Every failure is logged and the session carries on at the runtime rate.
+
+The switch is asynchronous. The `current` field of the log line can still show
+the old rate; a second line appears when
+`XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB` arrives:
+
+```
+[XR-QUALITY] display refresh rate: requested highest, chosen 120.00 Hz, current 90.00 Hz, xrRequestDisplayRefreshRateFB result=0
+[XR-QUALITY] display refresh rate changed: 90.00 Hz -> 120.00 Hz
+```
+
+`scripts/test-eye-buffer-scale.sh` covers the picker on the host.
 
 ## Clamp semantics
 
