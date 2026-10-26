@@ -17,6 +17,9 @@ jobs:
           distribution: "adopt"
           java-version: 17
 
+      - name: Install rive-runtime host build dependencies
+        # build_rive.sh bootstraps premake from source; on Linux that needs libuuid headers.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends uuid-dev ninja-build
       - name: assemble ViroCore
         run: |
           ./gradlew :viroreact:assembleDebug
@@ -46,6 +49,9 @@ jobs:
         with:
           distribution: "adopt"
           java-version: 17
+      - name: Install rive-runtime host build dependencies
+        # build_rive.sh bootstraps premake from source; on Linux that needs libuuid headers.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends uuid-dev ninja-build
       - name: Code checks
         run: ./gradlew :viroreact:check
       - name: Archive Lint report
