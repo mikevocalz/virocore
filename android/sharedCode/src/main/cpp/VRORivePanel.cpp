@@ -187,12 +187,15 @@ struct __attribute__((visibility("hidden"))) VRORivePanel::Impl {
 
     // ---- Caller side ----
     bool enqueue(Command command, bool bounded) {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            if (disposeRequested) return false;
-            if (bounded && queue.size() >= kMaxQueuedCommands) return false;
-            queue.push_back(std::move(command));
-        }
+        // Notify while holding the lock. Once the command is visible the
+        // worker may apply it, publish a state, and drop the last reference
+        // from the listener, destroying this Impl. Unlocking queueMutex must
+        // be the caller's last touch of Impl, so `wake` cannot be signalled
+        // after the unlock.
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (disposeRequested) return false;
+        if (bounded && queue.size() >= kMaxQueuedCommands) return false;
+        queue.push_back(std::move(command));
         wake.notify_one();
         return true;
     }
