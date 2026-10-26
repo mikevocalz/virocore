@@ -69,13 +69,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          build_root="tools/eskiu/android-probe/probe/.cxx/Debug"
-          obj="$(find "$build_root" -name "android_target_probe.o" -print -quit)"
-          so="$(find "$build_root" -path "*/obj/arm64-v8a/libviro_eskiu_probe.so" -print -quit)"
-          test -n "$obj"
-          test -f "$obj"
-          test -n "$so"
-          test -f "$so"
+          probe="tools/eskiu/android-probe/probe"
+          # AGP 8 keeps CMake's binary dir (and the custom-command object) under
+          # .cxx/Debug, but sets CMAKE_LIBRARY_OUTPUT_DIRECTORY to
+          # build/intermediates/cxx/Debug/<hash>/obj/<abi>, so the linked library
+          # is not under .cxx.
+          obj="$(find "$probe/.cxx/Debug" -name "android_target_probe.o" -print -quit || true)"
+          so="$(find "$probe/build/intermediates/cxx/Debug" \
+            -path "*/obj/arm64-v8a/libviro_eskiu_probe.so" -print -quit || true)"
+          if [[ -z "$obj" || ! -f "$obj" ]]; then
+            echo "android_target_probe.o not found under $probe/.cxx/Debug" >&2
+            exit 1
+          fi
+          if [[ -z "$so" || ! -f "$so" ]]; then
+            echo "obj/arm64-v8a/libviro_eskiu_probe.so not found under $probe/build/intermediates/cxx/Debug" >&2
+            find "$probe" -name "libviro_eskiu_probe.so" >&2 || true
+            exit 1
+          fi
           readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           echo "Inspecting generated Eskiu object: $obj"
           "$readelf" -h "$obj" | grep -E "Class:.*ELF64"
