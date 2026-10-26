@@ -7,7 +7,7 @@
 include_guard(GLOBAL)
 include(CMakeParseArguments)
 
-set(VIRO_ESKIU_EXPECTED_VERSION "0.9.2" CACHE STRING "Pinned Eskiu compiler version")
+set(VIRO_ESKIU_EXPECTED_VERSION "0.14.0" CACHE STRING "Pinned Eskiu compiler version")
 find_program(VIRO_ESKIU_COMPILER NAMES eskiuc)
 
 function(viro_eskiu_require_compiler)

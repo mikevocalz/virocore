@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ESKIUC="${ESKIUC:-eskiuc}"
 CXX="${CXX:-c++}"
-EXPECTED_VERSION="${ESKIU_EXPECTED_VERSION:-0.9.2}"
+EXPECTED_VERSION="${ESKIU_EXPECTED_VERSION:-0.14.0}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/viro-eskiu-geometry.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 

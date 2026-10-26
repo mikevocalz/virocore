@@ -21,8 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      ESKIU_VERSION: "0.9.2"
-      ESKIU_ARCHIVE_SHA256: "46316ce1553489045aec1cf9fbc432f551cda4850b90d200a7b4c73bc835e8ec"
+      ESKIU_VERSION: "0.14.0"
+      ESKIU_ARCHIVE_SHA256: "4d6bb09c9995991e32c178fd5d4bcdd85e4652c750ce4f578c386fd5e8f2eb50"
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Eskiu
@@ -32,7 +32,7 @@ jobs:
           archive="$RUNNER_TEMP/eskiuc.tar.gz"
           prefix="$RUNNER_TEMP/eskiu"
           curl -fsSL \
-            "https://github.com/doranteseduardo/eskiu/releases/download/v${ESKIU_VERSION}/eskiuc-linux-x86_64.tar.gz" \
+            "https://github.com/eskiu-lang/eskiu/releases/download/v${ESKIU_VERSION}/eskiuc-linux-x86_64.tar.gz" \
             -o "$archive"
           echo "${ESKIU_ARCHIVE_SHA256}  $archive" | sha256sum -c -
           mkdir -p "$prefix"

@@ -5,14 +5,18 @@ Quest/PICO ViroCore module is migrated from C++.
 
 ## Why separate this from renderer migration
 
-Eskiu v0.9.2 documents native AArch64 C ABI support, but its public roadmap still
-lists these Android items as incomplete:
+At the initial v0.9.2 pin, Eskiu documented native AArch64 C ABI support, but its
+public roadmap still listed these Android items as incomplete:
 
 - `aarch64-linux-android` validation against the NDK/bionic;
 - JNI shared-library integration;
 - Gradle/NDK packaging.
 
 Generic AArch64 success is therefore not enough to authorize a Quest/PICO backend swap.
+
+Eskiu v0.13.0 lists `aarch64-linux-android24`, armv7 and x86_64 Android targets
+linked with the NDK's clang. The pinned v0.14.0 compiler passes Stage A and B of the
+local probe with NDK 28.2. The upstream note does not replace the device gates below.
 
 ## Staged acceptance gates
 

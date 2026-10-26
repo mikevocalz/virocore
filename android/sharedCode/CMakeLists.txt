@@ -14,7 +14,7 @@ set(VIRO_ANDROID_SRC      ${CMAKE_SOURCE_DIR}/../sharedCode/src/main/cpp)
 
 # Optional production Eskiu geometry backend. C++ stays the default and
 # builds without Eskiu unless explicitly enabled. Quest/PICO arm64 and x86_64
-# Android targets are supported by Eskiu 0.9.2's native LLVM backends.
+# Android targets are supported by Eskiu 0.14.0's native LLVM backends.
 option(VIRO_ENABLE_ESKIU_GEOMETRY "Compile the Eskiu geometry backend into viro_renderer" OFF)
 set(VIRO_ESKIU_GEOMETRY_OBJECT "")
 if(VIRO_ENABLE_ESKIU_GEOMETRY)
@@ -43,7 +43,7 @@ endif()
 
 # Optional production Eskiu accessor backend. C++ stays the default and
 # builds without Eskiu unless explicitly enabled. Quest/PICO arm64 and x86_64
-# Android targets are supported by Eskiu 0.9.2's native LLVM backends.
+# Android targets are supported by Eskiu 0.14.0's native LLVM backends.
 option(VIRO_ENABLE_ESKIU_ACCESSOR "Compile the Eskiu accessor backend into viro_renderer" OFF)
 set(VIRO_ESKIU_ACCESSOR_OBJECT "")
 if(VIRO_ENABLE_ESKIU_ACCESSOR)
@@ -70,7 +70,7 @@ endif()
 
 # Optional production Eskiu spatial backend. C++ stays the default and
 # builds without Eskiu unless explicitly enabled. Quest/PICO arm64 and x86_64
-# Android targets are supported by Eskiu 0.9.2's native LLVM backends.
+# Android targets are supported by Eskiu 0.14.0's native LLVM backends.
 option(VIRO_ENABLE_ESKIU_SPATIAL "Compile the Eskiu spatial backend into viro_renderer" OFF)
 set(VIRO_ESKIU_SPATIAL_OBJECT "")
 if(VIRO_ENABLE_ESKIU_SPATIAL)

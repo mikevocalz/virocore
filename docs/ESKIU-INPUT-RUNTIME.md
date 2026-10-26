@@ -6,7 +6,7 @@ runtime-selectable backend while preserving the existing C++ reference ABI.
 ## What is implemented
 
 - `experimental/eskiu/VROEngineInputEskiu.esk` is a lock-free SPSC ring.
-- Eskiu v0.9.2 `<atomic>` intrinsics provide acquire/release
+- Eskiu `<atomic>` intrinsics provide acquire/release
   `atomic_load` / `atomic_store` operations for the queue indices.
 - The queue keeps the frozen 96-byte `VROEngineInputSample` layout.
 - Push/pop allocate nothing after queue creation.
@@ -20,13 +20,18 @@ runtime-selectable backend while preserving the existing C++ reference ABI.
 
 ## Why 32-bit atomic indices
 
-Eskiu v0.9.2 exposes atomics on `int` cells. The implementation therefore stores
+Eskiu v0.9.2, the toolchain this backend was written against, exposed atomics on
+`int` cells only. The implementation therefore stores
 read/write sequence counters in 32-bit atomic cells and interprets them as
 wrapping `uint32` values. Capacity is restricted to `< 2^31`, so the standard
 wrapping-distance SPSC full/empty test remains unambiguous.
 
 The dropped counter is also a 32-bit atomic cell and saturates at `INT32_MAX`.
 The public ABI continues to return it as `uint64_t`.
+
+Eskiu 0.13.0 added 64-bit and pointer atomic cells. The ring has not been moved to
+them; doing so would lift the `< 2^31` capacity bound and the dropped-counter
+saturation, and needs its own parity run.
 
 ## Rollout status
 

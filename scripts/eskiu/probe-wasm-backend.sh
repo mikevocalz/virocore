@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Since Eskiu 0.13.0 the release compiler registers LLVM's WebAssembly backend,
+# so this probe uses the pinned eskiuc instead of a patched source build.
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-22/lib/cmake/llvm}"
+ESKIUC_BIN="${ESKIUC:-$(command -v eskiuc || true)}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/viro-eskiu-wasm.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-ESKIU_REPO="${ESKIU_REPO:-https://github.com/doranteseduardo/eskiu.git}"
-ESKIU_COMMIT="${ESKIU_COMMIT:-95d7ece7ea8d72bc106a141bc031a1648ed8f2ac}"
+if [[ -z "$ESKIUC_BIN" ]]; then
+  echo "error: eskiuc not found; set ESKIUC=/path/to/eskiuc" >&2
+  exit 2
+fi
 
-git clone --quiet "$ESKIU_REPO" "$WORK/eskiu"
-git -C "$WORK/eskiu" checkout --quiet "$ESKIU_COMMIT"
-python3 "$ROOT/tools/eskiu/patch-eskiu-wasm.py" "$WORK/eskiu"
+"$ESKIUC_BIN" --version
 
-cmake -S "$WORK/eskiu" -B "$WORK/build"   -G Ninja   -DLLVM_DIR="$LLVM_DIR"   -DCMAKE_BUILD_TYPE=Release
-cmake --build "$WORK/build" --target eskiuc -j2
-
-"$WORK/build/eskiuc" "$ROOT/tests/eskiu/wasm_target_probe.esk"   -c -o "$WORK/viro_eskiu_wasm_probe.o"   --target wasm32-unknown-unknown   --reloc static
+"$ESKIUC_BIN" "$ROOT/tests/eskiu/wasm_target_probe.esk"   -c -o "$WORK/viro_eskiu_wasm_probe.o"   --target wasm32-unknown-unknown   --reloc static
 
 description="$(file "$WORK/viro_eskiu_wasm_probe.o")"
 echo "$description"
 if [[ "$description" != *"WebAssembly"* ]]; then
-  echo "error: patched Eskiu compiler did not emit a WebAssembly object" >&2
+  echo "error: Eskiu compiler did not emit a WebAssembly object" >&2
   exit 3
 fi
 
@@ -35,4 +35,4 @@ else
 fi
 
 file "$WORK/viro_eskiu_wasm_probe.wasm"
-echo "Patched Eskiu WebAssembly backend probe: PASS"
+echo "Eskiu WebAssembly backend probe: PASS"
