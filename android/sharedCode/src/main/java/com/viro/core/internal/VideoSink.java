@@ -46,12 +46,18 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
     private boolean mSurfacedUpdated;
 
     /**
+     * The native OpenGL texture (GL_TEXTURE_EXTERNAL_OES) this sink feeds.
+     */
+    private final int mTextureId;
+
+    /**
      * Create a new VideoSink wrapping the given native OpenGL
      * texture ID.
      *
      * @param textureId The native texture ID.
      */
     public VideoSink(int textureId) {
+        mTextureId = textureId;
         mSurfaceTexture = new SurfaceTexture(textureId);
         mSurfaceTexture.setOnFrameAvailableListener(this);
         mSurface = new Surface(mSurfaceTexture);
@@ -62,6 +68,7 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
     }
 
     public VideoSink(int textureId, int width, int height) {
+        mTextureId = textureId;
         mSurfaceTexture = new SurfaceTexture(textureId);
         mSurfaceTexture.setOnFrameAvailableListener(this);
         mSurfaceTexture.setDefaultBufferSize(width, height);
@@ -78,6 +85,9 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
             if (mSurfacedUpdated) {
                 mSurfaceTexture.updateTexImage();
                 mSurfacedUpdated = false;
+                // Rendering thread, GL context current: let the native texture
+                // that samples this frame rebuild its mipmapped copy.
+                nativeOnFrameLatched(mTextureId);
             }
         }
     }
@@ -99,4 +109,10 @@ public class VideoSink implements SurfaceTexture.OnFrameAvailableListener, Frame
     public void releaseSurface() {
         mSurface.release();
     }
+
+    /*
+     Implemented in VROAndroidViewTexture.cpp. A no-op for textures that keep
+     no mipmapped copy (for example the video textures behind AVPlayer).
+     */
+    private static native void nativeOnFrameLatched(int textureId);
 }

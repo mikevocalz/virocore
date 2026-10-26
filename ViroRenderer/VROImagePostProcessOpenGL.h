@@ -41,6 +41,7 @@ public:
     virtual ~VROImagePostProcessOpenGL();
     
     void setVerticalFlip(bool flip);
+    void setBlendMode(VROBlendMode mode);
 
     void blit(std::vector<std::shared_ptr<VROTexture>> textures,
               std::shared_ptr<VRODriver> &driver);
@@ -64,6 +65,8 @@ private:
      shader is customizable through an Image shader modifier.
      */
     std::shared_ptr<VROShaderProgram> _shader;
+
+    VROBlendMode _blendMode;
     
     /*
      The uniforms (with binders) attached to the shaders. The callback

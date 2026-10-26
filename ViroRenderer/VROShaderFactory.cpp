@@ -1141,27 +1141,19 @@ std::shared_ptr<VROShaderModifier> VROShaderFactory::createToneMappingMaskModifi
 std::vector<std::string> VROShaderFactory::createColorLinearizationCode() {
     std::vector<std::string> code = {
         /*
-         The way we linearize from gamma-corrected space depends on our values:
-         If they're below the cutoff (low-light), we use the latter (lower) operation;
-         if they're above the cutoff we use the higher operation (pow).
-         The mix with a bvec trick is a technique to avoid branching in the shader.
+         Decode sRGB-encoded samples to linear with the exact sRGB transfer
+         function (IEC 61966-2-1). The framebuffer re-encodes with the same
+         function on write, so a pixel round-trips unchanged. The Rec.709
+         curve used before has a steeper linear toe (/4.5 under 0.081), and
+         re-encoding its output as sRGB lifted dark values: 0.05 in came
+         out near 0.14.
 
-         The values here are for gamma 2.2.
+         The mix with a bvec trick avoids branching in the shader.
          */
-        "bvec3 cutoff = lessThan(_surface.diffuse_color.rgb, vec3(0.082));",
-        "highp vec3 higher = pow((_surface.diffuse_color.rgb + vec3(0.099))/vec3(1.099), vec3(2.2));",
-        "highp vec3 lower = _surface.diffuse_color.rgb / vec3(4.5);",
-        "_surface.diffuse_color.rgb = mix(higher, lower, cutoff);",
-
-        /*
-         The following values are for gamma 2.4. Left here in case we find it's better
-         for certain devices.
-
-        "bvec3 cutoff = lessThan(_surface.diffuse_color.rgb, vec3(0.04045));",
+        "bvec3 cutoff = lessThanEqual(_surface.diffuse_color.rgb, vec3(0.04045));",
         "highp vec3 higher = pow((_surface.diffuse_color.rgb + vec3(0.055))/vec3(1.055), vec3(2.4));",
-        "highp vec3 lower = _surface.diffuse_color.rgb/vec3(12.92);",
+        "highp vec3 lower = _surface.diffuse_color.rgb / vec3(12.92);",
         "_surface.diffuse_color.rgb = mix(higher, lower, cutoff);",
-        */
     };
     return code;
 }

@@ -42,6 +42,7 @@
 #include <openxr/openxr_platform.h>
 #include "VROOpenXRBoundaryVisibility.h"
 #include "VROOpenXRPanelCompositor.h"
+#include "VROOpenXRRenderQuality.h"
 
 class VRORendererConfiguration;
 class VRODriverOpenGLAndroidOpenXR;
@@ -66,9 +67,13 @@ class VROSceneRendererOpenXR : public VROSceneRenderer,
                                public std::enable_shared_from_this<VROSceneRendererOpenXR> {
 public:
 
+    // renderQuality is read while the constructor creates the session: the
+    // eye-buffer scale sizes the swapchains, which live for the whole session,
+    // so it cannot change afterwards. See docs/API_RENDER_QUALITY.md.
     VROSceneRendererOpenXR(VRORendererConfiguration config,
                            std::shared_ptr<gvr::AudioApi> gvrAudio,
-                           jobject view, jobject activity, JNIEnv *env);
+                           jobject view, jobject activity, JNIEnv *env,
+                           VROOpenXRRenderQuality renderQuality = VROOpenXRRenderQuality());
     virtual ~VROSceneRendererOpenXR();
 
     // ── VROSceneRenderer interface ────────────────────────────────────────────
@@ -221,7 +226,7 @@ public:
     const VROOpenXRRuntimeInfo &getRuntimeInfo() const { return _runtimeInfo; }
 
     // ── Foveation (XR_FB_foveation) ────────────────────────────────────────────
-    enum class VROFoveationLevel { OFF = 0, LOW = 1, MEDIUM = 2, HIGH = 3 };
+    using VROFoveationLevel = VROOpenXRFoveationLevel;
     // Apply a fixed-foveation level to both eye swapchains. dynamic=true lets the
     // runtime scale the level with GPU load. No-op (returns false) when
     // FB_foveation was not negotiated. Safe to call after session start.
@@ -341,6 +346,10 @@ private:
     bool            _renderModelAvailable     = false;  // XR_FB_render_model enabled + supportsRenderModelLoading
     bool            _alphaBlendAvailable      = false;  // view config supports ALPHA_BLEND env blend
 
+    // Startup render quality: the eye-buffer scale createSwapchains() sizes the
+    // eye swapchains with, and the foveation level it applies afterwards.
+    VROOpenXRRenderQuality _renderQuality;
+
     // Per-eye swapchains (index 0 = left, 1 = right)
     VROOpenXRSwapchain _swapchains[2];
 
@@ -390,10 +399,9 @@ private:
     // planes into the standard VROARScene anchor pipeline. Null when plane
     // detection is unavailable on the device. Driven once per renderFrame().
     std::shared_ptr<VROARSessionOpenXR>           _arSession;
-
-    // The attached AR scene, kept so OpenXR session-state changes can be
-    // published as VROARTrackingState — the ARCore renderer does this from
-    // its camera; here the session state machine is the honest source.
+    // The attached AR scene. Session-state changes publish Normal/Unavailable;
+    // renderFrame() refines that per frame from xrLocateViews flags (Limited
+    // when only valid, not tracked). Weak: the scene controller owns it.
     std::weak_ptr<VROARScene>                     _arScene;
 
     // ── Java callback (onDrawFrame) ───────────────────────────────────────────
@@ -409,6 +417,11 @@ private:
     // One-shot runtime facts dump (ALOGI, "[XR-DIAG]" prefix). Pure logging, no
     // state change. Called once after createSwapchains() succeeds.
     void logRuntimeDiagnostics();
+    // Opt-in XR_FB_display_refresh_rate request from _renderQuality. Called
+    // after each successful xrBeginSession. Returns at once, with no OpenXR
+    // call, when no rate was requested (the default). Never fails the session:
+    // every error is logged and the runtime keeps its rate.
+    void applyDisplayRefreshRate();
     bool initPassthrough();
     void initBoundaryVisibility();
     bool initHandTracking();     // XR_EXT_hand_tracking — no-op if extension unavailable

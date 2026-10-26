@@ -158,7 +158,12 @@ VRO_METHOD(jlong, nativeCreateRendererOpenXR)(VRO_ARGS
                                               jboolean enableShadows,
                                               jboolean enableHDR,
                                               jboolean enablePBR,
-                                              jboolean enableBloom) {
+                                              jboolean enableBloom,
+                                              jfloat eyeBufferScale,
+                                              jint foveationLevel,
+                                              jboolean foveationDynamic,
+                                              jint displayRefreshRateMode,
+                                              jfloat displayRefreshRateHz) {
     VROPlatformSetType(VROPlatformType::AndroidOpenXR);
     VROPlatformSetEnv(env, android_context, asset_mgr, platform_util);
 
@@ -172,8 +177,26 @@ VRO_METHOD(jlong, nativeCreateRendererOpenXR)(VRO_ARGS
     std::shared_ptr<gvr::AudioApi> gvrAudio = std::make_shared<gvr::AudioApi>();
     gvrAudio->Init(env, android_context, class_loader, GVR_AUDIO_RENDERING_BINAURAL_HIGH_QUALITY);
 
+    // Startup render quality. Java has already validated these; a non-finite
+    // scale still falls back to the default inside VROResolveEyeBufferSize,
+    // and an out-of-range foveation code keeps the default level.
+    VROOpenXRRenderQuality renderQuality;
+    renderQuality.eyeBufferScale = (float) eyeBufferScale;
+    if (!VROFoveationLevelFromCode((int) foveationLevel, &renderQuality.foveationLevel)) {
+        pwarn("Ignoring foveation level code %d (valid: 0..3); keeping LOW", (int) foveationLevel);
+    }
+    renderQuality.foveationDynamic = (bool) foveationDynamic;
+    // An unknown mode code keeps the default: no refresh-rate request.
+    if (!VRODisplayRefreshRateRequestFromCode((int) displayRefreshRateMode,
+                                              (float) displayRefreshRateHz,
+                                              &renderQuality.displayRefreshRate)) {
+        pwarn("Ignoring display refresh rate mode %d (valid: 0..2); making no request",
+              (int) displayRefreshRateMode);
+    }
+
     std::shared_ptr<VROSceneRenderer> renderer
-            = std::make_shared<VROSceneRendererOpenXR>(config, gvrAudio, view, activity, env);
+            = std::make_shared<VROSceneRendererOpenXR>(config, gvrAudio, view, activity, env,
+                                                       renderQuality);
     return Renderer::jptr(renderer);
 }
 

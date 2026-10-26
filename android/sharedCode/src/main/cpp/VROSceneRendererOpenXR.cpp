@@ -210,8 +210,10 @@ static VROMatrix4f xrFovToProjection(const XrFovf &fov,
 
 VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
                                                std::shared_ptr<gvr::AudioApi> gvrAudio,
-                                               jobject view, jobject activity, JNIEnv *env)
-    : _gvrAudio(gvrAudio)
+                                               jobject view, jobject activity, JNIEnv *env,
+                                               VROOpenXRRenderQuality renderQuality)
+    : _gvrAudio(gvrAudio),
+      _renderQuality(renderQuality)
 {
     // Hold global refs so these objects live as long as the renderer
     _activity = env->NewGlobalRef(activity);
@@ -1028,8 +1030,28 @@ bool VROSceneRendererOpenXR::createSwapchains() {
         auto &view  = viewConfigs[eye];
         auto &sc    = _swapchains[eye];
 
-        sc.width  = view.recommendedImageRectWidth;
-        sc.height = view.recommendedImageRectHeight;
+        // Render above the recommended size. The recommended rect is tuned
+        // for 3D scenes; flat UI panels with small text alias and blur at
+        // that density. The scale comes from _renderQuality (default 1.3x)
+        // and is clamped per axis to [1, max / recommended]. Everything
+        // downstream (viewport, scissor, render targets, the projection
+        // layer's imageRect) reads sc.width/sc.height.
+        const VROEyeBufferResolution res = VROResolveEyeBufferSize(
+            _renderQuality.eyeBufferScale,
+            view.recommendedImageRectWidth, view.recommendedImageRectHeight,
+            view.maxImageRectWidth, view.maxImageRectHeight);
+        sc.width  = res.width;
+        sc.height = res.height;
+        ALOGI("Eye %u: recommended %ux%u, max %ux%u, scale requested %.3f%s, "
+              "applied %.3fx%.3f, size requested %ux%u, clamped %ux%u, rendering %ux%u",
+              eye,
+              view.recommendedImageRectWidth, view.recommendedImageRectHeight,
+              view.maxImageRectWidth, view.maxImageRectHeight,
+              res.requestedScale, res.rejectedNonFinite ? " (non-finite request rejected)" : "",
+              res.scaleX, res.scaleY,
+              res.requestedWidth, res.requestedHeight,
+              res.width, res.height,
+              sc.width, sc.height);
 
         XrSwapchainCreateInfo scInfo = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
         scInfo.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
@@ -1058,8 +1080,12 @@ bool VROSceneRendererOpenXR::createSwapchains() {
     // a runtime without FB_foveation simply renders unfoveated.
     if (_foveationAvailable && _swapchainUpdateStateAvailable) {
         if (initFoveation()) {
-            // Default to a sensible level for high-PPD HMDs; app can override.
-            setFoveationLevel(VROFoveationLevel::MEDIUM, /*dynamic=*/true);
+            // Default LOW + dynamic keeps the periphery of panel text legible;
+            // the larger eye buffer still leaves GPU headroom on Quest 3S. The
+            // manifest or ViroViewOpenXR can pick another startup level, and
+            // setFoveationLevel() changes it at runtime.
+            setFoveationLevel(_renderQuality.foveationLevel,
+                              _renderQuality.foveationDynamic);
         }
     }
     return true;
@@ -1146,8 +1172,9 @@ void VROSceneRendererOpenXR::logRuntimeDiagnostics() {
           yn(_foveationAvailable), yn(_runtimeInfo.displayRefreshRateAvailable));
 
     // ── Display refresh rates (XR_FB_display_refresh_rate) ────────────────────
-    // Read-only: enumerate + current. Never xrRequestDisplayRefreshRateFB — that
-    // would change device state, and this is diagnostics.
+    // Read-only: enumerate + current. This dump never calls
+    // xrRequestDisplayRefreshRateFB; the only request is the opt-in one in
+    // applyDisplayRefreshRate(), made after xrBeginSession.
     if (_runtimeInfo.displayRefreshRateAvailable) {
         PFN_xrEnumerateDisplayRefreshRatesFB pfnEnumRates = nullptr;
         PFN_xrGetDisplayRefreshRateFB        pfnGetRate   = nullptr;
@@ -1176,6 +1203,108 @@ void VROSceneRendererOpenXR::logRuntimeDiagnostics() {
         }
     } else {
         ALOGI("[XR-DIAG] display refresh rate: ext absent");
+    }
+}
+
+// ── Display refresh rate (XR_FB_display_refresh_rate) ─────────────────────────
+// The spec (OpenXR 1.1, XR_FB_display_refresh_rate) defines the request as a
+// hint: the runtime may keep another rate, it rejects any value outside
+// xrEnumerateDisplayRefreshRatesFB with XR_ERROR_DISPLAY_REFRESH_RATE_UNSUPPORTED_FB,
+// and the extension must be enabled before any of these calls. So the rate
+// comes from the enumeration, the result and the rate the runtime reports
+// afterwards are both logged, and nothing here can fail the session.
+void VROSceneRendererOpenXR::applyDisplayRefreshRate() {
+    const VRODisplayRefreshRateRequest &request = _renderQuality.displayRefreshRate;
+    if (request.mode == VRODisplayRefreshRateMode::NONE) {
+        return;  // default: the runtime keeps its rate, no OpenXR call
+    }
+    char requested[32];
+    if (request.mode == VRODisplayRefreshRateMode::HIGHEST) {
+        std::snprintf(requested, sizeof(requested), "highest");
+    } else {
+        std::snprintf(requested, sizeof(requested), "%.2f Hz", request.hz);
+    }
+
+    if (!_runtimeInfo.displayRefreshRateAvailable) {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+              "XR_FB_display_refresh_rate is not enabled; keeping the runtime rate",
+              requested);
+        return;
+    }
+
+    PFN_xrEnumerateDisplayRefreshRatesFB pfnEnumRates = nullptr;
+    PFN_xrGetDisplayRefreshRateFB        pfnGetRate   = nullptr;
+    PFN_xrRequestDisplayRefreshRateFB    pfnRequest   = nullptr;
+    xrGetInstanceProcAddr(_instance, "xrEnumerateDisplayRefreshRatesFB",
+                          (PFN_xrVoidFunction *)&pfnEnumRates);
+    xrGetInstanceProcAddr(_instance, "xrGetDisplayRefreshRateFB",
+                          (PFN_xrVoidFunction *)&pfnGetRate);
+    xrGetInstanceProcAddr(_instance, "xrRequestDisplayRefreshRateFB",
+                          (PFN_xrVoidFunction *)&pfnRequest);
+    if (!pfnEnumRates || !pfnGetRate || !pfnRequest) {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+              "extension functions not loaded; keeping the runtime rate", requested);
+        return;
+    }
+
+    std::vector<float> rates;
+    uint32_t rateCount = 0;
+    XrResult enumResult = pfnEnumRates(_session, 0, &rateCount, nullptr);
+    if (XR_SUCCEEDED(enumResult) && rateCount > 0) {
+        rates.resize(rateCount);
+        enumResult = pfnEnumRates(_session, rateCount, &rateCount, rates.data());
+        rates.resize(XR_SUCCEEDED(enumResult) ? rateCount : 0);
+    }
+    if (XR_FAILED(enumResult)) {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+              "xrEnumerateDisplayRefreshRatesFB result=%d; keeping the runtime rate",
+              requested, (int)enumResult);
+        return;
+    }
+
+    const VRODisplayRefreshRateChoice choice =
+        VROPickDisplayRefreshRate(request, rates.data(), rates.size());
+    switch (choice.outcome) {
+        case VRODisplayRefreshRateOutcome::INVALID_REQUEST:
+            ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+                  "not a positive finite rate; keeping the runtime rate", requested);
+            return;
+        case VRODisplayRefreshRateOutcome::NO_SUPPORTED_RATES:
+            ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen none: "
+                  "the runtime enumerated no rates; keeping the runtime rate", requested);
+            return;
+        case VRODisplayRefreshRateOutcome::BELOW_ALL_RATES:
+            ALOGW("[XR-QUALITY] display refresh rate: %s is below every supported rate; "
+                  "using the lowest, %.2f Hz", requested, choice.rateHz);
+            break;
+        case VRODisplayRefreshRateOutcome::NO_REQUEST:
+        case VRODisplayRefreshRateOutcome::CHOSEN:
+            break;
+    }
+    if (!choice.shouldRequest()) {
+        return;
+    }
+
+    const XrResult requestResult = pfnRequest(_session, choice.rateHz);
+    float current = 0.0f;
+    const XrResult getResult = pfnGetRate(_session, &current);
+    char currentText[32];
+    if (XR_SUCCEEDED(getResult)) {
+        std::snprintf(currentText, sizeof(currentText), "%.2f Hz", current);
+    } else {
+        std::snprintf(currentText, sizeof(currentText), "unknown (result=%d)", (int)getResult);
+    }
+    // The current rate can still read the old value here: the switch is
+    // asynchronous and XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB
+    // reports when it lands.
+    if (XR_SUCCEEDED(requestResult)) {
+        ALOGI("[XR-QUALITY] display refresh rate: requested %s, chosen %.2f Hz, current %s, "
+              "xrRequestDisplayRefreshRateFB result=%d",
+              requested, choice.rateHz, currentText, (int)requestResult);
+    } else {
+        ALOGW("[XR-QUALITY] display refresh rate: requested %s, chosen %.2f Hz, current %s, "
+              "xrRequestDisplayRefreshRateFB result=%d; keeping the runtime rate",
+              requested, choice.rateHz, currentText, (int)requestResult);
     }
 }
 
@@ -1906,6 +2035,13 @@ void VROSceneRendererOpenXR::pollEvents() {
                 ALOGV("Boundary visibility changed: %d", (int)_boundaryVisibility);
                 break;
             }
+            case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB: {
+                auto *rateEvent =
+                    reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB *>(&event);
+                ALOGI("[XR-QUALITY] display refresh rate changed: %.2f Hz -> %.2f Hz",
+                      rateEvent->fromDisplayRefreshRate, rateEvent->toDisplayRefreshRate);
+                break;
+            }
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB:
             case XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB:
@@ -1943,10 +2079,19 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
             XrSessionBeginInfo beginInfo = { XR_TYPE_SESSION_BEGIN_INFO };
             beginInfo.primaryViewConfigurationType =
                 XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            XR_CHECK(xrBeginSession(_session, &beginInfo));
+            const XrResult beginResult = xrBeginSession(_session, &beginInfo);
+            if (XR_FAILED(beginResult)) {
+                ALOGE("OpenXR call failed at %s:%d  result=%d  expr: %s",
+                      __FILE__, __LINE__, (int)beginResult, "xrBeginSession");
+            }
             _sessionRunning = true;
             resetFloorDiagnostic();   // a resumed session re-settles its tracking
             ALOGV("Session began");
+            // The runtime may reset the rate across a pause, so the request is
+            // repeated on every begin, not only the first.
+            if (XR_SUCCEEDED(beginResult)) {
+                applyDisplayRefreshRate();
+            }
             break;
         }
         case XR_SESSION_STATE_FOCUSED:
@@ -2067,6 +2212,24 @@ void VROSceneRendererOpenXR::renderFrame() {
         }
     }
 
+    // Report tracking to the AR scene the way VROSceneRendererARCore does from its
+    // camera. Without this, the only report JS ever got was the forced one
+    // setDelegate() sends with the default Unavailable state, so an app gating
+    // its UI on onTrackingUpdated stayed "tracking lost" for the whole session.
+    // setTrackingState() drops repeats, so calling it every frame is cheap.
+    if (std::shared_ptr<VROARScene> trackedScene = _arScene.lock()) {
+        const XrViewStateFlags flags = viewState.viewStateFlags;
+        VROARTrackingState trackingState = VROARTrackingState::Unavailable;
+        if ((flags & XR_VIEW_STATE_POSITION_TRACKED_BIT) &&
+            (flags & XR_VIEW_STATE_ORIENTATION_TRACKED_BIT)) {
+            trackingState = VROARTrackingState::Normal;
+        } else if ((flags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
+                   (flags & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+            trackingState = VROARTrackingState::Limited;
+        }
+        trackedScene->setTrackingState(trackingState, VROARTrackingStateReason::None, false);
+    }
+
     // Drive the Quest MR (AR) session: query XR_EXT_plane_detection and fan
     // detected planes through the VROARScene anchor pipeline. Runs before
     // prepareFrame() so anchor node transforms are current for this frame.
@@ -2183,10 +2346,11 @@ void VROSceneRendererOpenXR::renderFrame() {
         // When passthrough is on, the scene is rendered with a transparent clear
         // (alpha 0). Tell the compositor to honor the layer's alpha channel so
         // passthrough shows through empty regions; otherwise the layer is treated
-        // as opaque and hides the room.
+        // as opaque and hides the room. The eye buffer holds premultiplied
+        // colour (see VRODriverOpenGL::applyBlendFunction), which is the
+        // compositor's default, so UNPREMULTIPLIED_ALPHA is not set.
         if (_passthroughEnabled) {
-            projLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
-                                   XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+            projLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         }
         layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projLayer));
     }
