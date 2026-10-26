@@ -48,6 +48,11 @@ clones premake-ninja, and premake fetches HarfBuzz, SheenBidi, Yoga, miniaudio a
 the tags rive-runtime pins (listed in `ViroRenderer/rive-runtime/NOTICE.md`). Offline,
 or to skip Rive, configure with `-DVIRO_WITH_RIVE=OFF`.
 
+On Linux, the premake bootstrap links `-luuid` and includes `<uuid/uuid.h>`, so the host
+needs the libuuid headers (`uuid-dev` on Debian and Ubuntu) and `ninja`. GitHub's Ubuntu
+runners lack the libuuid headers, so the Android CI jobs install `uuid-dev ninja-build`
+before Gradle runs.
+
 The script sets:
 
 - `ANDROID_NDK` to the Gradle `ndkVersion` under the SDK,

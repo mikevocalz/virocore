@@ -42,6 +42,9 @@ jobs:
       - name: Test alignment verifier
         run: python3 scripts/test_verify_16kb_alignment.py
 
+      - name: Install rive-runtime host build dependencies
+        # build_rive.sh bootstraps premake from source; on Linux that needs libuuid headers.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends uuid-dev ninja-build
       - name: Build AAR
         run: ./scripts/build-pico-aar.sh --out "$RUNNER_TEMP/aar"
 
