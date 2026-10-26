@@ -5,11 +5,50 @@ on:
     paths:
       - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
       - "tests/xr_backend/panel_image_state_test.cpp"
+      - "tests/xr_backend/panel_eviction_test.cpp"
+      - "tests/host_shims/**"
+      - "scripts/test-openxr-panel-eviction.sh"
+      - "android/sharedCode/src/main/cpp/jni/RiveCompositorPanel*"
+      - "tests/xr_backend/compositor_panel_mapping_test.cpp"
+      - "scripts/test-compositor-panel-mapping.sh"
+      - "android/sharedCode/src/main/cpp/VROPanelShaderSources.h"
+      - "ViroRenderer/VROPanelCoverage.h"
+      - "tests/panel/**"
+      - "scripts/test-panel-shaders.sh"
+      - "scripts/test-panel-coverage.sh"
+      - "android/viroreact/build.gradle"
+      - "android/sharedCode/src/main/cpp/VROOpenXRRenderQuality.h"
+      - "tests/xr_backend/eye_buffer_scale_test.cpp"
+      - "scripts/test-eye-buffer-scale.sh"
+      - "android/sharedCode/src/main/cpp/VRORivePanel*"
+      - "android/sharedCode/src/main/cpp/VROOpenXRRiveFrameListener.h"
+      - "tests/rive/**"
+      - "tests/xr_backend/rive_frame_listener_test.cpp"
+      - "ViroRenderer/rive-runtime/src/**"
+      - "ViroRenderer/rive-runtime/include/**"
+      - "android/rive/RIVE_RUNTIME_COMMIT"
+      - "scripts/test-rive-panel-worker.sh"
+      - "scripts/test-rive-panel-content.sh"
+      - "scripts/test-rive-panel-geometry.sh"
+      - "scripts/test-rive-frame-listener.sh"
       - ".github/workflows/openxr-panel-policy.yml"
   push:
     paths:
       - "android/sharedCode/src/main/cpp/VROOpenXRPanel*"
       - "tests/xr_backend/panel_image_state_test.cpp"
+      - "tests/xr_backend/panel_eviction_test.cpp"
+      - "android/sharedCode/src/main/cpp/jni/RiveCompositorPanel*"
+      - "tests/xr_backend/compositor_panel_mapping_test.cpp"
+      - "android/sharedCode/src/main/cpp/VROPanelShaderSources.h"
+      - "ViroRenderer/VROPanelCoverage.h"
+      - "tests/panel/**"
+      - "android/sharedCode/src/main/cpp/VROOpenXRRenderQuality.h"
+      - "android/sharedCode/src/main/cpp/VRORivePanel*"
+      - "android/sharedCode/src/main/cpp/VROOpenXRRiveFrameListener.h"
+      - "tests/rive/**"
+      - "ViroRenderer/rive-runtime/src/**"
+      - "ViroRenderer/rive-runtime/include/**"
+      - "android/rive/RIVE_RUNTIME_COMMIT"
     branches:
       - main
 
@@ -24,3 +63,74 @@ jobs:
             tests/xr_backend/panel_image_state_test.cpp \
             -o "$RUNNER_TEMP/panel_image_state_test"
           "$RUNNER_TEMP/panel_image_state_test"
+      - name: Eviction reporting against a fake runtime
+        run: CXX=g++ scripts/test-openxr-panel-eviction.sh
+      - name: JNI codes of RiveCompositorPanel
+        run: CXX=g++ scripts/test-compositor-panel-mapping.sh
+      - name: Eye-buffer scale and foveation mapping
+        run: CXX=g++ scripts/test-eye-buffer-scale.sh
+
+  # Compiles every panel shader variant and the shared coverage snippet with
+  # the glslc of the NDK that android/viroreact/build.gradle pins
+  # (27.1.12297006 when this job was added). REQUIRE_GLSLC=1 turns a missing
+  # glslc into a failure instead of a skip.
+  panel-shaders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve and install pinned NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_VER="$(sed -nE 's/^[[:space:]]*ndkVersion[[:space:]]*=?[[:space:]]*"([0-9.]+)".*/\1/p' android/viroreact/build.gradle | head -1)"
+          test -n "$NDK_VER"
+          echo "Installing NDK $NDK_VER"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VER"
+          GLSLC="$ANDROID_HOME/ndk/$NDK_VER/shader-tools/linux-x86_64/glslc"
+          test -x "$GLSLC"
+          "$GLSLC" --version
+          echo "GLSLC=$GLSLC" >> "$GITHUB_ENV"
+      - name: Panel shader variants
+        run: CXX=g++ REQUIRE_GLSLC=1 scripts/test-panel-shaders.sh
+      - name: Panel coverage function and GLSL snippet
+        run: CXX=g++ REQUIRE_GLSLC=1 scripts/test-panel-coverage.sh
+
+  # Rive panel host tests. They compile the vendored rive-runtime sources
+  # directly (no premake, harfbuzz, SheenBidi or yoga; text and layout are off
+  # in these builds), so the only state worth caching is the rive core objects
+  # test-rive-panel-content.sh builds under AddressSanitizer. The key covers
+  # the rive pin, the rive sources and headers those objects come from, the
+  # script that sets their flags, and the compiler version.
+  rive-host:
+    runs-on: ubuntu-24.04
+    env:
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang 18 and its sanitizer runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libclang-rt-18-dev
+          clang++-18 --version
+      - name: Reduce mmap randomization for ThreadSanitizer
+        # Ubuntu 24.04 kernels default to 32 bits of mmap entropy; the TSan
+        # and ASan runtimes in LLVM 18 expect 28 or fewer and abort with
+        # "unexpected memory mapping" otherwise.
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Compiler identity for the cache key
+        id: cxx
+        run: echo "id=$(clang++-18 --version | head -n 1 | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_OUTPUT"
+      - name: Cache rive core objects
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rive-host-obj
+          key: rive-host-obj-${{ runner.os }}-${{ steps.cxx.outputs.id }}-${{ hashFiles('android/rive/RIVE_RUNTIME_COMMIT', 'scripts/test-rive-panel-content.sh', 'ViroRenderer/rive-runtime/src/**', 'ViroRenderer/rive-runtime/include/**', 'ViroRenderer/rive-runtime/utils/no_op_factory.cpp') }}
+      - name: Rive panel worker under ThreadSanitizer
+        run: scripts/test-rive-panel-worker.sh
+      - name: Rive panel content teardown under AddressSanitizer
+        run: RIVE_HOST_OBJ_DIR="$RUNNER_TEMP/rive-host-obj" scripts/test-rive-panel-content.sh
+      - name: Rive panel geometry against rive::computeAlignment
+        run: scripts/test-rive-panel-geometry.sh
+      - name: Rive compositor frame listener under AddressSanitizer
+        run: scripts/test-rive-frame-listener.sh

@@ -219,7 +219,14 @@ public class Material {
          * This results in colors that are the same brightness or lighter than either the source or
          * destination color.
          */
-        SCREEN("Screen");
+        SCREEN("Screen"),
+
+        /**
+         * For sources whose color is already multiplied by alpha (Skia, Rive, Android Canvas
+         * output). The source color is added unscaled and the destination is multiplied by 1.0
+         * minus the source alpha. Using {@link #ALPHA} on such a source darkens its edges.
+         */
+        PREMULTIPLY_ALPHA("PremultiplyAlpha");
 
         private String mStringValue;
         private BlendMode(String value) {

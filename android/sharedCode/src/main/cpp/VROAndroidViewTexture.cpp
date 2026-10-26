@@ -30,7 +30,11 @@
 #include "VROPlatformUtil.h"
 #include "VRODriverOpenGL.h"
 #include "VROLog.h"
+#include "VROPanelCoverage.h"
+#include "VROPanelGLStateGuard.h"
+#include "VROPanelShaderSources.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -52,37 +56,22 @@ constexpr GLfloat kResolveAnisotropy = 4.0f;
 std::mutex sRegistryMutex;
 std::unordered_map<GLuint, std::weak_ptr<VROTexture>> sRegistry;
 
-const char *kResolveVertexShader =
-    "#version 100\n"
-    "attribute vec2 a_position;\n"
-    "varying vec2 v_texcoord;\n"
-    "void main() {\n"
-    "    v_texcoord = a_position * 0.5 + 0.5;\n"
-    "    gl_Position = vec4(a_position, 0.0, 1.0);\n"
-    "}\n";
+// Live instances per kind, logged when one is created or destroyed (never per
+// frame). Each instance owns one SurfaceTexture/Surface pair (the VideoSink
+// made in init() and destroyed in the destructor), so after a reload or a
+// background/foreground cycle the count should return to its earlier value.
+std::atomic<int> sLiveAndroidView{0};
+std::atomic<int> sLiveExternalSurface{0};
 
-// The OES image holds sRGB-encoded values. When the destination has sRGB
-// storage, the hardware encodes on write, so decode first and the stored
-// bytes come out equal to the producer's bytes. Sampling then decodes to
-// linear in hardware, and mip levels are filtered in linear space.
-const char *kResolveFragmentShaderBody =
-    "#extension GL_OES_EGL_image_external : require\n"
-    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
-    "precision highp float;\n"
-    "#else\n"
-    "precision mediump float;\n"
-    "#endif\n"
-    "uniform samplerExternalOES source_texture;\n"
-    "varying vec2 v_texcoord;\n"
-    "void main() {\n"
-    "    vec4 color = texture2D(source_texture, v_texcoord);\n"
-    "#ifdef DECODE_SRGB\n"
-    "    vec3 lower = color.rgb / 12.92;\n"
-    "    vec3 higher = pow((color.rgb + 0.055) / 1.055, vec3(2.4));\n"
-    "    color.rgb = mix(higher, lower, vec3(lessThanEqual(color.rgb, vec3(0.04045))));\n"
-    "#endif\n"
-    "    gl_FragColor = color;\n"
-    "}\n";
+std::atomic<int> &liveCount(VROAndroidViewTextureKind kind) {
+    return kind == VROAndroidViewTextureKind::ExternalSurface ? sLiveExternalSurface
+                                                              : sLiveAndroidView;
+}
+
+const char *kindName(VROAndroidViewTextureKind kind) {
+    return kind == VROAndroidViewTextureKind::ExternalSurface ? "ExternalSurfaceTexture"
+                                                              : "AndroidViewTexture";
+}
 
 GLuint compileShader(GLenum type, const std::string &source) {
     GLuint shader = glCreateShader(type);
@@ -105,76 +94,6 @@ bool hasExtension(const char *name) {
     const char *extensions = (const char *) glGetString(GL_EXTENSIONS);
     return extensions != nullptr && strstr(extensions, name) != nullptr;
 }
-
-/*
- Captures the GL state the resolve pass touches and puts it back on scope
- exit. The resolve runs between frames from a Java FrameListener, and
- VRODriverOpenGL caches GL state on the CPU side, so the pass must leave GL
- exactly as it found it.
- */
-class GLStateGuard {
-public:
-    GLStateGuard() {
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &_drawFramebuffer);
-        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &_readFramebuffer);
-        glGetIntegerv(GL_VIEWPORT, _viewport);
-        glGetIntegerv(GL_CURRENT_PROGRAM, &_program);
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &_vertexArray);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_arrayBuffer);
-        glGetIntegerv(GL_ACTIVE_TEXTURE, &_activeTexture);
-        glActiveTexture(GL_TEXTURE0);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &_texture2D);
-        glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &_textureExternal);
-        glGetIntegerv(GL_SAMPLER_BINDING, &_sampler);
-        glGetBooleanv(GL_COLOR_WRITEMASK, _colorMask);
-        _blend = glIsEnabled(GL_BLEND);
-        _depthTest = glIsEnabled(GL_DEPTH_TEST);
-        _cullFace = glIsEnabled(GL_CULL_FACE);
-        _scissorTest = glIsEnabled(GL_SCISSOR_TEST);
-        _stencilTest = glIsEnabled(GL_STENCIL_TEST);
-    }
-
-    ~GLStateGuard() {
-        setEnabled(GL_BLEND, _blend);
-        setEnabled(GL_DEPTH_TEST, _depthTest);
-        setEnabled(GL_CULL_FACE, _cullFace);
-        setEnabled(GL_SCISSOR_TEST, _scissorTest);
-        setEnabled(GL_STENCIL_TEST, _stencilTest);
-        glColorMask(_colorMask[0], _colorMask[1], _colorMask[2], _colorMask[3]);
-        glActiveTexture(GL_TEXTURE0);
-        glBindSampler(0, (GLuint) _sampler);
-        glBindTexture(GL_TEXTURE_EXTERNAL_OES, (GLuint) _textureExternal);
-        glBindTexture(GL_TEXTURE_2D, (GLuint) _texture2D);
-        glActiveTexture((GLenum) _activeTexture);
-        glBindVertexArray((GLuint) _vertexArray);
-        glBindBuffer(GL_ARRAY_BUFFER, (GLuint) _arrayBuffer);
-        glUseProgram((GLuint) _program);
-        glViewport(_viewport[0], _viewport[1], _viewport[2], _viewport[3]);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint) _readFramebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) _drawFramebuffer);
-    }
-
-    GLStateGuard(const GLStateGuard &) = delete;
-    GLStateGuard &operator=(const GLStateGuard &) = delete;
-
-private:
-    static void setEnabled(GLenum cap, GLboolean enabled) {
-        if (enabled) {
-            glEnable(cap);
-        } else {
-            glDisable(cap);
-        }
-    }
-
-    GLint _drawFramebuffer = 0, _readFramebuffer = 0;
-    GLint _viewport[4] = { 0, 0, 0, 0 };
-    GLint _program = 0, _vertexArray = 0, _arrayBuffer = 0;
-    GLint _activeTexture = GL_TEXTURE0;
-    GLint _texture2D = 0, _textureExternal = 0, _sampler = 0;
-    GLboolean _colorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
-    GLboolean _blend = GL_FALSE, _depthTest = GL_FALSE, _cullFace = GL_FALSE;
-    GLboolean _scissorTest = GL_FALSE, _stencilTest = GL_FALSE;
-};
 
 } // namespace
 
@@ -215,7 +134,8 @@ Java_com_viro_core_internal_VideoSink_nativeOnFrameLatched(JNIEnv *env, jclass c
 
 } // extern "C"
 
-VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int width, int height):
+VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int width, int height,
+                                             VROAndroidViewTextureKind kind):
         // Materials sample the mipmapped GL_TEXTURE_2D copy, not the OES image,
         // so this is an ordinary 2D texture to the shader pipeline.
         VROTexture(VROTextureType::Texture2D, VROTextureInternalFormat::RGBA8, VROStereoMode::None),
@@ -225,13 +145,23 @@ VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int 
         _resolveProgram(0),
         _resolveVAO(0),
         _resolveVBO(0),
-        _resolveReady(false) {
+        _resolveReady(false),
+        _hasLatchedFrame(false),
+        _sizeUniform(-1),
+        _radiusUniform(-1),
+        _premultipliedUniform(-1),
+        _cornerRadiusXPx(0.0f),
+        _cornerRadiusYPx(0.0f),
+        _premultipliedAlpha(false),
+        _kind(kind) {
 
     JNIEnv *env = VROPlatformGetJNIEnv();
     _jAndroidViewTexture = env->NewGlobalRef(jRenderableTexture);
     _jVideoSinkSurface = NULL;
     _height = height;
     _width = width;
+    const int live = ++liveCount(_kind);
+    pinfo("%s: live=%d (created %dx%d)", kindName(_kind), live, width, height);
 }
 
 VROAndroidViewTexture::~VROAndroidViewTexture() {
@@ -241,6 +171,8 @@ VROAndroidViewTexture::~VROAndroidViewTexture() {
     VROPlatformDestroyVideoSink(_textureId);
     _jAndroidViewTexture = NULL;
     _jVideoSinkSurface = NULL;
+    const int live = --liveCount(_kind);
+    pinfo("%s: live=%d (destroyed %dx%d)", kindName(_kind), live, _width, _height);
 
     {
         // Our own entry is already expired (no strong references remain). A
@@ -268,7 +200,7 @@ VROAndroidViewTexture::~VROAndroidViewTexture() {
 
 void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
     _driver = driver;
-    GLStateGuard guard;
+    VROPanelGLStateGuard guard;
 
     // Generate the GL Texture on which to render Android Views.
     glGenTextures(1, &_textureId);
@@ -361,10 +293,8 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     glClear(GL_COLOR_BUFFER_BIT);
     glGenerateMipmap(GL_TEXTURE_2D);
 
-    std::string fragmentSource = std::string("#version 100\n")
-                               + (sRGBStorage ? "#define DECODE_SRGB 1\n" : "")
-                               + kResolveFragmentShaderBody;
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kResolveVertexShader);
+    std::string fragmentSource = VROPanelResolveFragmentShader(sRGBStorage);
+    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kVROPanelResolveVertexShader);
     GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
     if (!vertexShader || !fragmentShader) {
         if (vertexShader) glDeleteShader(vertexShader);
@@ -390,6 +320,9 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     }
     glUseProgram(_resolveProgram);
     glUniform1i(glGetUniformLocation(_resolveProgram, "source_texture"), 0);
+    _sizeUniform = glGetUniformLocation(_resolveProgram, "u_size");
+    _radiusUniform = glGetUniformLocation(_resolveProgram, "u_radius");
+    _premultipliedUniform = glGetUniformLocation(_resolveProgram, "u_premultiplied");
 
     // One triangle that covers the whole target.
     const GLfloat triangle[] = { -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f, 3.0f };
@@ -418,15 +351,49 @@ void VROAndroidViewTexture::onExternalFrameLatched(GLuint oesTextureId) {
     }
     std::shared_ptr<VROTexture> texture = weak.lock();
     if (texture) {
-        std::static_pointer_cast<VROAndroidViewTexture>(texture)->resolve();
+        std::shared_ptr<VROAndroidViewTexture> viewTexture =
+                std::static_pointer_cast<VROAndroidViewTexture>(texture);
+        viewTexture->_hasLatchedFrame = true;
+        viewTexture->resolve();
     }
+}
+
+void VROAndroidViewTexture::setCornerRadius(float radiusMeters, float widthMeters,
+                                            float heightMeters) {
+    VROPanelCornerRadii radii = VROPanelCornerRadiiPx(radiusMeters, widthMeters, heightMeters,
+                                                      (float) _width, (float) _height);
+    _cornerRadiusXPx.store(radii.x);
+    _cornerRadiusYPx.store(radii.y);
+    scheduleResolve();
+}
+
+void VROAndroidViewTexture::setPremultipliedAlpha(bool premultiplied) {
+    _premultipliedAlpha.store(premultiplied);
+    scheduleResolve();
+}
+
+void VROAndroidViewTexture::scheduleResolve() {
+    // A static producer queues no new frame, so the last latched one is
+    // copied again. The OES texture keeps that image until the next latch.
+    std::weak_ptr<VROTexture> weak = shared_from_this();
+    VROPlatformDispatchAsyncRenderer([weak] {
+        std::shared_ptr<VROTexture> texture = weak.lock();
+        if (!texture) {
+            return;
+        }
+        std::shared_ptr<VROAndroidViewTexture> viewTexture =
+                std::static_pointer_cast<VROAndroidViewTexture>(texture);
+        if (viewTexture->_hasLatchedFrame) {
+            viewTexture->resolve();
+        }
+    });
 }
 
 void VROAndroidViewTexture::resolve() {
     if (!_resolveReady) {
         return;
     }
-    GLStateGuard guard;
+    VROPanelGLStateGuard guard;
 
     glBindFramebuffer(GL_FRAMEBUFFER, _resolveFramebuffer);
     // The copy overwrites every texel, so skip loading the old tile contents.
@@ -441,6 +408,9 @@ void VROAndroidViewTexture::resolve() {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
     glUseProgram(_resolveProgram);
+    glUniform2f(_sizeUniform, (GLfloat) _width, (GLfloat) _height);
+    glUniform2f(_radiusUniform, _cornerRadiusXPx.load(), _cornerRadiusYPx.load());
+    glUniform1f(_premultipliedUniform, _premultipliedAlpha.load() ? 1.0f : 0.0f);
     glBindVertexArray(_resolveVAO);
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0, 0);

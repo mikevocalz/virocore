@@ -33,7 +33,8 @@ VRO_METHOD(VRO_REF(VROAndroidViewTexture), nativeCreateExternalSurfaceTexture)(V
     VRO_METHOD_PREAMBLE;
     std::weak_ptr<ViroContext> context_w = VRO_REF_GET(ViroContext, context_j);
     std::shared_ptr<VROAndroidViewTexture> texture
-            = std::make_shared<VROAndroidViewTexture>(obj, width, height);
+            = std::make_shared<VROAndroidViewTexture>(obj, width, height,
+                                                      VROAndroidViewTextureKind::ExternalSurface);
 
     VROPlatformDispatchAsyncRenderer([texture, context_w] {
         std::shared_ptr<ViroContext> context = context_w.lock();
@@ -56,6 +57,26 @@ VRO_METHOD(VRO_REF(VROAndroidViewTexture), nativeCreateExternalSurfaceTexture)(V
 VRO_METHOD(void, nativeDeleteExternalSurfaceTexture)(VRO_ARGS
                                                      VRO_REF(VROAndroidViewTexture) textureRef) {
     VRO_REF_DELETE(VROAndroidViewTexture, textureRef);
+}
+
+VRO_METHOD(void, nativeSetCornerRadius)(VRO_ARGS
+                                        VRO_REF(VROAndroidViewTexture) textureRef,
+                                        VRO_FLOAT radiusMeters,
+                                        VRO_FLOAT widthMeters,
+                                        VRO_FLOAT heightMeters) {
+    std::shared_ptr<VROAndroidViewTexture> texture = VRO_REF_GET(VROAndroidViewTexture, textureRef);
+    if (texture) {
+        texture->setCornerRadius(radiusMeters, widthMeters, heightMeters);
+    }
+}
+
+VRO_METHOD(void, nativeSetPremultipliedAlpha)(VRO_ARGS
+                                              VRO_REF(VROAndroidViewTexture) textureRef,
+                                              VRO_BOOL premultiplied) {
+    std::shared_ptr<VROAndroidViewTexture> texture = VRO_REF_GET(VROAndroidViewTexture, textureRef);
+    if (texture) {
+        texture->setPremultipliedAlpha(premultiplied);
+    }
 }
 
 } // extern "C"

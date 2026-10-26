@@ -1,0 +1,65 @@
+#ifndef _RIVE_TEXT_ASSET_BASE_HPP_
+#define _RIVE_TEXT_ASSET_BASE_HPP_
+#include <string>
+#include "rive/assets/file_asset.hpp"
+#include "rive/core/field_types/core_string_type.hpp"
+#ifdef WITH_RIVE_EDITOR
+#include "editor_native/generated/editor_field_types.hpp"
+#endif
+namespace rive
+{
+class TextAssetBase : public FileAsset
+{
+protected:
+  typedef FileAsset Super;
+
+public:
+  static const uint16_t typeKey = 971;
+
+  uint16_t coreType() const override { return typeKey; }
+
+  static const uint16_t folderPathPropertyKey = 926;
+
+protected:
+  std::string m_FolderPath = "";
+
+public:
+  inline const std::string& folderPath() const { return m_FolderPath; }
+  void folderPath(std::string value)
+  {
+    if (m_FolderPath == value)
+    {
+      return;
+    }
+    RIVE_EDITOR_STRING_CHANGING(folderPathPropertyKey, m_FolderPath, value);
+    m_FolderPath = value;
+    notifyPropertyChanged(folderPathPropertyKey);
+  }
+
+  void copy(const TextAssetBase& object)
+  {
+    m_FolderPath = object.m_FolderPath;
+    RIVE_EDITOR_COPY(object);
+    FileAsset::copy(object);
+  }
+
+  bool deserialize(uint16_t propertyKey, BinaryReader& reader) override
+  {
+    switch (propertyKey)
+    {
+      case folderPathPropertyKey:
+        m_FolderPath = CoreStringType::deserialize(reader);
+        return true;
+    }
+    RIVE_EDITOR_DESERIALIZE(propertyKey, reader);
+    return FileAsset::deserialize(propertyKey, reader);
+  }
+
+protected:
+#ifdef WITH_RIVE_EDITOR
+#include "editor_native/generated/assets/text_asset_ext.inl"
+#endif
+};
+} // namespace rive
+
+#endif

@@ -1,0 +1,15 @@
+--- a/build/rive_build_config.lua
++++ b/build/rive_build_config.lua
+@@ -580,6 +580,12 @@
+             end
+         end
+         f:close()
++    end
++    -- ViroCore local change: RIVE_NDK_REVISION_OVERRIDE accepts one extra NDK revision, so the
++    -- static libs are built with the same NDK as libviro_renderer.so (see ../NOTICE.md).
++    local ndk_override = os.getenv('RIVE_NDK_REVISION_OVERRIDE')
++    if ndk_override ~= nil and ndk_long_version == ndk_override then
++        ndk_version = EXPECTED_NDK_VERSION
+     end
+     if ndk_version ~= EXPECTED_NDK_VERSION and ndk_long_version ~= NDK_LONG_VERSION_STRING then
+         print()

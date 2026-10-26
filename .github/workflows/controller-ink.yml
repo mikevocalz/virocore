@@ -26,6 +26,9 @@ jobs:
         run: |
           test -d "$ANDROID_HOME"
           test -d "$ANDROID_HOME/platforms"
+      - name: Install rive-runtime host build dependencies
+        # build_rive.sh bootstraps premake from source; on Linux that needs libuuid headers.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends uuid-dev ninja-build
       - name: Build and verify the actual controller renderer
         run: bash scripts/build-pico-aar.sh --out "$RUNNER_TEMP/controller-aar"
       - uses: actions/upload-artifact@v4

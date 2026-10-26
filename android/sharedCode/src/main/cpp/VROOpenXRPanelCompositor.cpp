@@ -1,6 +1,9 @@
 #include "VROOpenXRPanelCompositor.h"
 
+#include <android/log.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <utility>
 
@@ -32,8 +35,27 @@ const char *VROOpenXRPanelErrorMessage(VROOpenXRPanelError error) {
         case VROOpenXRPanelError::InvalidCylinderRadius: return "cylinder radius must be finite and greater than zero";
         case VROOpenXRPanelError::InvalidCylinderAngle: return "cylinder arc angle must be smaller than 2pi";
         case VROOpenXRPanelError::SwapchainFailed: return "OpenXR panel swapchain allocation failed";
+        case VROOpenXRPanelError::ProducerUnavailable: return "panel texture producer could not be created";
     }
     return "unknown OpenXR panel error";
+}
+
+const char *VROOpenXRPanelPresentationName(VROOpenXRPanelPresentation presentation) {
+    switch (presentation) {
+        case VROOpenXRPanelPresentation::Pending: return "pending";
+        case VROOpenXRPanelPresentation::Compositor: return "compositor";
+        case VROOpenXRPanelPresentation::Evicted: return "evicted";
+    }
+    return "unknown";
+}
+
+const char *VROOpenXRPanelEvictionReasonName(VROOpenXRPanelEvictionReason reason) {
+    switch (reason) {
+        case VROOpenXRPanelEvictionReason::None: return "none";
+        case VROOpenXRPanelEvictionReason::LayerBudget: return "layer budget";
+        case VROOpenXRPanelEvictionReason::LayerLimitExceeded: return "XR_ERROR_LAYER_LIMIT_EXCEEDED";
+    }
+    return "unknown";
 }
 
 VROOpenXRPanelCompositor::VROOpenXRPanelCompositor(
@@ -50,6 +72,42 @@ VROOpenXRPanelCompositor::Panel *VROOpenXRPanelCompositor::find(const std::strin
     return it == _panels.end() ? nullptr : &*it;
 }
 
+const VROOpenXRPanelCompositor::Panel *VROOpenXRPanelCompositor::find(const std::string &id) const {
+    auto it = std::find_if(_panels.begin(), _panels.end(),
+                           [&id](const Panel &p) { return p.desc.id == id; });
+    return it == _panels.end() ? nullptr : &*it;
+}
+
+void VROOpenXRPanelCompositor::setPresentationListener(VROOpenXRPanelPresentationListener listener) {
+    _presentationListener = std::move(listener);
+}
+
+VROOpenXRPanelPresentation VROOpenXRPanelCompositor::presentation(const std::string &id) const {
+    const Panel *panel = find(id);
+    return panel ? panel->presentation : VROOpenXRPanelPresentation::Pending;
+}
+
+void VROOpenXRPanelCompositor::present(Panel &panel, VROOpenXRPanelPresentation presentation,
+                                       VROOpenXRPanelEvictionReason reason) {
+    if (panel.presentation == presentation) return;
+    panel.presentation = presentation;
+    if (_presentationListener) {
+        // The listener must not mutate the compositor (see the header); the
+        // id is copied anyway so a misbehaving one cannot read a moved panel.
+        const std::string id = panel.desc.id;
+        _presentationListener(id, presentation, reason);
+    }
+}
+
+namespace {
+
+// Panel swapchains alive across every compositor in the process. Logged on
+// each create and destroy (never per frame) so a count that does not return
+// to its baseline after a reload or background cycle shows a leak.
+std::atomic<int> sLivePanelSwapchains{0};
+
+} // namespace
+
 bool VROOpenXRPanelCompositor::createSwapchain(Panel &panel) {
     XrSwapchainCreateInfo info = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
     info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
@@ -63,6 +121,9 @@ bool VROOpenXRPanelCompositor::createSwapchain(Panel &panel) {
     info.mipCount = 1;
     if (XR_FAILED(xrCreateSwapchain(_session, &info, &panel.swapchain)))
         return false;
+    __android_log_print(ANDROID_LOG_INFO, "VRORendererOpenXR",
+                        "OpenXR panel swapchains: live=%d (created %ux%u)",
+                        ++sLivePanelSwapchains, info.width, info.height);
     uint32_t count = 0;
     if (XR_FAILED(xrEnumerateSwapchainImages(panel.swapchain, 0, &count, nullptr)) || count == 0) {
         destroySwapchain(panel);
@@ -91,6 +152,9 @@ void VROOpenXRPanelCompositor::destroySwapchain(Panel &panel) {
         finishPendingGpuWork();
         xrDestroySwapchain(panel.swapchain);
         panel.swapchain = XR_NULL_HANDLE;
+        __android_log_print(ANDROID_LOG_INFO, "VRORendererOpenXR",
+                            "OpenXR panel swapchains: live=%d (destroyed)",
+                            --sLivePanelSwapchains);
     }
     panel.images.clear();
     panel.imageState.reset();
@@ -101,6 +165,20 @@ VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
     if (_session == XR_NULL_HANDLE) return VROOpenXRPanelError::SessionUnavailable;
     if (desc.id.empty()) return VROOpenXRPanelError::EmptyId;
     if (!producer) return VROOpenXRPanelError::MissingProducer;
+    const VROOpenXRPanelError invalid = validatePanel(desc);
+    if (invalid != VROOpenXRPanelError::None) return invalid;
+
+    Panel panel;
+    panel.desc = desc;
+    panel.producer = std::move(producer);
+    if (!createSwapchain(panel)) return VROOpenXRPanelError::SwapchainFailed;
+    _panels.push_back(std::move(panel));
+    return VROOpenXRPanelError::None;
+}
+
+VROOpenXRPanelError VROOpenXRPanelCompositor::validatePanel(const VROOpenXRPanelDesc &desc) const {
+    if (_session == XR_NULL_HANDLE) return VROOpenXRPanelError::SessionUnavailable;
+    if (desc.id.empty()) return VROOpenXRPanelError::EmptyId;
     if (find(desc.id)) return VROOpenXRPanelError::DuplicateId;
     if (_panels.size() >= _maxLayers) return VROOpenXRPanelError::LayerBudgetExceeded;
     if (!validPose(desc.pose)) return VROOpenXRPanelError::InvalidPose;
@@ -117,12 +195,6 @@ VROOpenXRPanelError VROOpenXRPanelCompositor::addPanel(
         if (desc.widthMeters / desc.radiusMeters >= kFullCircle)
             return VROOpenXRPanelError::InvalidCylinderAngle;
     }
-
-    Panel panel;
-    panel.desc = desc;
-    panel.producer = std::move(producer);
-    if (!createSwapchain(panel)) return VROOpenXRPanelError::SwapchainFailed;
-    _panels.push_back(std::move(panel));
     return VROOpenXRPanelError::None;
 }
 
@@ -163,11 +235,23 @@ void VROOpenXRPanelCompositor::clear() {
 
 void VROOpenXRPanelCompositor::appendLayers(
     XrSpace appSpace, uint32_t remainingLayerSlots, XrDuration predictedDisplayPeriod,
-    std::vector<const XrCompositionLayerBaseHeader *> &layers) {
-    if (appSpace == XR_NULL_HANDLE || remainingLayerSlots == 0) return;
+    std::vector<const XrCompositionLayerBaseHeader *> &layers,
+    VROOpenXRPanelEvictionReason shortReason) {
+    if (appSpace == XR_NULL_HANDLE) return;
+    // Presentation changes are reported after the loop, so the listener never
+    // runs in the middle of building the layer list.
+    std::vector<std::pair<std::string, VROOpenXRPanelPresentation>> changes;
+    auto mark = [&changes](Panel &panel, VROOpenXRPanelPresentation presentation) {
+        if (panel.presentation != presentation) changes.emplace_back(panel.desc.id, presentation);
+    };
     for (auto &panel : _panels) {
-        if (remainingLayerSlots == 0) break;
         if (!panel.desc.visible || panel.swapchain == XR_NULL_HANDLE) continue;
+        if (remainingLayerSlots == 0) {
+            // Previously dropped without a word; the host must now show the
+            // scene-mesh fallback for it.
+            mark(panel, VROOpenXRPanelPresentation::Evicted);
+            continue;
+        }
 
         panel.imageState.step(
             [&](uint32_t &index) {
@@ -195,7 +279,9 @@ void VROOpenXRPanelCompositor::appendLayers(
 
         // The compositor uses the last released image while a new paint is
         // pending; no layer is legal before its first successful release.
+        // Such a panel holds no slot and is neither shown nor evicted yet.
         if (!panel.imageState.hasReleasedImage()) continue;
+        mark(panel, VROOpenXRPanelPresentation::Compositor);
 
         XrSwapchainSubImage image = {};
         image.swapchain = panel.swapchain;
@@ -224,5 +310,12 @@ void VROOpenXRPanelCompositor::appendLayers(
             layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader *>(&cylinder));
         }
         --remainingLayerSlots;
+    }
+    for (const auto &change : changes) {
+        Panel *panel = find(change.first);
+        if (panel == nullptr) continue;  // removed by an earlier listener call
+        present(*panel, change.second,
+                change.second == VROOpenXRPanelPresentation::Evicted
+                    ? shortReason : VROOpenXRPanelEvictionReason::None);
     }
 }

@@ -144,6 +144,9 @@ add_library( # Sets the name of the library.
              # dependency, which was not 16 KB-page compliant (see viro#491).
              ${VIRO_ANDROID_SRC}/VROSceneRendererOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROOpenXRPanelCompositor.cpp
+             ${VIRO_ANDROID_SRC}/VROOpenXRRivePanelProducer.cpp
+             ${VIRO_ANDROID_SRC}/VROOpenXRRivePanelFallback.cpp
+             ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXRSharedFrame.cpp
              ${VIRO_ANDROID_SRC}/Colocation_JNI.cpp
@@ -453,6 +456,7 @@ add_library( # Sets the name of the library.
 
              # Android JNI
              ${VIRO_ANDROID_SRC}/jni/VRORenderer_JNI.cpp
+             ${VIRO_ANDROID_SRC}/jni/RiveCompositorPanel_JNI.cpp
              ${VIRO_ANDROID_SRC}/jni/MediaRecorder_JNI.cpp
              ${VIRO_ANDROID_SRC}/jni/VROVirtualController_JNI.cpp
              ${VIRO_ANDROID_SRC}/jni/VROGameLoop_JNI.cpp
@@ -641,6 +645,23 @@ target_link_libraries( # Specifies the target library.
                        ${lib-z}
                        "-Wl,-z,max-page-size=16384"
         )
+
+# rive-runtime, linked statically with hidden symbols (arm64-v8a only). See
+# docs/RIVE_RUNTIME.md and android/rive/ViroRive.cmake.
+# VRORivePanel's own sources use C++17 (std::variant); the rest of viro_renderer is C++14
+# (cppFlags in viroreact/build.gradle; the later flag wins). Its public header stays C++14.
+set_source_files_properties(
+    ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelEGL.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelGeometry.cpp
+    ${VIRO_ANDROID_SRC}/VRORivePanelRing.cpp
+    PROPERTIES COMPILE_OPTIONS "-std=c++17")
+option(VIRO_WITH_RIVE "Link rive-runtime statically into viro_renderer" ON)
+if(VIRO_WITH_RIVE)
+    include(${CMAKE_SOURCE_DIR}/../rive/ViroRive.cmake)
+else()
+    target_compile_definitions(viro_renderer PRIVATE VRO_HAS_RIVE_RUNTIME=0)
+endif()
 
 if(VIRO_ENABLE_ESKIU_GEOMETRY)
     target_compile_definitions(viro_renderer PRIVATE VRO_ENGINE_ESKIU_GEOMETRY_AVAILABLE=1)

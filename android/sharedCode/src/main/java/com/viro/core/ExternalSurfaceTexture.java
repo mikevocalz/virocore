@@ -91,6 +91,44 @@ public class ExternalSurfaceTexture extends Texture {
     }
 
     /**
+     * Round the corners of the panel this texture is shown on. The renderer's
+     * copy of each frame multiplies by the shared rounded-rect coverage
+     * (one-pixel anti-aliased edge), so the material shows transparent corners
+     * with no extra geometry. The pixel radius per axis is
+     * {@code radiusMeters * pxWidth / widthMeters} and
+     * {@code radiusMeters * pxHeight / heightMeters}, after clamping
+     * {@code radiusMeters} to half the panel's shorter side.
+     * <p>
+     * 0, the default, leaves every pixel unchanged. Any thread; the last frame
+     * is copied again, so a static producer does not need to redraw.
+     *
+     * @param radiusMeters Corner radius on the panel, in meters.
+     * @param widthMeters  Width of the panel the texture covers, in meters.
+     * @param heightMeters Height of the panel the texture covers, in meters.
+     */
+    public void setCornerRadius(float radiusMeters, float widthMeters, float heightMeters) {
+        if (mNativeRef != 0) {
+            nativeSetCornerRadius(mNativeRef, radiusMeters, widthMeters, heightMeters);
+        }
+    }
+
+    /**
+     * Declare whether the producer writes premultiplied alpha. Default false,
+     * which keeps colour and alpha straight, for use with
+     * {@link Material.BlendMode#ALPHA}. Canvas, Skia and Rive producers write
+     * premultiplied alpha: set true and give the material
+     * {@link Material.BlendMode#PREMULTIPLY_ALPHA}, or every anti-aliased edge
+     * gets a dark fringe. Any thread.
+     *
+     * @param premultiplied True when the Surface carries premultiplied alpha.
+     */
+    public void setPremultipliedAlpha(boolean premultiplied) {
+        if (mNativeRef != 0) {
+            nativeSetPremultipliedAlpha(mNativeRef, premultiplied);
+        }
+    }
+
+    /**
      * Release native resources. The producer must stop writing to the Surface
      * before this is called. Idempotent.
      */
@@ -130,6 +168,9 @@ public class ExternalSurfaceTexture extends Texture {
      */
     private native long nativeCreateExternalSurfaceTexture(long renderContextRef, int width, int height);
     private native void nativeDeleteExternalSurfaceTexture(long nativeRef);
+    private native void nativeSetCornerRadius(long nativeRef, float radiusMeters,
+                                              float widthMeters, float heightMeters);
+    private native void nativeSetPremultipliedAlpha(long nativeRef, boolean premultiplied);
 
     private static final String TAG = "ExternalSurfaceTexture";
 }

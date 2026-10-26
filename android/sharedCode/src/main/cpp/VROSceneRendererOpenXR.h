@@ -25,7 +25,9 @@
 
 #include "VROSceneRenderer.h"
 #include "VROARHitTestResult.h"
+#include <map>
 #include <memory>
+#include <string>
 #include <thread>
 #include <atomic>
 #include <vector>
@@ -43,6 +45,7 @@
 #include "VROOpenXRBoundaryVisibility.h"
 #include "VROOpenXRPanelCompositor.h"
 #include "VROOpenXRRenderQuality.h"
+#include "VRORivePanel.h"
 
 class VRORendererConfiguration;
 class VRODriverOpenGLAndroidOpenXR;
@@ -52,6 +55,8 @@ class VROARSessionOpenXR;
 class VROARScene;
 class VROSceneController;
 class VRONode;
+class VROTexture;
+struct __attribute__((visibility("hidden"))) VRORiveCompositorLink;
 
 namespace gvr { class AudioApi; }
 
@@ -61,6 +66,19 @@ struct VROOpenXRSwapchain {
     uint32_t                             width    = 0;
     uint32_t                             height   = 0;
     std::vector<XrSwapchainImageOpenGLESKHR> images;
+};
+
+// What the current session can do with compositor panels. Facts from the
+// runtime, read on the XR render thread.
+struct VROOpenXRCompositorPanelCapabilities {
+    // A session exists and its compositor accepts panels.
+    bool sessionReady = false;
+    // XR_KHR_composition_layer_cylinder was enabled at instance creation.
+    bool cylinder = false;
+    // Runtime maxLayerCount minus the projection and passthrough slots.
+    uint32_t maxPanels = 0;
+    // rive-runtime is linked into this ABI (VRORivePanel::isAvailable()).
+    bool rive = false;
 };
 
 class VROSceneRendererOpenXR : public VROSceneRenderer,
@@ -130,6 +148,46 @@ public:
     // registered texture producer is called when this flag is set.
     bool invalidateCompositorPanelContent(const std::string &id);
     bool removeCompositorPanel(const std::string &id);
+
+    // Render-thread API: a Rive compositor panel (viro-external ADR 0001 route
+    // B2). Creates a VRORivePanel in texture-ring mode whose worker context
+    // shares this session's EGL context, and registers a finish-pass producer
+    // (VROOpenXRRivePanelProducer) for it. cornerRadiusMeters rounds the panel
+    // through the shared coverage function; the Rive content itself is drawn
+    // square. Each published Rive frame posts one invalidateCompositorPanelContent
+    // to this thread, so the swapchain is redrawn only while the state machine
+    // advances or after input, data or lifecycle changes.
+    //
+    // On success *outPanel is the Rive panel for loading files, view-model
+    // writes and pointer input; its hit test already uses the corner radii.
+    // removeCompositorPanel(id) tears down the swapchain, then the finish
+    // pass; the ring and the shared context go when the last reference to
+    // the Rive panel does, never before the swapchain.
+    VROOpenXRPanelError addRiveCompositorPanel(const VROOpenXRPanelDesc &desc,
+                                               float cornerRadiusMeters,
+                                               VRORivePanelOptions options,
+                                               VRORivePanel::StatusListener listener,
+                                               std::shared_ptr<VRORivePanel> *outPanel);
+
+    // Presentation changes of compositor panels (Compositor <-> Evicted, with
+    // the reason). Called on the XR render thread at the start of the frame
+    // after the change, outside layer submission, so the listener may add,
+    // remove or update panels and change the scene graph. Replaces any
+    // previous listener; null removes it.
+    void setCompositorPanelPresentationListener(VROOpenXRPanelPresentationListener listener);
+    VROOpenXRPanelPresentation getCompositorPanelPresentation(const std::string &id) const;
+
+    // Scene-mesh fallback for a Rive compositor panel: a texture with the same
+    // pixels and corners as its layer (VROOpenXRRivePanelFallback), kept
+    // current while the panel is Evicted. Null until the panel is first
+    // evicted, and for panels not added through addRiveCompositorPanel.
+    // Put it on a quad of the panel's size and pose, with a PremultiplyAlpha
+    // material, while the panel is Evicted. Render thread.
+    std::shared_ptr<VROTexture> getRiveCompositorPanelFallbackTexture(const std::string &id) const;
+
+    // Render thread. sessionReady is false before the session exists and
+    // after teardown; the other fields are then zero or false.
+    VROOpenXRCompositorPanelCapabilities getCompositorPanelCapabilities() const;
 
     /*
      Per-eye swapchain dimensions, or 0 until the session has created them.
@@ -358,6 +416,25 @@ private:
     bool _cylinderLayerAvailable = false;
     uint32_t _maxCompositorLayers = 0;
     int64_t _panelSwapchainFormat = 0;
+    // Layer count the runtime last accepted after rejecting a frame with
+    // XR_ERROR_LAYER_LIMIT_EXCEEDED; 0 when no such cap applies. Cleared when
+    // a panel is removed, since that may be what made room.
+    uint32_t _layerLimitCap = 0;
+    // Rive compositor panels by id: frame-to-invalidation link and fallback
+    // texture. Render thread only.
+    std::map<std::string, std::shared_ptr<VRORiveCompositorLink>> _riveLinks;
+    // Every texture-ring Rive panel created on _eglContext, so
+    // destroyEGLContext() can dispose the ones still alive (held by a host or
+    // a fallback texture) before eglTerminate invalidates their shared
+    // contexts. Written on the render thread; read in destroyEGLContext()
+    // after that thread has been joined.
+    std::vector<std::weak_ptr<VRORivePanel>> _ringPanels;
+    // Held by shared_ptr so tasks queued for the next frame can skip the
+    // call once this renderer is gone (they capture a weak_ptr).
+    std::shared_ptr<VROOpenXRPanelPresentationListener> _hostPresentationListener;
+    void onCompositorPanelPresentation(const std::string &id,
+                                       VROOpenXRPanelPresentation presentation,
+                                       VROOpenXRPanelEvictionReason reason);
 
     // Passthrough extension handles (XR_FB_passthrough)
     XrPassthroughFB      _passthrough      = XR_NULL_HANDLE;
