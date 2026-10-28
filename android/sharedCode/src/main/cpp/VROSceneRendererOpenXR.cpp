@@ -11,6 +11,7 @@
 #include "VROPanelCoverage.h"
 
 #include <android/log.h>
+#include <algorithm>
 #include <sys/prctl.h>
 #include <unistd.h>
 #include <algorithm>
@@ -258,7 +259,7 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
         _inputController->initRenderModels(_instance, _session);
     }
 
-    // Wire the B/Menu button back to Android's back-press so React Native's
+    // Wire the B and Y buttons to Android's back-press so React Native's
     // BackHandler fires in VRActivity. The callback runs on the render thread;
     // ViroViewOpenXR.onNativeBackButton() posts to the UI thread internally.
     {
@@ -832,7 +833,8 @@ bool VROSceneRendererOpenXR::deriveFloorOffset(XrTime time, float *outOffsetY) {
 
 bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
                                                  XrSpace *outSpace,
-                                                 XrReferenceSpaceType *outType) {
+                                                 XrReferenceSpaceType *outType,
+                                                 XrPosef *outPose) {
     XrReferenceSpaceCreateInfo spaceInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
     spaceInfo.poseInReferenceSpace = { {0, 0, 0, 1}, {0, 0, 0} };  // identity
 
@@ -859,6 +861,7 @@ bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
             XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
             if (XR_SUCCEEDED(r)) {
                 *outType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
+                *outPose = spaceInfo.poseInReferenceSpace;
                 _floorOffsetY = 0.0f;
                 _floorOriginPending = false;
                 ALOGI("Reference space: LOCAL_FLOOR (native floor origin)");
@@ -879,6 +882,7 @@ bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
             XrResult r = xrCreateReferenceSpace(_session, &spaceInfo, outSpace);
             if (XR_SUCCEEDED(r)) {
                 *outType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+                *outPose = spaceInfo.poseInReferenceSpace;
                 _floorOffsetY = offsetY;
                 _floorOriginPending = false;
                 ALOGI("Reference space: LOCAL offset %.3f m (STAGE-emulated floor)", offsetY);
@@ -907,9 +911,23 @@ bool VROSceneRendererOpenXR::buildReferenceSpace(VROTrackingOrigin origin,
         return false;
     }
     *outType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    *outPose = spaceInfo.poseInReferenceSpace;
     _floorOffsetY = 0.0f;
     ALOGI("Reference space: LOCAL (eye-level origin)");
     return true;
+}
+
+XrSpace VROSceneRendererOpenXR::installAppSpace(XrSpace space, XrReferenceSpaceType type,
+                                                const XrPosef &pose) {
+    XrSpace old   = _appSpace;
+    _appSpace     = space;
+    _appSpaceType = type;
+    _spaceOffset  = pose;
+    if (_arSession) {
+        _arSession->replaceBaseSpace(space);
+    }
+    resetFloorDiagnostic();
+    return old;
 }
 
 bool VROSceneRendererOpenXR::createReferenceSpace() {
@@ -933,7 +951,16 @@ bool VROSceneRendererOpenXR::createReferenceSpace() {
         ALOGI("[XR-DIAG] %s detected — defaulting tracking origin to Floor",
               _runtimeInfo.vendor == VROOpenXRVendor::PICO ? "PICO" : "Meta");
     }
-    return buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
+    XrSpace space = XR_NULL_HANDLE;
+    XrReferenceSpaceType type = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    XrPosef pose = { {0, 0, 0, 1}, {0, 0, 0} };
+    if (!buildReferenceSpace(_trackingOrigin, &space, &type, &pose)) {
+        return false;
+    }
+    XrSpace old = installAppSpace(space, type, pose);
+    if (old != XR_NULL_HANDLE) xrDestroySpace(old);
+    _roomMovePending = false;
+    return true;
 }
 
 // Called on the JNI caller's thread (ViroViewOpenXR.setTrackingOrigin, driven by
@@ -966,16 +993,14 @@ void VROSceneRendererOpenXR::applyTrackingOrigin(VROTrackingOrigin origin) {
     _trackingOrigin = origin;
     XrSpace newSpace = XR_NULL_HANDLE;
     XrReferenceSpaceType newType = XR_REFERENCE_SPACE_TYPE_LOCAL;
-    if (!buildReferenceSpace(origin, &newSpace, &newType)) {
+    XrPosef newPose = { {0, 0, 0, 1}, {0, 0, 0} };
+    if (!buildReferenceSpace(origin, &newSpace, &newType, &newPose)) {
         return;  // build logged; keep the existing space
     }
-    XrSpace old = _appSpace;
-    _appSpace     = newSpace;
-    _appSpaceType = newType;
+    XrSpace old = installAppSpace(newSpace, newType, newPose);
     if (old != XR_NULL_HANDLE) {
         xrDestroySpace(old);
     }
-    resetFloorDiagnostic();
 }
 
 bool VROSceneRendererOpenXR::createSwapchains() {
@@ -1520,7 +1545,9 @@ void VROSceneRendererOpenXR::setPassthroughEnabled(bool enabled) {
 
     if (enabled) {
         // Ensure the passthrough subsystem is running before resuming the layer.
-        XR_CHECK(_pfnPassthroughStart(_passthrough));
+        // Starting it while it runs fails with UNEXPECTED_STATE, which a switch
+        // from one AR scene to another would otherwise do.
+        if (!_passthroughEnabled) XR_CHECK(_pfnPassthroughStart(_passthrough));
         XR_CHECK(_pfnPassthroughLayerResume(_passthroughLayer));
     } else {
         // Pause the layer first, then pause the subsystem (saves power).
@@ -1842,6 +1869,7 @@ void VROSceneRendererOpenXR::onDestroy() {
         _inputController->destroyHandTrackers();
         _inputController->destroySpaces();
         _inputController->destroyRenderModels();  // waits out a background xrLoadRenderModelFB
+        _inputController->destroyActionSet();
     }
     destroySession();
     destroyEGLContext();
@@ -2065,27 +2093,35 @@ void VROSceneRendererOpenXR::onTouchEvent(int /*action*/, float /*x*/, float /*y
 void VROSceneRendererOpenXR::onKeyEvent(int /*keyCode*/, int /*action*/) {}
 
 void VROSceneRendererOpenXR::recenterTracking() {
-    if (_session == XR_NULL_HANDLE) return;
+    _recenterRequested = true;
+}
 
-    // Create a temporary VIEW space to locate the head pose.
-    XrReferenceSpaceCreateInfo viewSpaceInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
-    viewSpaceInfo.referenceSpaceType    = XR_REFERENCE_SPACE_TYPE_VIEW;
-    viewSpaceInfo.poseInReferenceSpace  = { {0, 0, 0, 1}, {0, 0, 0} };
-    XrSpace viewSpace = XR_NULL_HANDLE;
-    if (XR_FAILED(xrCreateReferenceSpace(_session, &viewSpaceInfo, &viewSpace))) {
-        ALOGE("recenterTracking: failed to create VIEW space");
-        return;
-    }
+XrSpace VROSceneRendererOpenXR::applyRecenter(XrTime time) {
+    // The head is located in a fresh space of the app space's type (LOCAL or
+    // LOCAL_FLOOR), which the new space's pose is relative to, not in _appSpace,
+    // which an earlier recentre moved away from it.
+    XrReferenceSpaceCreateInfo refInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
+    refInfo.poseInReferenceSpace = { {0, 0, 0, 1}, {0, 0, 0} };
+    XrSpace viewSpace  = XR_NULL_HANDLE;
+    XrSpace localSpace = XR_NULL_HANDLE;
+    refInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    bool created = XR_SUCCEEDED(xrCreateReferenceSpace(_session, &refInfo, &viewSpace));
+    refInfo.referenceSpaceType = _appSpaceType;
+    created = created && XR_SUCCEEDED(xrCreateReferenceSpace(_session, &refInfo, &localSpace));
 
-    // Locate head (VIEW) relative to the current app space.
-    // Use _lastPredictedDisplayTime so the pose is from the most recent frame.
     XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
-    xrLocateSpace(viewSpace, _appSpace, _lastPredictedDisplayTime, &headLoc);
-    xrDestroySpace(viewSpace);
-
+    if (created) {
+        xrLocateSpace(viewSpace, localSpace, time, &headLoc);
+    }
+    if (viewSpace != XR_NULL_HANDLE)  xrDestroySpace(viewSpace);
+    if (localSpace != XR_NULL_HANDLE) xrDestroySpace(localSpace);
+    if (!created) {
+        ALOGE("recenterTracking: failed to create the VIEW or LOCAL space");
+        return XR_NULL_HANDLE;
+    }
     if (!(headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
         ALOGW("recenterTracking: head orientation not valid — skipped");
-        return;
+        return XR_NULL_HANDLE;
     }
 
     // Extract yaw from head orientation (keep scene upright — Y-axis rotation only).
@@ -2103,7 +2139,7 @@ void VROSceneRendererOpenXR::recenterTracking() {
     if (_appSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL &&
         _trackingOrigin == VROTrackingOrigin::Floor) {
         float offsetY = 0.0f;
-        if (deriveFloorOffset(_lastPredictedDisplayTime, &offsetY)) {
+        if (deriveFloorOffset(time, &offsetY)) {
             _floorOffsetY = offsetY;
         }
         // Negative for the same reason as buildReferenceSpace: _floorOffsetY is the
@@ -2119,14 +2155,22 @@ void VROSceneRendererOpenXR::recenterTracking() {
                                                     cosf(yaw * 0.5f) };
 
     XrSpace newSpace = XR_NULL_HANDLE;
-    if (XR_SUCCEEDED(xrCreateReferenceSpace(_session, &spaceInfo, &newSpace))) {
-        xrDestroySpace(_appSpace);
-        _appSpace = newSpace;
-        resetFloorDiagnostic();
-        ALOGV("recenterTracking: recentered (yaw=%.2f rad, originY=%.3f)", yaw, originY);
-    } else {
+    if (XR_FAILED(xrCreateReferenceSpace(_session, &spaceInfo, &newSpace))) {
         ALOGE("recenterTracking: xrCreateReferenceSpace failed");
+        return XR_NULL_HANDLE;
     }
+
+    // The base space stays put, so a point fixed in the room keeps its base
+    // coordinates and its scene coordinates move, as after a system recentre.
+    VROMatrix4f move = xrPoseToMatrix(spaceInfo.poseInReferenceSpace).invert()
+        .multiply(xrPoseToMatrix(_spaceOffset));
+    _roomMoveAt      = _roomMovePending ? std::max(_roomMoveAt, time) : time;
+    _roomMove        = _roomMovePending ? move.multiply(_roomMove) : move;
+    _roomMovePending = true;
+
+    XrSpace oldSpace = installAppSpace(newSpace, _appSpaceType, spaceInfo.poseInReferenceSpace);
+    ALOGV("recenterTracking: recentered (yaw=%.2f rad, originY=%.3f)", yaw, originY);
+    return oldSpace;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -2200,28 +2244,42 @@ void VROSceneRendererOpenXR::pollEvents() {
                 break;
             }
             case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
-                // The runtime is recentering our reference-space type (e.g. the
-                // user long-pressed Home on PICO / held the Oculus button). The
-                // pose we located content against is about to move, so rebuild
-                // the app space to match — otherwise the world stays pinned to
-                // the pre-recenter origin and drifts off from the user.
-                auto *changeEvent =
+                // The runtime is recentering a reference space (the user
+                // long-pressed Home on PICO / held the Oculus button). When it is
+                // the app space's type, the pose content was located against is
+                // about to move, so rebuild the app space to match; otherwise the
+                // world stays pinned to the pre-recenter origin and drifts off
+                // from the user.
+                auto *change =
                     reinterpret_cast<XrEventDataReferenceSpaceChangePending *>(&event);
-                if (changeEvent->referenceSpaceType == _appSpaceType &&
+                ALOGV("Reference space change pending (type %d, pose valid %d)",
+                      (int)change->referenceSpaceType, (int)change->poseValid);
+                if (change->referenceSpaceType == _appSpaceType &&
                     _session != XR_NULL_HANDLE) {
+                    if (_arSession) {
+                        _arSession->onBaseSpaceChangePending(change->changeTime);
+                    }
+                    XrPosef oldOffset = _spaceOffset;
                     XrSpace rebuilt = XR_NULL_HANDLE;
                     XrReferenceSpaceType rebuiltType = _appSpaceType;
-                    if (buildReferenceSpace(_trackingOrigin, &rebuilt, &rebuiltType)) {
-                        XrSpace old = _appSpace;
-                        _appSpace     = rebuilt;
-                        _appSpaceType = rebuiltType;
+                    XrPosef rebuiltPose = _spaceOffset;
+                    if (buildReferenceSpace(_trackingOrigin, &rebuilt, &rebuiltType,
+                                            &rebuiltPose)) {
+                        XrSpace old = installAppSpace(rebuilt, rebuiltType, rebuiltPose);
                         if (old != XR_NULL_HANDLE) xrDestroySpace(old);
-                        resetFloorDiagnostic();
                         ALOGI("Reference space rebuilt after runtime recenter");
                     }
-                } else {
-                    ALOGV("Reference space change pending (type %d) — ignored",
-                          (int)changeEvent->referenceSpaceType);
+                    if (change->poseValid) {
+                        // poseInPreviousSpace is the new base origin in the old one.
+                        // The app space sat at oldOffset in the old base and sits at
+                        // _spaceOffset in the new one.
+                        VROMatrix4f move = xrPoseToMatrix(_spaceOffset).invert()
+                            .multiply(xrPoseToMatrix(change->poseInPreviousSpace).invert())
+                            .multiply(xrPoseToMatrix(oldOffset));
+                        _roomMove        = _roomMovePending ? move.multiply(_roomMove) : move;
+                        _roomMoveAt      = change->changeTime;
+                        _roomMovePending = true;
+                    }
                 }
                 break;
             }
@@ -2282,6 +2340,16 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
     ALOGV("Session state → %d", (int)_sessionState);
     pushARTrackingState();
 
+    // The first focus is the scene starting, so only later changes are reported.
+    bool focused = _sessionState == XR_SESSION_STATE_FOCUSED;
+    if (focused != _inputFocused) {
+        _inputFocused = focused;
+        if (_hasBeenFocused) {
+            notifyInputFocus(focused);
+        }
+        _hasBeenFocused = _hasBeenFocused || focused;
+    }
+
     switch (_sessionState) {
         case XR_SESSION_STATE_READY: {
             XrSessionBeginInfo beginInfo = { XR_TYPE_SESSION_BEGIN_INFO };
@@ -2325,6 +2393,43 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
     }
 }
 
+void VROSceneRendererOpenXR::notifyInputFocus(bool focused) {
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (_jvm->GetEnv((void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+        _jvm->AttachCurrentThread(&env, nullptr);
+        attached = true;
+    }
+    if (env) {
+        jclass cls = env->GetObjectClass(_jview);
+        jmethodID mid = env->GetMethodID(cls, "onNativeInputFocusChanged", "(Z)V");
+        env->DeleteLocalRef(cls);
+        if (mid) env->CallVoidMethod(_jview, mid, (jboolean)focused);
+    }
+    if (attached) _jvm->DetachCurrentThread();
+}
+
+void VROSceneRendererOpenXR::notifyRoomMoved(const VROMatrix4f &move) {
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (_jvm->GetEnv((void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+        _jvm->AttachCurrentThread(&env, nullptr);
+        attached = true;
+    }
+    if (env) {
+        jclass cls = env->GetObjectClass(_jview);
+        jmethodID mid = env->GetMethodID(cls, "onNativeRoomMoved", "([F)V");
+        env->DeleteLocalRef(cls);
+        jfloatArray array = env->NewFloatArray(16);
+        if (mid && array) {
+            env->SetFloatArrayRegion(array, 0, 16, move.getArray());
+            env->CallVoidMethod(_jview, mid, array);
+        }
+        if (array) env->DeleteLocalRef(array);
+    }
+    if (attached) _jvm->DetachCurrentThread();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Frame render
 // ──────────────────────────────────────────────────────────────────────────────
@@ -2347,6 +2452,16 @@ void VROSceneRendererOpenXR::renderFrame() {
     XR_CHECK(xrWaitFrame(_session, &waitInfo, &frameState));
     _lastPredictedDisplayTime = frameState.predictedDisplayTime;
 
+    // Applied here, before anything this frame uses _appSpace
+    XrSpace retiredSpace = _recenterRequested.exchange(false)
+        ? applyRecenter(frameState.predictedDisplayTime)
+        : XR_NULL_HANDLE;
+
+    if (_roomMovePending && frameState.predictedDisplayTime >= _roomMoveAt) {
+        _roomMovePending = false;
+        notifyRoomMoved(_roomMove);
+    }
+
     // Deferred floor origin. buildReferenceSpace needs a locatable STAGE, which PICO
     // withholds until a few frames in, so createReferenceSpace() at session start
     // fell to eye-level and set _floorOriginPending. Now that we have a valid
@@ -2356,13 +2471,12 @@ void VROSceneRendererOpenXR::renderFrame() {
     if (_floorOriginPending && _trackingOrigin == VROTrackingOrigin::Floor) {
         XrSpace rebuilt = XR_NULL_HANDLE;
         XrReferenceSpaceType rebuiltType = XR_REFERENCE_SPACE_TYPE_LOCAL;
-        bool ok = buildReferenceSpace(VROTrackingOrigin::Floor, &rebuilt, &rebuiltType);
+        XrPosef rebuiltPose = { {0, 0, 0, 1}, {0, 0, 0} };
+        bool ok = buildReferenceSpace(VROTrackingOrigin::Floor, &rebuilt, &rebuiltType,
+                                      &rebuiltPose);
         if (ok && !_floorOriginPending) {
-            XrSpace old = _appSpace;
-            _appSpace     = rebuilt;
-            _appSpaceType = rebuiltType;
+            XrSpace old = installAppSpace(rebuilt, rebuiltType, rebuiltPose);
             if (old != XR_NULL_HANDLE) xrDestroySpace(old);
-            resetFloorDiagnostic();
             ALOGI("Floor origin applied on frame retry (offset %.3f m)", _floorOffsetY);
         } else if (rebuilt != XR_NULL_HANDLE) {
             xrDestroySpace(rebuilt);  // still eye-level — keep the existing space, retry next frame
@@ -2443,6 +2557,10 @@ void VROSceneRendererOpenXR::renderFrame() {
     // prepareFrame() so anchor node transforms are current for this frame.
     if (_arSession) {
         _arSession->setDisplayTime(frameState.predictedDisplayTime);
+        if (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) {
+            _arSession->setHeadPosition((xrVec3ToVRO(views[0].pose.position) +
+                                         xrVec3ToVRO(views[1].pose.position)).scale(0.5f));
+        }
         _arSession->updateFrame();
     }
 
@@ -2602,6 +2720,9 @@ void VROSceneRendererOpenXR::renderFrame() {
     }
 
     XrResult endResult = xrEndFrame(_session, &endInfo);
+    if (retiredSpace != XR_NULL_HANDLE) {
+        xrDestroySpace(retiredSpace);
+    }
     if (endResult == XR_ERROR_LAYER_LIMIT_EXCEEDED && endInfo.layerCount > 1) {
         // The runtime accepted fewer layers than maxLayerCount promised. Cap
         // the next frames one below this count; the panels that no longer fit
@@ -2698,6 +2819,7 @@ void VROSceneRendererOpenXR::renderEye(int eyeIndex,
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
+    display->discardDepth();
 
     // ── Release swapchain image ───────────────────────────────────────────────
     XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };

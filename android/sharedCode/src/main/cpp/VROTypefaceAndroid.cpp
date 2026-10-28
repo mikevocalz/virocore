@@ -137,3 +137,9 @@ std::string VROTypefaceAndroid::getFontPath(std::string fontName, std::string su
 float VROTypefaceAndroid::getLineHeight() const {
     return (_face->size->metrics.height >> 6) * _glyphPixelScale;
 }
+
+float VROTypefaceAndroid::getDescender() const {
+    // Scaled like the line height: a fixed-strike face (bitmap emoji) reports
+    // metrics for its strike, not for the requested size.
+    return -(_face->size->metrics.descender >> 6) * _glyphPixelScale;
+}

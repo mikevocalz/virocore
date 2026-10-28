@@ -8,8 +8,7 @@ xcodebuild \
   -scheme ViroKit \
   -sdk iphoneos \
   -configuration Release \
-  -derivedDataPath "$REPO_ROOT/ios/build/derived-data" \
-  IPHONEOS_DEPLOYMENT_TARGET=13.0
+  -derivedDataPath "$REPO_ROOT/ios/build/derived-data"
 FRAMEWORK="$REPO_ROOT/ios/build/derived-data/Build/Products/Release-iphoneos/ViroKit.framework"
 test -s "$FRAMEWORK/ViroKit"
 test -d "$FRAMEWORK/Headers"

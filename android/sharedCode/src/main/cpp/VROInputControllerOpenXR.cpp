@@ -71,6 +71,10 @@ static bool isPoseActionActive(XrSession session, XrAction action) {
 
 VROInputControllerOpenXR::~VROInputControllerOpenXR() {
     destroySpaces();
+    destroyActionSet();
+}
+
+void VROInputControllerOpenXR::destroyActionSet() {
     if (_actionSet != XR_NULL_HANDLE) {
         xrDestroyActionSet(_actionSet);
         _actionSet = XR_NULL_HANDLE;
@@ -583,20 +587,31 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         switch (updateInputButton(active, state.currentState == XR_TRUE, previous)) {
             case VROInputButtonEdge::Down:
                 queueButtonEvent(source, VROEventDelegate::ClickDown);
-                if (backButton && _backButtonCallback) _backButtonCallback();
+                // B and Y both go back; pressing both at once sends one back.
+                if (backButton && _backButtonCallback && !(_prevBButton && _prevYButton)) {
+                    _backButtonCallback();
+                }
                 break;
             case VROInputButtonEdge::Up:
                 queueButtonEvent(source, VROEventDelegate::ClickUp); break;
             case VROInputButtonEdge::Cancel:
-                VROInputControllerBase::cancelSource(source); break;
+                // Menu reaches no node, so ending it cancels nothing on the left ray.
+                if (source == ViroOculus::MenuButton) {
+                    notifyMenuButton(VROEventDelegate::ClickUp, /*completed=*/false);
+                } else {
+                    VROInputControllerBase::cancelSource(source);
+                }
+                break;
             case VROInputButtonEdge::None: break;
         }
     };
     pollBooleanButton(_aButtonAction, ViroOculus::AButton, rightValid, _prevAButton);
     pollBooleanButton(_bButtonAction, ViroOculus::BackButton, rightValid, _prevBButton, true);
     pollBooleanButton(_xButtonAction, ViroOculus::XButton, leftValid, _prevXButton);
-    pollBooleanButton(_yButtonAction, ViroOculus::YButton, leftValid, _prevYButton);
-    pollBooleanButton(_menuAction, ViroOculus::BackButton, leftValid, _prevMenuButton, true);
+    // Meta's platform treats Y as a back button, as it does B. The Menu button
+    // is the app's own menu (MenuButton), not back.
+    pollBooleanButton(_yButtonAction, ViroOculus::YButton, leftValid, _prevYButton, true);
+    pollBooleanButton(_menuAction, ViroOculus::MenuButton, leftValid, _prevMenuButton);
 
     // ── Right thumbstick → scroll events ─────────────────────────────────────
     {
@@ -864,10 +879,16 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     }
 
     for (const auto &edge : _pendingButtons) {
-        const int ray = rayForSource(edge.first);
-        if ((ray == ViroOculus::Controller && !rightValid) ||
-            (ray == ViroOculus::LeftController && !leftValid)) continue;
-        VROInputControllerBase::onButtonEvent(edge.first, edge.second);
+        if (edge.first == ViroOculus::MenuButton) {
+            // The palm pinch may come from either hand, so it is not dropped
+            // with the left ray.
+            notifyMenuButton(edge.second);
+        } else {
+            const int ray = rayForSource(edge.first);
+            if ((ray == ViroOculus::Controller && !rightValid) ||
+                (ray == ViroOculus::LeftController && !leftValid)) continue;
+            VROInputControllerBase::onButtonEvent(edge.first, edge.second);
+        }
 
         // A short pulse on press, so a click reads as having landed. The left and
         // right vibration output actions have been bound since this controller was
@@ -875,13 +896,13 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         // collision in a Quest scene was silent.
         //
         // Only on the ClickDown edge: buzzing on release would read as a second
-        // press. BackButton is excluded for two reasons — it has no attributable
-        // hand (B on the right and Menu on the left share the source id, so
-        // rayForSource returns neither controller), and its callback finishes the
-        // VR activity, so the pulse would be cut off or land after the scene is gone.
-        // EyeGaze is excluded too: gaze owns select only with no controller in hand.
+        // press. B and Y are excluded: both run the back callback, which can finish
+        // the VR activity, so the pulse would be cut off or land after the scene
+        // is gone. EyeGaze is excluded too: gaze owns select only with no
+        // controller in hand.
         if (edge.second == VROEventDelegate::ClickState::ClickDown &&
             edge.first != ViroOculus::BackButton &&
+            edge.first != ViroOculus::YButton &&
             edge.first != ViroOculus::EyeGaze) {
             const bool leftHand = rayForSource(edge.first) == ViroOculus::LeftController;
             triggerHaptic(session, leftHand ? 0 : 1);
@@ -982,18 +1003,22 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
     gazePinchOut[0]       = gazePinchOut[1]       = false;
     gazeHandTrackedOut[0] = gazeHandTrackedOut[1] = false;
 
+    // The palm menu pinch (XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB) is the
+    // hands-only Menu button, so it is reported as MenuButton too. The runtime
+    // sets the bit on the non-dominant hand, which is the right one for a
+    // left-handed wearer; the dominant hand's palm pinch is the system gesture
+    // and never reaches the app. If the hand stops being located (tracking
+    // lost, hand tracking disabled) while the gesture is held, the ClickUp is
+    // still sent so the next gesture sees a rising edge.
     auto updateMenuGesture = [this](bool pressed) {
-        if (pressed && !_prevMenuGestureLeft) {
-            queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickDown);
-            if (_backButtonCallback) {
-                _backButtonCallback();
-            }
-        } else if (!pressed && _prevMenuGestureLeft) {
-            queueButtonEvent(ViroOculus::BackButton, VROEventDelegate::ClickState::ClickUp);
-        }
-        _prevMenuGestureLeft = pressed;
+        if (pressed && !_prevMenuGesture)
+            queueButtonEvent(ViroOculus::MenuButton, VROEventDelegate::ClickState::ClickDown);
+        else if (!pressed && _prevMenuGesture)
+            queueButtonEvent(ViroOculus::MenuButton, VROEventDelegate::ClickState::ClickUp);
+        _prevMenuGesture = pressed;
     };
 
+    bool menuGesture = false;
     for (int hand = 0; hand < 2; ++hand) {
         const int source = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
         const int gripSource = (hand == 0) ? ViroOculus::LeftGrip : ViroOculus::RightGrip;
@@ -1013,9 +1038,6 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         if ((hand == 0 ? skipLeft : skipRight) || !_pfnLocateHandJoints ||
             !_handTrackingEnabled || tracker == XR_NULL_HANDLE) {
             cancelHand();
-            if (hand == 0) {
-                updateMenuGesture(false);
-            }
             continue;
         }
 
@@ -1040,15 +1062,11 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         XrResult r = _pfnLocateHandJoints(tracker, &locateInfo, &locations);
         if (!XR_SUCCEEDED(r) || !locations.isActive) {
             cancelHand();
-            if (hand == 0) {
-                updateMenuGesture(false);
-            }
             continue;
         }
 
-        if (hand == 0) {
-            updateMenuGesture(_aimExtEnabled &&
-                              (aimState.status & XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB));
+        if (_aimExtEnabled && (aimState.status & XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB)) {
+            menuGesture = true;
         }
 
         // ── Aim pose extraction (FB aim ext preferred, joint-derived fallback)
@@ -1114,8 +1132,10 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         // ── Pinch detection ───────────────────────────────────────────────────
         // Prefer FB pinch strength (continuous 0-1) over raw tip distance.
         bool pinched = false;
+        bool parted  = true;
         if (aimComputed) {
             pinched = (aimState.pinchStrengthIndex >= 0.7f);
+            parted  = (aimState.pinchStrengthIndex < 0.5f);
         } else {
             auto &thumbTip = jointLocs[XR_HAND_JOINT_THUMB_TIP_EXT];
             auto &indexTip = jointLocs[XR_HAND_JOINT_INDEX_TIP_EXT];
@@ -1124,16 +1144,30 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                 float dx = thumbTip.pose.position.x - indexTip.pose.position.x;
                 float dy = thumbTip.pose.position.y - indexTip.pose.position.y;
                 float dz = thumbTip.pose.position.z - indexTip.pose.position.z;
-                pinched = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.02f);
+                float distance = sqrtf(dx*dx + dy*dy + dz*dz);
+                // Made under 2 cm and released over 3 cm, so tips held near
+                // the threshold cannot click repeatedly.
+                pinched = (distance < (prevPinch ? 0.03f : 0.02f));
+                parted  = (distance >= 0.03f);
             }
         }
         // A pinch made with the palm turned toward the user is a system gesture
-        // (the left one is the menu pinch routed to BackButton above), not a
-        // select. Without this the menu pinch would also click whatever the
-        // left hand's aim was resting on.
-        if (_aimExtEnabled &&
+        // (the non-dominant hand's is the menu pinch above), not a select, and
+        // stays one until the fingers part. The bits can clear while the pinch
+        // is still held: on a Quest 3 the rest of a menu pinch landed as a
+        // select about 0.1 s after the menu event. Parting is read well below
+        // the pinch threshold, so a release hovering at it cannot start a select.
+        bool &systemPinch = (hand == 0) ? _systemPinchLeft : _systemPinchRight;
+        const bool systemGesture =
+            _aimExtEnabled &&
             (aimState.status & (XR_HAND_TRACKING_AIM_SYSTEM_GESTURE_BIT_FB |
-                                XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB))) {
+                                XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB));
+        if (systemGesture) {
+            systemPinch = true;
+        } else if (parted) {
+            systemPinch = false;
+        }
+        if (systemPinch) {
             pinched = false;
         }
         // Gaze owns select: this hand's pinch feeds the merged EyeGaze edge in
@@ -1158,22 +1192,38 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         }
 
         // ── Grab detection (middle tip to palm distance) ──────────────────────
+        // A fist made with the palm turned toward the user, or during a palm
+        // pinch, belongs to that system gesture and stays so until the hand
+        // opens, which is read 1 cm past the grab threshold.
         auto &palm      = jointLocs[XR_HAND_JOINT_PALM_EXT];
         auto &middleTip = jointLocs[XR_HAND_JOINT_MIDDLE_TIP_EXT];
+        bool grabbed = false;
+        bool opened  = true;
         if ((palm.locationFlags      & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
             (middleTip.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
             float dx = middleTip.pose.position.x - palm.pose.position.x;
             float dy = middleTip.pose.position.y - palm.pose.position.y;
             float dz = middleTip.pose.position.z - palm.pose.position.z;
-            bool grabbed = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.06f);
-
-            if (grabbed && !prevGrab)
-                queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickDown);
-            else if (!grabbed && prevGrab)
-                queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickUp);
-            prevGrab = grabbed;
+            float distance = sqrtf(dx*dx + dy*dy + dz*dz);
+            grabbed = (distance < 0.06f);
+            opened  = (distance >= 0.07f);
         }
+        bool &systemGrab = (hand == 0) ? _systemGrabLeft : _systemGrabRight;
+        if (systemGesture || systemPinch) {
+            systemGrab = true;
+        } else if (opened) {
+            systemGrab = false;
+        }
+        if (systemGrab) {
+            grabbed = false;
+        }
+        if (grabbed && !prevGrab)
+            queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickDown);
+        else if (!grabbed && prevGrab)
+            queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickUp);
+        prevGrab = grabbed;
     }
+    updateMenuGesture(menuGesture);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1188,6 +1238,18 @@ void VROInputControllerOpenXR::queueButtonEvent(int source, VROEventDelegate::Cl
     _pendingButtons.emplace_back(source, state);
 }
 
+void VROInputControllerOpenXR::notifyMenuButton(VROEventDelegate::ClickState state,
+                                                bool completed) {
+    const std::vector<float> noPosition;
+    for (std::shared_ptr<VROEventDelegate> delegate : _delegates) {
+        delegate->onClick(ViroOculus::MenuButton, nullptr, state, noPosition);
+        if (completed && state == VROEventDelegate::ClickState::ClickUp) {
+            delegate->onClick(ViroOculus::MenuButton, nullptr,
+                              VROEventDelegate::ClickState::Clicked, noPosition);
+        }
+    }
+}
+
 int VROInputControllerOpenXR::rayForSource(int source) const {
     switch (source) {
         case ViroOculus::AButton:
@@ -1196,6 +1258,7 @@ int VROInputControllerOpenXR::rayForSource(int source) const {
             return ViroOculus::Controller;
         case ViroOculus::XButton:
         case ViroOculus::YButton:
+        case ViroOculus::MenuButton:
         case ViroOculus::LeftGrip:
         case ViroOculus::LeftThumbstick:
             return ViroOculus::LeftController;

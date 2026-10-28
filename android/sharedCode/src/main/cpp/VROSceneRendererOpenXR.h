@@ -100,6 +100,7 @@ public:
     void onTouchEvent(int action, float x, float y);
     void onKeyEvent(int keyCode, int action);
     void setVRModeEnabled(bool enabled) {}
+    // Any thread: the render thread applies it at its next frame.
     void recenterTracking();
 
     // Wire up the Quest MR (AR) session when the scene is a VROARScene. For a
@@ -321,8 +322,13 @@ private:
     // Build a reference space for `origin`, following the fallback ladder, into
     // `outSpace` and reporting the type actually created via `outType`. Returns
     // false only on an outright xrCreateReferenceSpace failure.
+    // `outPose` is the new space's pose in a fresh space of `outType`.
     bool buildReferenceSpace(VROTrackingOrigin origin, XrSpace *outSpace,
-                             XrReferenceSpaceType *outType);
+                             XrReferenceSpaceType *outType, XrPosef *outPose);
+    // Install `space` as _appSpace and point the AR session at it, so room planes
+    // are located in the space the frame is drawn in. Render thread only. Returns
+    // the space it replaced, which the caller destroys.
+    XrSpace installAppSpace(XrSpace space, XrReferenceSpaceType type, const XrPosef &pose);
     // Locate the STAGE floor's Y offset below LOCAL at `time`. Returns false when
     // STAGE is not enumerated or its position is not locatable this frame.
     bool deriveFloorOffset(XrTime time, float *outOffsetY);
@@ -380,7 +386,18 @@ private:
     bool            _loggedFocusProfiles      = false;
 
     XrSessionState  _sessionState             = XR_SESSION_STATE_UNKNOWN;
-    XrTime          _lastPredictedDisplayTime = 0;  // updated each frame; used by recenterTracking()
+    XrTime          _lastPredictedDisplayTime = 0;  // updated each frame; the floor probes locate STAGE at it
+    bool            _inputFocused             = false;
+    bool            _hasBeenFocused           = false;
+    std::atomic<bool> _recenterRequested { false };
+    // _appSpace's pose in a fresh space of _appSpaceType (LOCAL or LOCAL_FLOOR).
+    XrPosef         _spaceOffset = { {0, 0, 0, 1}, {0, 0, 0} };
+
+    // A recentre moves the base space, so a point fixed in the room has new scene
+    // coordinates from _roomMoveAt on: _roomMove maps the old ones to the new.
+    bool            _roomMovePending = false;
+    XrTime          _roomMoveAt      = 0;
+    VROMatrix4f     _roomMove;
     bool            _sessionRunning        = false;
     bool            _passthroughEnabled    = false;
     bool            _handTrackingAvailable = false;  // XR_EXT_hand_tracking present
@@ -517,7 +534,15 @@ private:
     void pollEvents();
     void handleSessionStateChange(XrEventDataSessionStateChanged *event);
     void pushARTrackingState();
+    // ViroViewOpenXR.onNativeInputFocusChanged: Horizon OS took input focus (its
+    // menu, a system dialog, sleep) or gave it back.
+    void notifyInputFocus(bool focused);
+    // ViroViewOpenXR.onNativeRoomMoved, column-major.
+    void notifyRoomMoved(const VROMatrix4f &move);
     void renderFrame();
+    // Replaces _appSpace and returns the old one, for the caller to destroy once
+    // this frame's layers are submitted; XR_NULL_HANDLE when the recentre failed.
+    XrSpace applyRecenter(XrTime time);
     void updateBoundaryVisibility(bool passthroughSubmitted);
 
     // ── Per-eye render ────────────────────────────────────────────────────────
