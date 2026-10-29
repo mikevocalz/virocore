@@ -13,10 +13,10 @@
 //   Right grip        → ViroOculus::RightGrip   (click on ≥0.5 squeeze)
 //   Left grip         → ViroOculus::LeftGrip
 //   A button (right)  → ViroOculus::AButton
-//   B button (right)  → ViroOculus::BackButton  (back navigation, same as menu)
+//   B button (right)  → ViroOculus::BackButton  (back navigation)
 //   X button (left)   → ViroOculus::XButton
-//   Y button (left)   → ViroOculus::YButton
-//   Menu (left)       → ViroOculus::BackButton
+//   Y button (left)   → ViroOculus::YButton, and back navigation as B
+//   Menu (left)       → ViroOculus::MenuButton  (the app's menu, as is the palm menu pinch)
 //   Right thumbstick  → ViroOculus::RightThumbstick via onScroll
 //   Left thumbstick   → ViroOculus::LeftThumbstick  via onScroll
 //   Haptics           → triggerHaptic(session, hand, amplitude, durationSec)
@@ -58,6 +58,13 @@ public:
      * Destroy controller action spaces. Call before xrDestroySession.
      */
     void destroySpaces();
+
+    /*
+     * Destroy the action set and its actions. Call before xrDestroyInstance:
+     * the renderer keeps this controller alive past it, and the loader
+     * refuses a destroy once the instance is gone.
+     */
+    void destroyActionSet();
 
     /*
      * Initialize XR_EXT_hand_tracking. Loads function pointers, creates left/right
@@ -123,7 +130,7 @@ public:
     std::string getController() override { return "touch"; }
 
     /*
-     * Set a callback invoked on the render thread when the B/Menu button is
+     * Set a callback invoked on the render thread when the B or Y button is
      * pressed (ClickDown). Used to dispatch KEYCODE_BACK to the host Activity
      * so React Native's BackHandler fires in VRActivity.
      */
@@ -137,8 +144,10 @@ protected:
 
     /*
      * Buttons ride their hand's aim ray: grip / A / thumbstick → Controller,
-     * grip / X / Y / thumbstick → LeftController. BackButton is shared by B
-     * and Menu, so it stays unmapped.
+     * grip / X / Y / thumbstick → LeftController. Menu reaches no node (see
+     * notifyMenuButton) and maps to LeftController only so its haptic pulse
+     * goes to the left hand. BackButton (B) stays unmapped and resolves
+     * against the legacy hit.
      */
     int rayForSource(int source) const override;
 
@@ -148,6 +157,13 @@ private:
      * their edges are queued and flushed at the end of onProcess.
      */
     void queueButtonEvent(int source, VROEventDelegate::ClickState state);
+    /*
+     * MenuButton opens the app's menu rather than pressing what a ray points
+     * at, so only the controller's delegates (ViroController) hear it: it never
+     * clicks or drags a node.
+     */
+    // `completed` false ends a press the runtime withdrew: ClickUp with no Clicked.
+    void notifyMenuButton(VROEventDelegate::ClickState state, bool completed = true);
     std::vector<std::pair<int, VROEventDelegate::ClickState>> _pendingButtons;
 
     // ── Action set ────────────────────────────────────────────────────────────
@@ -180,7 +196,7 @@ private:
     XrAction _bButtonAction = XR_NULL_HANDLE;  // right hand B  (→ BackButton)
     XrAction _xButtonAction = XR_NULL_HANDLE;  // left  hand X
     XrAction _yButtonAction = XR_NULL_HANDLE;  // left  hand Y
-    XrAction _menuAction    = XR_NULL_HANDLE;  // left  hand Menu (→ BackButton)
+    XrAction _menuAction    = XR_NULL_HANDLE;  // left  hand Menu (→ MenuButton)
 
     // ── Thumbstick axes (vector2f, per hand) ─────────────────────────────────
     XrAction _leftThumbstickAction  = XR_NULL_HANDLE;
@@ -265,9 +281,14 @@ private:
     bool _prevPinchRight = false;
     bool _prevGrabLeft   = false;
     bool _prevGrabRight  = false;
-    // Left-palm menu pinch (XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB). Left
-    // hand only: the right-palm gesture is the OS system menu.
-    bool _prevMenuGestureLeft = false;
+    // The pinch in progress began as, or became, a system or menu gesture.
+    bool _systemPinchLeft  = false;
+    bool _systemPinchRight = false;
+    // The grab in progress began during, or became part of, a system gesture.
+    bool _systemGrabLeft  = false;
+    bool _systemGrabRight = false;
+    // Palm menu pinch (XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB) on either hand.
+    bool _prevMenuGesture = false;
 
     // ── Pose hysteresis (B18) ─────────────────────────────────────────────────
     // OpenXR pose probes (`xrLocateSpace`, FB hand-aim) routinely report

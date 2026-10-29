@@ -53,6 +53,11 @@ needs the libuuid headers (`uuid-dev` on Debian and Ubuntu) and `ninja`. GitHub'
 runners lack the libuuid headers, so the Android CI jobs install `uuid-dev ninja-build`
 before Gradle runs.
 
+On macOS the script exports `SDKROOT`, `CC` and `CXX` from `xcrun --sdk macosx` before
+the premake bootstrap. Without them, a configure run from CMake or Gradle, or a shell with
+the NDK's or Homebrew's clang ahead of Xcode's on `PATH`, compiles premake with a clang
+that has no macOS SDK and stops at `'stdio.h' file not found`.
+
 The script sets:
 
 - `ANDROID_NDK` to the Gradle `ndkVersion` under the SDK,

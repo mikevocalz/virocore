@@ -45,6 +45,24 @@ export RIVE_NDK_REVISION_OVERRIDE="$NDK_VERSION"
 # docs/RIVE_RUNTIME.md for the evidence behind each choice.
 export RIVE_PREMAKE_ARGS="--with_rive_text --with_rive_layout --no-rive-decoders --android_api=24"
 
+# On a fresh checkout build_rive.sh compiles premake from source with the host compiler
+# (`make -f Bootstrap.mak osx`, then premake's own gmake files, which honour $CC). When that
+# runs under CMake or Gradle, or with any non-Apple clang (the NDK's, Homebrew LLVM) first on
+# PATH, `cc` resolves to a compiler that does not know the macOS SDK and the build stops at
+# "'stdio.h' file not found". Point the host build at Xcode's clang and SDK explicitly. The
+# Android objects are unaffected: premake-ninja writes absolute NDK compiler paths.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    if ! SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" || [[ ! -d "$SDKROOT" ]]; then
+        echo "error: no macOS SDK from 'xcrun --sdk macosx --show-sdk-path'" \
+            "(install Xcode or the Command Line Tools, then run xcode-select -s)" >&2
+        exit 1
+    fi
+    export SDKROOT
+    CC="$(xcrun --sdk macosx --find clang)"
+    CXX="$(xcrun --sdk macosx --find clang++)"
+    export CC CXX
+fi
+
 CLEAN=()
 if [[ "${1:-}" == "clean" ]]; then
     CLEAN=(clean)
