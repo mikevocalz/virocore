@@ -6,6 +6,7 @@
 /ios/Pods/
 /ios/build-dev/
 /ios/build/
+/ios/dist/
 .DS_Store
 
 # Macos
