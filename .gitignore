@@ -5,6 +5,7 @@
 /ios/Pods/Pods.xcodeproj/xcuserdata/**
 /ios/Pods/
 /ios/build-dev/
+/ios/build/
 .DS_Store
 
 # Macos
