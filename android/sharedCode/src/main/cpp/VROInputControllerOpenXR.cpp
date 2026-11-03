@@ -231,6 +231,30 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     }
     result = XR_SUCCESS;
 
+    // Optional extension-specific bindings. No Touch paths, synthetic input or device identity claim.
+    if (_logitechStylusAvailable) {
+        const char *hands[] = {"left", "right"};
+        std::vector<XrActionSuggestedBinding> selected;
+        XrAction aims[] = {_leftAimPoseAction, _rightAimPoseAction};
+        XrAction grips[] = {_leftGripPoseAction, _rightGripPoseAction};
+        for (int i = 0; i < 2; ++i) {
+            const std::string prefix = std::string("/user/hand/") + hands[i];
+            _stylusTipActions[i] = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
+                (std::string(hands[i]) + "_stylus_tip").c_str(), (std::string(hands[i]) + " Stylus Tip Pose").c_str());
+            _stylusForceActions[i] = createAction(_actionSet, XR_ACTION_TYPE_FLOAT_INPUT,
+                (std::string(hands[i]) + "_stylus_force").c_str(), (std::string(hands[i]) + " Stylus Tip Force").c_str());
+            selected.push_back({aims[i], makePath((prefix + "/input/aim/pose").c_str())});
+            selected.push_back({grips[i], makePath((prefix + "/input/grip/pose").c_str())});
+            if (_stylusTipActions[i]) selected.push_back({_stylusTipActions[i], makePath((prefix + "/input/tip_logitech/pose").c_str())});
+            if (_stylusForceActions[i]) selected.push_back({_stylusForceActions[i], makePath((prefix + "/input/tip_logitech/force").c_str())});
+        }
+        XrInteractionProfileSuggestedBinding stylus = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        stylus.interactionProfile = makePath("/interaction_profiles/logitech/mx_ink_stylus_logitech");
+        stylus.countSuggestedBindings = static_cast<uint32_t>(selected.size());
+        stylus.suggestedBindings = selected.data();
+        ALOGI("Logitech stylus suggestion result=%d (tracking not established)", xrSuggestInteractionProfileBindings(instance, &stylus));
+    }
+
     // Eye gaze lives under its own interaction profile, so suggest it separately.
     // A failure here only disables eye gaze — it must not fail the whole set-up.
     if (_eyeGazeEnabled && _eyeGazePoseAction != XR_NULL_HANDLE) {
@@ -302,6 +326,7 @@ void VROInputControllerOpenXR::logActiveInteractionProfiles(XrSession session) {
 }
 
 void VROInputControllerOpenXR::destroySpaces() {
+    for (auto &space : _stylusTipSpaces) { if (space) xrDestroySpace(space); space = XR_NULL_HANDLE; }
     if (_leftSpace     != XR_NULL_HANDLE) { xrDestroySpace(_leftSpace);     _leftSpace     = XR_NULL_HANDLE; }
     if (_rightSpace    != XR_NULL_HANDLE) { xrDestroySpace(_rightSpace);    _rightSpace    = XR_NULL_HANDLE; }
     if (_leftGripSpace  != XR_NULL_HANDLE) { xrDestroySpace(_leftGripSpace);  _leftGripSpace  = XR_NULL_HANDLE; }
@@ -313,6 +338,11 @@ bool VROInputControllerOpenXR::createActionSpaces(XrSession session) {
     XrActionSpaceCreateInfo spaceInfo = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
     spaceInfo.poseInActionSpace = { {0, 0, 0, 1}, {0, 0, 0} };  // identity
 
+    for (int i = 0; i < 2; ++i) {
+        if (!_stylusTipActions[i]) continue;
+        spaceInfo.action = _stylusTipActions[i];
+        if (XR_FAILED(xrCreateActionSpace(session, &spaceInfo, &_stylusTipSpaces[i]))) _stylusTipSpaces[i] = XR_NULL_HANDLE;
+    }
     spaceInfo.action = _leftAimPoseAction;
     XrResult r = xrCreateActionSpace(session, &spaceInfo, &_leftSpace);
     if (!XR_SUCCEEDED(r)) { ALOGE("xrCreateActionSpace left failed: %d", r); return false; }
@@ -379,7 +409,8 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     XrActionsSyncInfo syncInfo  = { XR_TYPE_ACTIONS_SYNC_INFO };
     syncInfo.activeActionSets      = &activeSet;
     syncInfo.countActiveActionSets = 1;
-    xrSyncActions(session, &syncInfo);
+    const XrResult syncResult = xrSyncActions(session, &syncInfo);
+    if (XR_SUCCEEDED(syncResult)) observeLogitechStylus(session, baseSpace, time);
 
     // The head pose, to JS. Every other input controller (AR, Cardboard,
     // Daydream, OVR) calls this from its own onProcess and OpenXR never did —
@@ -979,4 +1010,45 @@ void VROInputControllerOpenXR::updateLaserViz(int source,
     }
     presenter->updateAimRay(source, origin, hitPoint, true /* visible */,
                             hit && !hit->isBackgroundHit());
+}
+
+// Bounded evidence only. Actual profile selection does not establish a particular product identity.
+void VROInputControllerOpenXR::observeLogitechStylus(XrSession session, XrSpace baseSpace, XrTime time) {
+    if (!_logitechStylusAvailable || _stylusObservationCount >= 32 || (_stylusFrames++ % 180) != 0) return;
+    ++_stylusObservationCount;
+    const char *hands[] = {"/user/hand/left", "/user/hand/right"};
+    for (int i = 0; i < 2; ++i) {
+        XrPath hand = XR_NULL_PATH, profile = XR_NULL_PATH;
+        xrStringToPath(_instance, hands[i], &hand);
+        xrStringToPath(_instance, "/interaction_profiles/logitech/mx_ink_stylus_logitech", &profile);
+        XrInteractionProfileState current = {XR_TYPE_INTERACTION_PROFILE_STATE};
+        XrResult profileResult = xrGetCurrentInteractionProfile(session, hand, &current);
+        const bool selected = XR_SUCCEEDED(profileResult) && current.interactionProfile == profile;
+        ALOGI("Stylus evidence hand=%d profileResult=%d dedicatedProfile=%d", i, profileResult, (int)selected);
+        if (!selected) continue;
+        const XrAction actions[] = {i == 0 ? _leftGripPoseAction : _rightGripPoseAction,
+            i == 0 ? _leftAimPoseAction : _rightAimPoseAction, _stylusTipActions[i]};
+        const XrSpace spaces[] = {i == 0 ? _leftGripSpace : _rightGripSpace,
+            i == 0 ? _leftSpace : _rightSpace, _stylusTipSpaces[i]};
+        for (int pose = 0; pose < 3; ++pose) {
+            if (!actions[pose] || !spaces[pose]) continue;
+            XrActionStateGetInfo get = {XR_TYPE_ACTION_STATE_GET_INFO}; get.action = actions[pose];
+            XrActionStatePose active = {XR_TYPE_ACTION_STATE_POSE};
+            XrResult stateResult = xrGetActionStatePose(session, &get, &active);
+            XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION};
+            XrResult locateResult = XR_ERROR_POSE_INVALID;
+            if (XR_SUCCEEDED(stateResult) && active.isActive) locateResult = xrLocateSpace(spaces[pose], baseSpace, time, &location);
+            const XrSpaceLocationFlags required = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+                XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+            const bool tracked = XR_SUCCEEDED(locateResult) && (location.locationFlags & required) == required;
+            ALOGI("Stylus pose hand=%d kind=%d active=%d state=%d locate=%d flags=%llu tracked=%d", i, pose,
+                (int)active.isActive, stateResult, locateResult, (unsigned long long)location.locationFlags, (int)tracked);
+        }
+        if (_stylusForceActions[i]) {
+            XrActionStateGetInfo get = {XR_TYPE_ACTION_STATE_GET_INFO}; get.action = _stylusForceActions[i];
+            XrActionStateFloat force = {XR_TYPE_ACTION_STATE_FLOAT};
+            XrResult result = xrGetActionStateFloat(session, &get, &force);
+            ALOGI("Stylus force hand=%d result=%d active=%d value=%f", i, result, (int)force.isActive, force.currentState);
+        }
+    }
 }

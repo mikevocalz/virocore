@@ -47,6 +47,7 @@ public:
      * xrAttachSessionActionSets. Must be called before the session enters
      * XR_SESSION_STATE_READY.
      */
+    void setLogitechStylusAvailable(bool available) { _logitechStylusAvailable = available; }
     bool createActionSet(XrInstance instance, XrSession session, bool eyeGazeSupported = false);
 
     /*
@@ -134,6 +135,12 @@ private:
     // xrPathToString in logActiveInteractionProfiles(). Non-owning.
     XrInstance  _instance  = XR_NULL_HANDLE;
     XrActionSet _actionSet = XR_NULL_HANDLE;
+    bool _logitechStylusAvailable = false;
+    XrAction _stylusTipActions[2] = {};
+    XrAction _stylusForceActions[2] = {};
+    XrSpace _stylusTipSpaces[2] = {};
+    unsigned _stylusFrames = 0, _stylusObservationCount = 0;
+    void observeLogitechStylus(XrSession session, XrSpace baseSpace, XrTime time);
 
     // ── Aim pose actions (one per hand) ──────────────────────────────────────
     // Aim drives the beam/hit ray; it tilts with the trigger pull.

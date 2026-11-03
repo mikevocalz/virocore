@@ -58,6 +58,7 @@ static constexpr uint32_t kSoftRequiredExtensionCount =
     sizeof(kSoftRequiredExtensions) / sizeof(kSoftRequiredExtensions[0]);
 
 static constexpr const char *const kOptionalExtensions[] = {
+    XR_LOGITECH_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME,
     XR_FB_PASSTHROUGH_EXTENSION_NAME,           // mixed reality (Quest 2 BW, Quest 3 color)
     XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME,  // 90 / 120 Hz mode
     XR_EXT_HAND_TRACKING_EXTENSION_NAME,        // M3: skeletal hand tracking (26 joints)
@@ -232,6 +233,7 @@ VROSceneRendererOpenXR::VROSceneRendererOpenXR(VRORendererConfiguration config,
     _openxrDriver = std::make_shared<VRODriverOpenGLAndroidOpenXR>(gvrAudio);
     _driver = _openxrDriver;  // base class std::shared_ptr<VRODriverOpenGLAndroid>
     _inputController = std::make_shared<VROInputControllerOpenXR>(_openxrDriver);
+    _inputController->setLogitechStylusAvailable(_logitechStylusAvailable);
     _inputController->createActionSet(_instance, _session, _eyeGazeSupported);
     initHandTracking();  // no-op if XR_EXT_hand_tracking not available on this device
 
@@ -369,6 +371,8 @@ bool VROSceneRendererOpenXR::initOpenXR() {
             if (strcmp(ext.extensionName, optExt) == 0) {
                 enabledExts.push_back(optExt);
                 ALOGV("Optional extension enabled: %s", optExt);
+                if (strcmp(optExt, XR_LOGITECH_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME) == 0)
+                    _logitechStylusAvailable = true;
                 if (strcmp(optExt, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0)
                     _handTrackingAvailable = true;
                 if (strcmp(optExt, XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME) == 0)
