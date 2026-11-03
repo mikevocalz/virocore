@@ -533,12 +533,59 @@ VRO_METHOD(void, nativeSetDebugHUDEnabled)(VRO_ARGS
 }
 
 // VR-only (OpenXR / Quest). The legacy OVR (VrApi) path was removed in 2.57.3.
+VRO_METHOD(jlong, nativeCapturePoseGeneration)(VRO_ARGS jlong native_renderer) {
+    auto renderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(Renderer::native(native_renderer));
+    return renderer ? static_cast<jlong>(renderer->capturePoseGeneration()) : 0;
+}
+
+// One admitted request per Java Renderer. Weak Java/native references never retain the scene.
+VRO_METHOD(void, nativeRequestCaptureHeadPose)(VRO_ARGS jlong native_renderer, jlong requestId,
+                                              jlong timestampNs, jint clockDomain, jlong expectedGeneration) {
+    auto renderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(Renderer::native(native_renderer));
+    std::weak_ptr<VROSceneRendererOpenXR> weakRenderer = renderer;
+    const uint64_t generation = static_cast<uint64_t>(expectedGeneration);
+    jweak weakJavaRenderer = env->NewWeakGlobalRef(obj);
+    VROPlatformDispatchAsyncRenderer([weakRenderer, weakJavaRenderer, requestId,
+                                     timestampNs, clockDomain, generation] {
+        VROSceneRendererOpenXR::CaptureHeadPose result;
+        if (auto current = weakRenderer.lock()) {
+            result = current->locateCaptureHeadPose(timestampNs, clockDomain, generation);
+        }
+        VROPlatformDispatchAsyncApplication([weakRenderer, weakJavaRenderer, requestId, result]() mutable {
+            if (auto current = weakRenderer.lock()) {
+                if (current->capturePoseGeneration() != result.generation) {
+                    result.status = VROSceneRendererOpenXR::CapturePoseStatus::SpaceChanged;
+                }
+            } else result.status = VROSceneRendererOpenXR::CapturePoseStatus::NotReady;
+            JNIEnv *env = VROPlatformGetJNIEnv();
+            jobject receiver = env->NewLocalRef(weakJavaRenderer);
+            if (receiver) {
+                jfloatArray pose = nullptr;
+                if (result.status == VROSceneRendererOpenXR::CapturePoseStatus::Valid) {
+                    pose = env->NewFloatArray(7);
+                    env->SetFloatArrayRegion(pose, 0, 7, result.pose.data());
+                }
+                VROPlatformCallHostFunction(receiver, "onCaptureHeadPoseResult", "(JIJJJI[F)V",
+                    requestId, static_cast<jint>(result.status), static_cast<jlong>(result.xrTime),
+                    static_cast<jlong>(result.generation), static_cast<jlong>(result.flags),
+                    static_cast<jint>(result.xrResult), pose);
+                if (pose) env->DeleteLocalRef(pose);
+                env->DeleteLocalRef(receiver);
+            }
+            env->DeleteWeakGlobalRef(weakJavaRenderer);
+        });
+    });
+}
+
 VRO_METHOD(void, nativeRecenterTracking)(VRO_ARGS
                                          jlong native_renderer) {
     std::shared_ptr<VROSceneRenderer> renderer = Renderer::native(native_renderer);
     std::shared_ptr<VROSceneRendererOpenXR> xrRenderer = std::dynamic_pointer_cast<VROSceneRendererOpenXR>(renderer);
     if (xrRenderer) {
-        xrRenderer->recenterTracking();
+        std::weak_ptr<VROSceneRendererOpenXR> weakRenderer = xrRenderer;
+        VROPlatformDispatchAsyncRenderer([weakRenderer] {
+            if (auto current = weakRenderer.lock()) current->recenterTracking();
+        });
     }
 }
 

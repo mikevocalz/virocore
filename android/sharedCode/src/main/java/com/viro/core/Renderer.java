@@ -33,6 +33,9 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.res.AssetManager;
 import android.view.Surface;
+import android.os.Handler;
+import android.os.Looper;
+import androidx.annotation.Keep;
 
 import com.viro.core.internal.PlatformUtil;
 
@@ -117,6 +120,98 @@ public class Renderer {
 
     public void recenterTracking() { nativeRecenterTracking(mNativeRef); }
 
+    /** Explicit provenance: UNKNOWN Camera2 timestamps must not be cast into this domain. */
+    public enum CaptureClockDomain {
+        UNKNOWN(0), EXTERNALLY_VERIFIED_CLOCK_MONOTONIC(1);
+        final int code;
+        CaptureClockDomain(int value) { code = value; }
+    }
+    public enum CaptureHeadPoseStatus {
+        VALID, NOT_READY, UNSUPPORTED, INVALID_CLOCK, INVALID_TIMESTAMP, SPACE_CHANGED,
+        CONVERSION_FAILED, LOCATION_FAILED, UNTRACKED, TIMEOUT, BUSY, DESTROYED
+    }
+    /** Head VIEW in the renderer's app space, metres and quaternion xyzw. Never a pen pose. */
+    public static final class CaptureHeadPoseResult {
+        public final CaptureHeadPoseStatus status;
+        public final long captureTimestampNanos, captureXrTime, spaceGeneration, locationFlags;
+        public final int xrResult;
+        public final CaptureClockDomain clockDomain;
+        /** Null unless VALID. xyz followed by quaternion xyzw; no zero-pose fallback. */
+        public final float[] pose;
+        private CaptureHeadPoseResult(int code, long stamp, long xrTime, long generation,
+                                      long flags, int result, CaptureClockDomain domain, float[] values) {
+            status = CaptureHeadPoseStatus.values()[code];
+            captureTimestampNanos = stamp; captureXrTime = xrTime; spaceGeneration = generation;
+            locationFlags = flags; xrResult = result; clockDomain = domain;
+            pose = status == CaptureHeadPoseStatus.VALID && values != null ? values.clone() : null;
+        }
+    }
+    public interface CaptureHeadPoseCallback { void onResult(CaptureHeadPoseResult result); }
+    private final Object mCapturePoseLock = new Object();
+    private final Handler mCapturePoseHandler = new Handler(Looper.getMainLooper());
+    private long mCapturePoseSequence, mCapturePosePending;
+    private CaptureHeadPoseCallback mCapturePoseCallback;
+    private CaptureClockDomain mCapturePoseDomain;
+    private long mCapturePoseTimestamp;
+    private boolean mCapturePoseDestroyed;
+    private Runnable mCapturePoseTimeout;
+
+    /**
+     * One bounded asynchronous head-pose query; callback on Android main thread.
+     * Latch getCaptureHeadPoseSpaceGeneration() BEFORE acquiring camera frames; pass that value
+     * with each frame. A zero/stale generation never yields a valid pose.
+     * Requires an externally verified CLOCK_MONOTONIC timestamp within500ms.
+     * Timeout is1s. A timed-out native task keeps its one queue slot until drained.
+     * Results are invalid after spaceGeneration changes (recenter/session/origin).
+     */
+    public long getCaptureHeadPoseSpaceGeneration() {
+        synchronized (mCapturePoseLock) {
+            return mCapturePoseDestroyed || mNativeRef == 0 ? 0 : nativeCapturePoseGeneration(mNativeRef);
+        }
+    }
+    public void requestCaptureHeadPose(long timestampNanos, long expectedSpaceGeneration, CaptureClockDomain domain,
+                                       CaptureHeadPoseCallback callback) {
+        if (domain == null || callback == null) throw new IllegalArgumentException("Domain and callback required");
+        final long id;
+        final int rejected;
+        synchronized (mCapturePoseLock) {
+            rejected = mCapturePoseDestroyed ? 11 : mNativeRef == 0 ? 1 : mCapturePosePending != 0 ? 10 : -1;
+            id = ++mCapturePoseSequence;
+            if (rejected < 0) {
+                mCapturePosePending = id; mCapturePoseCallback = callback;
+                mCapturePoseDomain = domain; mCapturePoseTimestamp = timestampNanos;
+                mCapturePoseTimeout = () -> finishCaptureHeadPose(id, 9, 0, 0, 0, 0, null, false);
+                mCapturePoseHandler.postDelayed(mCapturePoseTimeout, 1000);
+                // Queue admission and native handle use stay serialized against destroy().
+                nativeRequestCaptureHeadPose(mNativeRef, id, timestampNanos, domain.code, expectedSpaceGeneration);
+            }
+        }
+        if (rejected >= 0) mCapturePoseHandler.post(() -> callback.onResult(
+            new CaptureHeadPoseResult(rejected, timestampNanos, 0, 0, 0, 0, domain, null)));
+    }
+    // JNI entry; native completion is posted to the application/main thread.
+    @Keep
+    private void onCaptureHeadPoseResult(long id, int status, long xrTime, long generation,
+                                        long flags, int xrResult, float[] pose) {
+        finishCaptureHeadPose(id, status, xrTime, generation, flags, xrResult, pose, true);
+    }
+    private void finishCaptureHeadPose(long id, int status, long xrTime, long generation,
+                                       long flags, int xrResult, float[] pose, boolean nativeFinished) {
+        CaptureHeadPoseCallback callback;
+        CaptureHeadPoseResult result;
+        synchronized (mCapturePoseLock) {
+            if (id != mCapturePosePending) return;
+            if (mCapturePoseDestroyed) status = 11;
+            callback = mCapturePoseCallback; mCapturePoseCallback = null;
+            mCapturePoseHandler.removeCallbacks(mCapturePoseTimeout);
+            result = new CaptureHeadPoseResult(status, mCapturePoseTimestamp, xrTime, generation,
+                                               flags, xrResult, mCapturePoseDomain, pose);
+            if (nativeFinished) mCapturePosePending = 0;
+        }
+        if (callback != null) callback.onResult(result);
+    }
+
+
     /** Enable or disable XR_FB_passthrough mixed-reality mode (Quest 3 / Quest Pro only). */
     public void setPassthroughEnabled(boolean enabled) {
         nativeSetPassthroughEnabled(mNativeRef, enabled);
@@ -164,15 +259,22 @@ public class Renderer {
     /* ----------     Common lifecycle methods    ---------- */
 
     public void destroy() {
+        final long pending;
+        synchronized (mCapturePoseLock) {
+            mCapturePoseDestroyed = true;
+            pending = mCapturePosePending;
+        }
+        if (pending != 0) mCapturePoseHandler.post(() ->
+            finishCaptureHeadPose(pending, 11, 0, 0, 0, 0, null, false));
         if (mNativeFrameListener != null) {
             mNativeFrameListener.destroy();
         }
         mNativeFrameListener = null;
 
-        if (mNativeRef != 0) {
-            nativeDestroyRenderer(mNativeRef);
+        synchronized (mCapturePoseLock) {
+            if (mNativeRef != 0) nativeDestroyRenderer(mNativeRef);
+            mNativeRef = 0;
         }
-        mNativeRef = 0;
     }
 
     public void initializeGL(boolean framebufferSRGB) {
@@ -379,6 +481,9 @@ public class Renderer {
     private native String nativeGetController(long nativeRenderer);
     private native void nativeSetDebugHUDEnabled(long nativeRenderer, boolean enabled);
     private native void nativeRecenterTracking(long nativeRenderer);
+    private native void nativeRequestCaptureHeadPose(long nativeRenderer, long requestId,
+                                                     long timestampNanos, int clockDomain, long expectedSpaceGeneration);
+    private native long nativeCapturePoseGeneration(long nativeRenderer);
     private native void nativeSetPassthroughEnabled(long nativeRenderer, boolean enabled);
     private native void nativeSetPassthroughStyle(long nativeRenderer, float opacity,
                                                   float edgeR, float edgeG, float edgeB, float edgeA);

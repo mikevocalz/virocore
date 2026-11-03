@@ -58,6 +58,7 @@ static constexpr uint32_t kSoftRequiredExtensionCount =
     sizeof(kSoftRequiredExtensions) / sizeof(kSoftRequiredExtensions[0]);
 
 static constexpr const char *const kOptionalExtensions[] = {
+    XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME,
     XR_LOGITECH_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME,
     XR_FB_PASSTHROUGH_EXTENSION_NAME,           // mixed reality (Quest 2 BW, Quest 3 color)
     XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME,  // 90 / 120 Hz mode
@@ -370,6 +371,9 @@ bool VROSceneRendererOpenXR::initOpenXR() {
         for (auto &ext : availableExts) {
             if (strcmp(ext.extensionName, optExt) == 0) {
                 enabledExts.push_back(optExt);
+                if (strcmp(optExt, XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME) == 0) {
+                    _captureTimeEnabled = true;
+                }
                 ALOGV("Optional extension enabled: %s", optExt);
                 if (strcmp(optExt, XR_LOGITECH_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME) == 0)
                     _logitechStylusAvailable = true;
@@ -451,6 +455,10 @@ bool VROSceneRendererOpenXR::initOpenXR() {
         return false;
     }
     ALOGV("xrCreateInstance OK");
+    if (_captureTimeEnabled) {
+        xrGetInstanceProcAddr(_instance, "xrConvertTimespecTimeToTimeKHR",
+                             reinterpret_cast<PFN_xrVoidFunction *>(&_convertCaptureTime));
+    }
 
     // ── Identify the runtime we bound to ──────────────────────────────────────
     _runtimeInfo.androidCreateInstanceEnabled = androidCreateInstanceEnabled;
@@ -840,7 +848,9 @@ bool VROSceneRendererOpenXR::createReferenceSpace() {
         _trackingOrigin = VROTrackingOrigin::Floor;
         ALOGI("[XR-DIAG] PICO detected — defaulting tracking origin to Floor");
     }
-    return buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
+    const bool created = buildReferenceSpace(_trackingOrigin, &_appSpace, &_appSpaceType);
+    if (created) ++_capturePoseGeneration;
+    return created;
 }
 
 // Called on the JNI caller's thread (ViroViewOpenXR.setTrackingOrigin, driven by
@@ -878,6 +888,7 @@ void VROSceneRendererOpenXR::applyTrackingOrigin(VROTrackingOrigin origin) {
     }
     XrSpace old = _appSpace;
     _appSpace     = newSpace;
+    ++_capturePoseGeneration;
     _appSpaceType = newType;
     if (old != XR_NULL_HANDLE) {
         xrDestroySpace(old);
@@ -1369,6 +1380,11 @@ void VROSceneRendererOpenXR::destroySession() {
         _passthrough = XR_NULL_HANDLE;
     }
     destroySwapchains();
+    ++_capturePoseGeneration;
+    if (_captureViewSpace != XR_NULL_HANDLE) {
+        xrDestroySpace(_captureViewSpace);
+        _captureViewSpace = XR_NULL_HANDLE;
+    }
     if (_appSpace != XR_NULL_HANDLE) {
         xrDestroySpace(_appSpace);
         _appSpace = XR_NULL_HANDLE;
@@ -1491,6 +1507,54 @@ void VROSceneRendererOpenXR::onTouchEvent(int /*action*/, float /*x*/, float /*y
 
 void VROSceneRendererOpenXR::onKeyEvent(int /*keyCode*/, int /*action*/) {}
 
+
+VROSceneRendererOpenXR::CaptureHeadPose VROSceneRendererOpenXR::locateCaptureHeadPose(
+        int64_t timestampNs, int clockDomain, uint64_t requestedGeneration) {
+    CaptureHeadPose out;
+    out.generation = _capturePoseGeneration.load();
+    if (clockDomain != 1) { out.status = CapturePoseStatus::InvalidClock; return out; }
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 || timestampNs <= 0) {
+        out.status = CapturePoseStatus::InvalidTimestamp; return out;
+    }
+    const int64_t nowNs = int64_t(now.tv_sec) * 1000000000LL + now.tv_nsec;
+    if (timestampNs > nowNs || nowNs - timestampNs > 500000000LL) {
+        out.status = CapturePoseStatus::InvalidTimestamp; return out;
+    }
+    if (requestedGeneration == 0 || requestedGeneration != out.generation) {
+        out.status = CapturePoseStatus::SpaceChanged; return out;
+    }
+    if (!_sessionRunning || _session == XR_NULL_HANDLE || _appSpace == XR_NULL_HANDLE) return out;
+    if (!_convertCaptureTime) { out.status = CapturePoseStatus::Unsupported; return out; }
+    if (_captureViewSpace == XR_NULL_HANDLE) {
+        XrReferenceSpaceCreateInfo info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+        info.poseInReferenceSpace.orientation.w = 1;
+        out.xrResult = xrCreateReferenceSpace(_session, &info, &_captureViewSpace);
+        if (XR_FAILED(out.xrResult)) { out.status = CapturePoseStatus::LocationFailed; return out; }
+    }
+    timespec captured{static_cast<time_t>(timestampNs / 1000000000LL),
+                      static_cast<long>(timestampNs % 1000000000LL)};
+    out.xrResult = _convertCaptureTime(_instance, &captured, &out.xrTime);
+    if (XR_FAILED(out.xrResult)) { out.status = CapturePoseStatus::ConversionFailed; return out; }
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    out.xrResult = xrLocateSpace(_captureViewSpace, _appSpace, out.xrTime, &location);
+    out.flags = location.locationFlags;
+    if (XR_FAILED(out.xrResult)) { out.status = CapturePoseStatus::LocationFailed; return out; }
+    constexpr XrSpaceLocationFlags required = XR_SPACE_LOCATION_POSITION_VALID_BIT |
+        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT |
+        XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+    if ((out.flags & required) != required) { out.status = CapturePoseStatus::Untracked; return out; }
+    const auto &p = location.pose;
+    out.pose = {p.position.x, p.position.y, p.position.z,
+                p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w};
+    for (float value : out.pose) {
+        if (!std::isfinite(value)) { out.status = CapturePoseStatus::LocationFailed; return out; }
+    }
+    out.status = CapturePoseStatus::Valid;
+    return out;
+}
+
 void VROSceneRendererOpenXR::recenterTracking() {
     if (_session == XR_NULL_HANDLE) return;
 
@@ -1549,6 +1613,7 @@ void VROSceneRendererOpenXR::recenterTracking() {
     if (XR_SUCCEEDED(xrCreateReferenceSpace(_session, &spaceInfo, &newSpace))) {
         xrDestroySpace(_appSpace);
         _appSpace = newSpace;
+        ++_capturePoseGeneration;
         resetFloorDiagnostic();
         ALOGV("recenterTracking: recentered (yaw=%.2f rad, originY=%.3f)", yaw, originY);
     } else {
@@ -1638,6 +1703,7 @@ void VROSceneRendererOpenXR::pollEvents() {
                     if (buildReferenceSpace(_trackingOrigin, &rebuilt, &rebuiltType)) {
                         XrSpace old = _appSpace;
                         _appSpace     = rebuilt;
+                        ++_capturePoseGeneration;
                         _appSpaceType = rebuiltType;
                         if (old != XR_NULL_HANDLE) xrDestroySpace(old);
                         resetFloorDiagnostic();
@@ -1697,6 +1763,7 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
             beginInfo.primaryViewConfigurationType =
                 XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             XR_CHECK(xrBeginSession(_session, &beginInfo));
+            ++_capturePoseGeneration;
             _sessionRunning = true;
             resetFloorDiagnostic();   // a resumed session re-settles its tracking
             ALOGV("Session began");
@@ -1713,11 +1780,14 @@ void VROSceneRendererOpenXR::handleSessionStateChange(
             break;
         case XR_SESSION_STATE_STOPPING:
             XR_CHECK(xrEndSession(_session));
+            ++_capturePoseGeneration;
             _sessionRunning = false;
             ALOGV("Session ended");
             break;
         case XR_SESSION_STATE_LOSS_PENDING:
         case XR_SESSION_STATE_EXITING:
+            ++_capturePoseGeneration;
+            _sessionRunning = false;
             _running = false;
             break;
         default:
@@ -1760,6 +1830,7 @@ void VROSceneRendererOpenXR::renderFrame() {
         if (ok && !_floorOriginPending) {
             XrSpace old = _appSpace;
             _appSpace     = rebuilt;
+            ++_capturePoseGeneration;
             _appSpaceType = rebuiltType;
             if (old != XR_NULL_HANDLE) xrDestroySpace(old);
             resetFloorDiagnostic();

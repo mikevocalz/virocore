@@ -28,11 +28,16 @@
 #include <thread>
 #include <atomic>
 #include <vector>
+#include <array>
+#include <ctime>
 
 // Must be defined before openxr_platform.h to enable OpenGL ES + Android types
 // (XrSwapchainImageOpenGLESKHR, XrGraphicsBindingOpenGLESAndroidKHR, etc.)
 #define XR_USE_GRAPHICS_API_OPENGL_ES
 #define XR_USE_PLATFORM_ANDROID
+#ifndef XR_USE_TIMESPEC
+#define XR_USE_TIMESPEC
+#endif
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -75,6 +80,23 @@ public:
     void onKeyEvent(int keyCode, int action);
     void setVRModeEnabled(bool enabled) {}
     void recenterTracking();
+
+    // Head VIEW pose only. Timestamp must have externally verified CLOCK_MONOTONIC provenance.
+    enum class CapturePoseStatus { Valid = 0, NotReady = 1, Unsupported = 2,
+        InvalidClock = 3, InvalidTimestamp = 4, SpaceChanged = 5, ConversionFailed = 6,
+        LocationFailed = 7, Untracked = 8 };
+    struct CaptureHeadPose {
+        CapturePoseStatus status = CapturePoseStatus::NotReady;
+        XrResult xrResult = XR_SUCCESS;
+        uint64_t generation = 0;
+        XrTime xrTime = 0;
+        XrSpaceLocationFlags flags = 0;
+        std::array<float, 7> pose{}; // xyz, quaternion xyzw; usable only when Valid
+    };
+    uint64_t capturePoseGeneration() const { return _capturePoseGeneration.load(); }
+    CaptureHeadPose locateCaptureHeadPose(int64_t monotonicNs, int clockDomain,
+                                         uint64_t requestedGeneration); // renderer thread only
+
 
     // Wire up the Quest MR (AR) session when the scene is a VROARScene. For a
     // plain VR (VROScene) this behaves exactly like the base implementation.
@@ -190,6 +212,10 @@ private:
     // Eye, LOCAL_FLOOR or an offset LOCAL for Floor. _appSpaceType records what
     // was actually created so recenter and the change-pending handler rebuild
     // like-for-like.
+    std::atomic<uint64_t> _capturePoseGeneration{1};
+    XrSpace _captureViewSpace = XR_NULL_HANDLE;
+    bool _captureTimeEnabled = false;
+    PFN_xrConvertTimespecTimeToTimeKHR _convertCaptureTime = nullptr;
     XrSpace              _appSpace     = XR_NULL_HANDLE;
     XrReferenceSpaceType _appSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     VROTrackingOrigin    _trackingOrigin = VROTrackingOrigin::Eye;
