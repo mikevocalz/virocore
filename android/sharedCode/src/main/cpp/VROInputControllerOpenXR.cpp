@@ -6,6 +6,7 @@
 
 #include "VROInputControllerOpenXR.h"
 #include "VROInputButtonState.h"
+#include "VROOpenXRLogitechStylusBindings.h"
 #include "VROOpenXRSimpleControllerBindings.h"
 #include <android/log.h>
 #include <cmath>
@@ -234,33 +235,26 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     // Optional extension-specific bindings. No Touch paths, synthetic input or device identity claim.
     if (_logitechStylusAvailable) {
         const char *hands[] = {"left", "right"};
-        std::vector<XrActionSuggestedBinding> selected;
-        XrAction aims[] = {_leftAimPoseAction, _rightAimPoseAction};
-        XrAction grips[] = {_leftGripPoseAction, _rightGripPoseAction};
-        // Once this profile is suggested the runtime binds a held stylus to it
-        // instead of the Touch profile, so any action left unbound here goes
-        // dead on that hand. Select maps to both the tip and the front button
-        // (OpenXR keeps the larger value); haptics map to the stylus motor.
-        XrAction triggers[] = {_leftTriggerAction, _rightTriggerAction};
-        XrAction haptics[] = {_leftVibrateAction, _rightVibrateAction};
         for (int i = 0; i < 2; ++i) {
-            const std::string prefix = std::string("/user/hand/") + hands[i];
             _stylusTipActions[i] = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
                 (std::string(hands[i]) + "_stylus_tip").c_str(), (std::string(hands[i]) + " Stylus Tip Pose").c_str());
             _stylusForceActions[i] = createAction(_actionSet, XR_ACTION_TYPE_FLOAT_INPUT,
                 (std::string(hands[i]) + "_stylus_force").c_str(), (std::string(hands[i]) + " Stylus Tip Force").c_str());
-            selected.push_back({aims[i], makePath((prefix + "/input/aim/pose").c_str())});
-            selected.push_back({grips[i], makePath((prefix + "/input/grip/pose").c_str())});
-            selected.push_back({triggers[i], makePath((prefix + "/input/tip_logitech/force").c_str())});
-            selected.push_back({triggers[i], makePath((prefix + "/input/cluster_front_logitech/click").c_str())});
-            selected.push_back({haptics[i], makePath((prefix + "/output/haptic").c_str())});
-            if (_stylusTipActions[i]) selected.push_back({_stylusTipActions[i], makePath((prefix + "/input/tip_logitech/pose").c_str())});
-            if (_stylusForceActions[i]) selected.push_back({_stylusForceActions[i], makePath((prefix + "/input/tip_logitech/force").c_str())});
         }
+    }
+    const auto stylusBindings = VROOpenXRLogitechStylusBindings(_logitechStylusAvailable,
+        VROOpenXRLogitechStylusActions{
+            {_leftAimPoseAction, _rightAimPoseAction},
+            {_leftGripPoseAction, _rightGripPoseAction},
+            {_leftTriggerAction, _rightTriggerAction},
+            {_leftVibrateAction, _rightVibrateAction},
+            {_stylusTipActions[0], _stylusTipActions[1]},
+            {_stylusForceActions[0], _stylusForceActions[1]}}, makePath);
+    if (!stylusBindings.empty()) {
         XrInteractionProfileSuggestedBinding stylus = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-        stylus.interactionProfile = makePath("/interaction_profiles/logitech/mx_ink_stylus_logitech");
-        stylus.countSuggestedBindings = static_cast<uint32_t>(selected.size());
-        stylus.suggestedBindings = selected.data();
+        stylus.interactionProfile = makePath(kVROOpenXRLogitechStylusProfile);
+        stylus.countSuggestedBindings = static_cast<uint32_t>(stylusBindings.size());
+        stylus.suggestedBindings = stylusBindings.data();
         ALOGI("Logitech stylus suggestion result=%d (tracking not established)", xrSuggestInteractionProfileBindings(instance, &stylus));
     }
 
@@ -1029,7 +1023,7 @@ void VROInputControllerOpenXR::observeLogitechStylus(XrSession session, XrSpace 
     for (int i = 0; i < 2; ++i) {
         XrPath hand = XR_NULL_PATH, profile = XR_NULL_PATH;
         xrStringToPath(_instance, hands[i], &hand);
-        xrStringToPath(_instance, "/interaction_profiles/logitech/mx_ink_stylus_logitech", &profile);
+        xrStringToPath(_instance, kVROOpenXRLogitechStylusProfile, &profile);
         XrInteractionProfileState current = {XR_TYPE_INTERACTION_PROFILE_STATE};
         XrResult profileResult = xrGetCurrentInteractionProfile(session, hand, &current);
         const bool selected = XR_SUCCEEDED(profileResult) && current.interactionProfile == profile;
