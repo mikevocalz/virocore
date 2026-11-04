@@ -46,6 +46,13 @@ jobs:
         with:
           distribution: "adopt"
           java-version: 17
+      - name: OpenXR simple-controller binding test (host)
+        run: |
+          c++ -std=c++14 -Wall -Wextra -Werror -UNDEBUG \
+            -IsharedCode/src/main/cpp -IsharedCode/src/main/cpp/include \
+            sharedCode/src/test/cpp/VROOpenXRSimpleControllerBindingsTest.cpp \
+            -o "$RUNNER_TEMP/viro-simple-bindings-test"
+          "$RUNNER_TEMP/viro-simple-bindings-test"
       - name: Code checks
         run: ./gradlew :viroreact:check
       - name: Archive Lint report
