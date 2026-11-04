@@ -5,11 +5,10 @@
 #include <set>
 #include <string>
 
-// Host-only test, using the checked-in OpenXR headers:
-// c++ -std=c++14 -Iandroid/sharedCode/src/main/cpp \
-//   -Iandroid/sharedCode/src/main/cpp/include \
-//   android/sharedCode/src/test/cpp/VROOpenXRSimpleControllerBindingsTest.cpp \
-//   -o /tmp/viro-simple-bindings-test && /tmp/viro-simple-bindings-test
+// Host-only test against the checked-in OpenXR headers. The "OpenXR binding
+// host tests" step in .github/workflows/pull-request.yml compiles and runs it
+// from android/ with -std=c++14 -Wall -Wextra -Werror. Keep backslashes off the
+// end of // lines: GCC reports them as -Wcomment (multi-line comment).
 int main() {
     auto action = [](uintptr_t value) { return reinterpret_cast<XrAction>(value); };
     const VROOpenXRSimpleControllerActions actions{
