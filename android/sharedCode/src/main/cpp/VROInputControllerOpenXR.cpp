@@ -237,6 +237,12 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         std::vector<XrActionSuggestedBinding> selected;
         XrAction aims[] = {_leftAimPoseAction, _rightAimPoseAction};
         XrAction grips[] = {_leftGripPoseAction, _rightGripPoseAction};
+        // Once this profile is suggested the runtime binds a held stylus to it
+        // instead of the Touch profile, so any action left unbound here goes
+        // dead on that hand. Select maps to both the tip and the front button
+        // (OpenXR keeps the larger value); haptics map to the stylus motor.
+        XrAction triggers[] = {_leftTriggerAction, _rightTriggerAction};
+        XrAction haptics[] = {_leftVibrateAction, _rightVibrateAction};
         for (int i = 0; i < 2; ++i) {
             const std::string prefix = std::string("/user/hand/") + hands[i];
             _stylusTipActions[i] = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
@@ -245,6 +251,9 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
                 (std::string(hands[i]) + "_stylus_force").c_str(), (std::string(hands[i]) + " Stylus Tip Force").c_str());
             selected.push_back({aims[i], makePath((prefix + "/input/aim/pose").c_str())});
             selected.push_back({grips[i], makePath((prefix + "/input/grip/pose").c_str())});
+            selected.push_back({triggers[i], makePath((prefix + "/input/tip_logitech/force").c_str())});
+            selected.push_back({triggers[i], makePath((prefix + "/input/cluster_front_logitech/click").c_str())});
+            selected.push_back({haptics[i], makePath((prefix + "/output/haptic").c_str())});
             if (_stylusTipActions[i]) selected.push_back({_stylusTipActions[i], makePath((prefix + "/input/tip_logitech/pose").c_str())});
             if (_stylusForceActions[i]) selected.push_back({_stylusForceActions[i], makePath((prefix + "/input/tip_logitech/force").c_str())});
         }
