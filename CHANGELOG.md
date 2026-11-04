@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **OpenXR loader and headers bumped 1.1.62 → 1.1.65** (Khronos `release-1.1.65`, 2026-10-16). The vendored Maven mirror now holds `openxr_loader_for_android-1.1.65` from Maven Central (AAR SHA-1 `b81c1049f63302428fbf473d1b310de51c32b969`, matching the published `.sha1`), and the 1.1.62 copy is removed. `cpp/include/openxr` is replaced with `include/openxr` from the OpenXR-SDK tag, so loader and headers stay at the same version. The header changes are additive: no struct or existing enum value was removed or changed, `XR_SWAPCHAIN_USAGE_INPUT_ATTACHMENT_BIT_KHR`/`_MND` swapped which one is the alias (same value, 0x80), and `XR_BD_spatial_sensing_SPEC_VERSION` went 2 → 3; none of these are used here. The arm64-v8a `libopenxr_loader.so` has three `PT_LOAD` segments, all aligned `0x4000`. 1.1.65 adds a loader fix for `uint32_t` manifest-version parsing; 1.1.63 and 1.1.65 add registry entries such as `XR_BD_motion_tracker`, `XR_BD_camera_image`, `XR_EXT_spatial_mesh_tracking` and `XR_EXT_spatial_object_tracking`, none of which Viro enables yet.
+
 ### Fixed
 
 - **Quest: dragging with both hands tracked followed the wrong hand and jumped on grab (`VROInputControllerBase`).** Hover and click were source-aware but drag still ran off the shared single-pointer slot, so with two aim rays dispatched per frame a drag was seeded from whichever ray was mirrored last (the left) and then moved by both rays in turn, rendering the idle hand's result; any hand's ClickUp ended it. A `VRODraggedObject` now records the ray that started it and that ray's pose, only that ray moves or ends the drag, the original hit is snapshotted at ClickDown, and a second button during a drag neither restarts nor steals it. Grip, A/X/Y and thumbstick sources resolve their hit, hover and drag state through their hand's aim ray via the new `rayForSource()` hook (`VROInputControllerOpenXR`), so a right-grip grab no longer acts on what the left hand points at. Single-pointer backends (AR, Cardboard, Daydream) keep the identity mapping and are unchanged.
