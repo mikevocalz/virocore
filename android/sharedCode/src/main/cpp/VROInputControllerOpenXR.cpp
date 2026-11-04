@@ -6,6 +6,7 @@
 
 #include "VROInputControllerOpenXR.h"
 #include "VROInputButtonState.h"
+#include "VROOpenXRSimpleControllerBindings.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -191,11 +192,9 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     }
 
     // ── 3. Suggest interaction profile bindings ───────────────────────────────
-    // The binding component paths below are standard OpenXR and are accepted
-    // verbatim by Oculus Touch AND the ByteDance PICO profiles, so we suggest the
-    // identical set under every profile we support. The runtime keeps only the
-    // suggestion(s) for the profile(s) it implements; non-matching profiles
-    // return XR_ERROR_PATH_UNSUPPORTED for that call alone (non-fatal).
+    // Touch and PICO share these controller components. The Khronos simple
+    // profile has its own smaller binding set below; suggesting trigger/value
+    // or thumbsticks for it rejects the entire simple-profile suggestion.
     auto makePath = [&](const char *str) -> XrPath {
         XrPath p;
         xrStringToPath(instance, str, &p);
@@ -244,14 +243,24 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         "/interaction_profiles/khr/simple_controller",          // universal fallback
     };
 
+    const auto simpleBindings = VROOpenXRSimpleControllerBindings(
+        VROOpenXRSimpleControllerActions{
+            {_leftAimPoseAction, _rightAimPoseAction},
+            {_leftGripPoseAction, _rightGripPoseAction},
+            {_leftTriggerAction, _rightTriggerAction},
+            {_leftVibrateAction, _rightVibrateAction},
+            _menuAction}, makePath);
+
     bool anyProfileAccepted = false;
     for (auto *profileStr : kInteractionProfiles) {
         XrInteractionProfileSuggestedBinding suggestion = {
             XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
         };
         suggestion.interactionProfile     = makePath(profileStr);
-        suggestion.suggestedBindings      = bindings;
-        suggestion.countSuggestedBindings = bindingCount;
+        const auto selectedBindings = VROOpenXRBindingsForControllerProfile(
+            profileStr, bindings, bindingCount, simpleBindings);
+        suggestion.suggestedBindings      = selectedBindings.data;
+        suggestion.countSuggestedBindings = selectedBindings.count;
 
         XrResult sresult = xrSuggestInteractionProfileBindings(instance, &suggestion);
         logSuggest(profileStr, sresult);
