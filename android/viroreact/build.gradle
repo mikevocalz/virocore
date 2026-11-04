@@ -106,8 +106,11 @@ dependencies {
     implementation 'com.google.protobuf.nano:protobuf-javanano:3.0.0-alpha-7'
     // OpenXR loader (artifact ID openxr_loader_for_android, not openxr_loader_android).
     // Provides libopenxr_loader.so (arm64-v8a) and the OpenXR headers via Prefab.
-    // The AAR and POM are copied from Maven Central into openxr_sdk/maven/, so the
-    // build resolves this version offline. cpp/include/openxr holds the headers
+    // The AAR and POM are copied byte-for-byte from Maven Central into
+    // openxr_sdk/maven/. mavenCentral() is listed before that mirror in
+    // android/build.gradle, so Gradle normally fetches it from Maven Central and
+    // uses the mirror only when Central lacks it; the bytes are identical either
+    // way. cpp/include/openxr holds the headers
     // from the same Khronos OpenXR-SDK release tag; bump both together.
     //
     // Khronos builds the Android loader with 16 KB pages from 1.1.48 on (OpenXR-SDK
