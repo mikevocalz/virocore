@@ -6,6 +6,8 @@
 
 #include "VROInputControllerOpenXR.h"
 #include "VROInputButtonState.h"
+#include "VROOpenXRLogitechStylusBindings.h"
+#include "VROOpenXRSimpleControllerBindings.h"
 #include <android/log.h>
 #include <cmath>
 #include "VROLog.h"
@@ -150,15 +152,26 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     }
 
     // ── 3. Suggest interaction profile bindings ───────────────────────────────
-    // The binding component paths below are standard OpenXR and are accepted
-    // verbatim by Oculus Touch AND the ByteDance PICO profiles, so we suggest the
-    // identical set under every profile we support. The runtime keeps only the
-    // suggestion(s) for the profile(s) it implements; non-matching profiles
-    // return XR_ERROR_PATH_UNSUPPORTED for that call alone (non-fatal).
+    // Touch and PICO share these controller components. The Khronos simple
+    // profile has its own smaller binding set below; suggesting trigger/value
+    // or thumbsticks for it rejects the entire simple-profile suggestion.
+    // A path that fails to resolve becomes XR_NULL_PATH and is dropped before
+    // the suggestion, so one bad string cannot reject a whole profile.
     auto makePath = [&](const char *str) -> XrPath {
-        XrPath p;
-        xrStringToPath(instance, str, &p);
+        XrPath p = XR_NULL_PATH;
+        const XrResult r = xrStringToPath(instance, str, &p);
+        if (XR_FAILED(r)) {
+            ALOGE("xrStringToPath failed (%d): %s", r, str);
+            return XR_NULL_PATH;
+        }
         return p;
+    };
+    auto resolvedBindings = [](const XrActionSuggestedBinding *list, uint32_t count) {
+        std::vector<XrActionSuggestedBinding> usable;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (list[i].binding != XR_NULL_PATH) usable.push_back(list[i]);
+        }
+        return usable;
     };
 
     const XrActionSuggestedBinding bindings[] = {
@@ -195,22 +208,37 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         "/interaction_profiles/khr/simple_controller",          // universal fallback
     };
 
+    const auto simpleBindings = VROOpenXRSimpleControllerBindings(
+        VROOpenXRSimpleControllerActions{
+            {_leftAimPoseAction, _rightAimPoseAction},
+            {_leftGripPoseAction, _rightGripPoseAction},
+            {_leftTriggerAction, _rightTriggerAction},
+            {_leftVibrateAction, _rightVibrateAction},
+            _menuAction}, makePath);
+
     bool anyProfileAccepted = false;
     for (auto *profileStr : kInteractionProfiles) {
         XrInteractionProfileSuggestedBinding suggestion = {
             XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
         };
         suggestion.interactionProfile     = makePath(profileStr);
-        suggestion.suggestedBindings      = bindings;
-        suggestion.countSuggestedBindings = bindingCount;
+        if (suggestion.interactionProfile == XR_NULL_PATH) continue;
+        const auto selectedBindings = VROOpenXRBindingsForControllerProfile(
+            profileStr, bindings, bindingCount, simpleBindings);
+        const auto usable = resolvedBindings(selectedBindings.data, selectedBindings.count);
+        suggestion.suggestedBindings      = usable.data();
+        suggestion.countSuggestedBindings = static_cast<uint32_t>(usable.size());
 
         XrResult sresult = xrSuggestInteractionProfileBindings(instance, &suggestion);
         if (XR_SUCCEEDED(sresult)) {
             anyProfileAccepted = true;
             ALOGV("Suggested interaction profile: %s", profileStr);
+        } else if (sresult == XR_ERROR_PATH_UNSUPPORTED) {
+            // This runtime does not implement the profile. Expected every
+            // session for each non-matching vendor (Quest v209 rejects
+            // khr/simple_controller and pico4s_controller), so not a warning.
+            ALOGI("Interaction profile not supported by runtime: %s", profileStr);
         } else {
-            // XR_ERROR_PATH_UNSUPPORTED here just means this runtime doesn't
-            // implement this profile — expected for every non-matching vendor.
             ALOGW("Interaction profile not accepted (%d): %s", sresult, profileStr);
         }
     }
@@ -221,6 +249,34 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         return false;
     }
     result = XR_SUCCESS;
+
+    // Optional extension-specific bindings. No Touch paths, synthetic input or device identity claim.
+    if (_logitechStylusAvailable) {
+        const char *hands[] = {"left", "right"};
+        for (int i = 0; i < 2; ++i) {
+            _stylusTipActions[i] = createAction(_actionSet, XR_ACTION_TYPE_POSE_INPUT,
+                (std::string(hands[i]) + "_stylus_tip").c_str(), (std::string(hands[i]) + " Stylus Tip Pose").c_str());
+            _stylusForceActions[i] = createAction(_actionSet, XR_ACTION_TYPE_FLOAT_INPUT,
+                (std::string(hands[i]) + "_stylus_force").c_str(), (std::string(hands[i]) + " Stylus Tip Force").c_str());
+        }
+    }
+    const auto stylusBindings = VROOpenXRLogitechStylusBindings(_logitechStylusAvailable,
+        VROOpenXRLogitechStylusActions{
+            {_leftAimPoseAction, _rightAimPoseAction},
+            {_leftGripPoseAction, _rightGripPoseAction},
+            {_leftTriggerAction, _rightTriggerAction},
+            {_leftVibrateAction, _rightVibrateAction},
+            {_stylusTipActions[0], _stylusTipActions[1]},
+            {_stylusForceActions[0], _stylusForceActions[1]}}, makePath);
+    if (!stylusBindings.empty()) {
+        const auto usable = resolvedBindings(stylusBindings.data(),
+                                             static_cast<uint32_t>(stylusBindings.size()));
+        XrInteractionProfileSuggestedBinding stylus = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        stylus.interactionProfile = makePath(kVROOpenXRLogitechStylusProfile);
+        stylus.countSuggestedBindings = static_cast<uint32_t>(usable.size());
+        stylus.suggestedBindings = usable.data();
+        ALOGI("Logitech stylus suggestion result=%d (tracking not established)", xrSuggestInteractionProfileBindings(instance, &stylus));
+    }
 
     // Eye gaze lives under its own interaction profile, so suggest it separately.
     // A failure here only disables eye gaze — it must not fail the whole set-up.
@@ -293,6 +349,7 @@ void VROInputControllerOpenXR::logActiveInteractionProfiles(XrSession session) {
 }
 
 void VROInputControllerOpenXR::destroySpaces() {
+    for (auto &space : _stylusTipSpaces) { if (space) xrDestroySpace(space); space = XR_NULL_HANDLE; }
     if (_leftSpace     != XR_NULL_HANDLE) { xrDestroySpace(_leftSpace);     _leftSpace     = XR_NULL_HANDLE; }
     if (_rightSpace    != XR_NULL_HANDLE) { xrDestroySpace(_rightSpace);    _rightSpace    = XR_NULL_HANDLE; }
     if (_leftGripSpace  != XR_NULL_HANDLE) { xrDestroySpace(_leftGripSpace);  _leftGripSpace  = XR_NULL_HANDLE; }
@@ -304,6 +361,11 @@ bool VROInputControllerOpenXR::createActionSpaces(XrSession session) {
     XrActionSpaceCreateInfo spaceInfo = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
     spaceInfo.poseInActionSpace = { {0, 0, 0, 1}, {0, 0, 0} };  // identity
 
+    for (int i = 0; i < 2; ++i) {
+        if (!_stylusTipActions[i]) continue;
+        spaceInfo.action = _stylusTipActions[i];
+        if (XR_FAILED(xrCreateActionSpace(session, &spaceInfo, &_stylusTipSpaces[i]))) _stylusTipSpaces[i] = XR_NULL_HANDLE;
+    }
     spaceInfo.action = _leftAimPoseAction;
     XrResult r = xrCreateActionSpace(session, &spaceInfo, &_leftSpace);
     if (!XR_SUCCEEDED(r)) { ALOGE("xrCreateActionSpace left failed: %d", r); return false; }
@@ -370,7 +432,8 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     XrActionsSyncInfo syncInfo  = { XR_TYPE_ACTIONS_SYNC_INFO };
     syncInfo.activeActionSets      = &activeSet;
     syncInfo.countActiveActionSets = 1;
-    xrSyncActions(session, &syncInfo);
+    const XrResult syncResult = xrSyncActions(session, &syncInfo);
+    if (XR_SUCCEEDED(syncResult)) observeLogitechStylus(session, baseSpace, time);
 
     // The head pose, to JS. Every other input controller (AR, Cardboard,
     // Daydream, OVR) calls this from its own onProcess and OpenXR never did —
@@ -970,4 +1033,45 @@ void VROInputControllerOpenXR::updateLaserViz(int source,
     }
     presenter->updateAimRay(source, origin, hitPoint, true /* visible */,
                             hit && !hit->isBackgroundHit());
+}
+
+// Bounded evidence only. Actual profile selection does not establish a particular product identity.
+void VROInputControllerOpenXR::observeLogitechStylus(XrSession session, XrSpace baseSpace, XrTime time) {
+    if (!_logitechStylusAvailable || _stylusObservationCount >= 32 || (_stylusFrames++ % 180) != 0) return;
+    ++_stylusObservationCount;
+    const char *hands[] = {"/user/hand/left", "/user/hand/right"};
+    for (int i = 0; i < 2; ++i) {
+        XrPath hand = XR_NULL_PATH, profile = XR_NULL_PATH;
+        xrStringToPath(_instance, hands[i], &hand);
+        xrStringToPath(_instance, kVROOpenXRLogitechStylusProfile, &profile);
+        XrInteractionProfileState current = {XR_TYPE_INTERACTION_PROFILE_STATE};
+        XrResult profileResult = xrGetCurrentInteractionProfile(session, hand, &current);
+        const bool selected = XR_SUCCEEDED(profileResult) && current.interactionProfile == profile;
+        ALOGI("Stylus evidence hand=%d profileResult=%d dedicatedProfile=%d", i, profileResult, (int)selected);
+        if (!selected) continue;
+        const XrAction actions[] = {i == 0 ? _leftGripPoseAction : _rightGripPoseAction,
+            i == 0 ? _leftAimPoseAction : _rightAimPoseAction, _stylusTipActions[i]};
+        const XrSpace spaces[] = {i == 0 ? _leftGripSpace : _rightGripSpace,
+            i == 0 ? _leftSpace : _rightSpace, _stylusTipSpaces[i]};
+        for (int pose = 0; pose < 3; ++pose) {
+            if (!actions[pose] || !spaces[pose]) continue;
+            XrActionStateGetInfo get = {XR_TYPE_ACTION_STATE_GET_INFO}; get.action = actions[pose];
+            XrActionStatePose active = {XR_TYPE_ACTION_STATE_POSE};
+            XrResult stateResult = xrGetActionStatePose(session, &get, &active);
+            XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION};
+            XrResult locateResult = XR_ERROR_POSE_INVALID;
+            if (XR_SUCCEEDED(stateResult) && active.isActive) locateResult = xrLocateSpace(spaces[pose], baseSpace, time, &location);
+            const XrSpaceLocationFlags required = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+                XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+            const bool tracked = XR_SUCCEEDED(locateResult) && (location.locationFlags & required) == required;
+            ALOGI("Stylus pose hand=%d kind=%d active=%d state=%d locate=%d flags=%llu tracked=%d", i, pose,
+                (int)active.isActive, stateResult, locateResult, (unsigned long long)location.locationFlags, (int)tracked);
+        }
+        if (_stylusForceActions[i]) {
+            XrActionStateGetInfo get = {XR_TYPE_ACTION_STATE_GET_INFO}; get.action = _stylusForceActions[i];
+            XrActionStateFloat force = {XR_TYPE_ACTION_STATE_FLOAT};
+            XrResult result = xrGetActionStateFloat(session, &get, &force);
+            ALOGI("Stylus force hand=%d result=%d active=%d value=%f", i, result, (int)force.isActive, force.currentState);
+        }
+    }
 }
