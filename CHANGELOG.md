@@ -5,6 +5,7 @@
 ### Changed
 
 - **Meta Quest and Meta VR glasses start floor-level (`VROSceneRendererOpenXR`).** With no `trackingOrigin` set from JS, a Meta Horizon runtime now defaults to the floor origin, as PICO already did. The eye-level default put the app's floor at chest height. The origin still resolves LOCAL_FLOOR, then a STAGE-emulated floor, then eye level, and an explicit `setTrackingOrigin` still wins.
+- **OpenXR loader and headers bumped 1.1.62 → 1.1.65** (Khronos `release-1.1.65`, 2026-10-16). The vendored Maven mirror now holds `openxr_loader_for_android-1.1.65` from Maven Central (AAR SHA-1 `b81c1049f63302428fbf473d1b310de51c32b969`, matching the published `.sha1`), and the 1.1.62 copy is removed. `cpp/include/openxr` is replaced with `include/openxr` from the OpenXR-SDK tag, so loader and headers stay at the same version. The header changes are additive: no struct or existing enum value was removed or changed, `XR_SWAPCHAIN_USAGE_INPUT_ATTACHMENT_BIT_KHR`/`_MND` swapped which one is the alias (same value, 0x80), and `XR_BD_spatial_sensing_SPEC_VERSION` went 2 → 3; none of these are used here. The arm64-v8a `libopenxr_loader.so` has three `PT_LOAD` segments, all aligned `0x4000`. 1.1.65 adds a loader fix for `uint32_t` manifest-version parsing; 1.1.63 and 1.1.65 add registry entries such as `XR_BD_motion_tracker`, `XR_BD_camera_image`, `XR_EXT_spatial_mesh_tracking` and `XR_EXT_spatial_object_tracking`, none of which Viro enables yet.
 
 ## v3.1.0 — 27 October 2026
 
@@ -317,8 +318,8 @@ is unchanged. See docs/PICO-SUPPORT.md.
   enumerated) so strict PICO firmware degrades cleanly instead of SIGSEGV.
 - `xrCreateInstance` / `xrGetSystem` failures now log the real `XrResult`.
 - **16KB page alignment (Android 15 / SDK 35, fixes ReactVision/viro#485)** —
-  OpenXR loader bumped 1.1.38 → 1.1.60 (first 16KB-aligned Khronos Android
-  loader); rebuilt AAR is 16KB-aligned via NDK r27.2 + `-Wl,-z,max-page-size=16384`.
+  OpenXR loader bumped 1.1.38 → 1.1.60 (Khronos has built the Android loader
+  with 16KB pages since 1.1.48); rebuilt AAR is 16KB-aligned via NDK r27.2 + `-Wl,-z,max-page-size=16384`.
   `scripts/verify-16kb-alignment.py` gates the build/CI so a misaligned AAR can
   never be published.
 
