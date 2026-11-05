@@ -6,6 +6,7 @@
 
 #include "VROInputControllerOpenXR.h"
 #include "VROInputButtonState.h"
+#include "VROOpenXRSimpleControllerBindings.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -191,15 +192,26 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
     }
 
     // ── 3. Suggest interaction profile bindings ───────────────────────────────
-    // The binding component paths below are standard OpenXR and are accepted
-    // verbatim by Oculus Touch AND the ByteDance PICO profiles, so we suggest the
-    // identical set under every profile we support. The runtime keeps only the
-    // suggestion(s) for the profile(s) it implements; non-matching profiles
-    // return XR_ERROR_PATH_UNSUPPORTED for that call alone (non-fatal).
+    // Touch and PICO share these controller components. The Khronos simple
+    // profile has its own smaller binding set below; suggesting trigger/value
+    // or thumbsticks for it rejects the entire simple-profile suggestion.
+    // A path that fails to resolve becomes XR_NULL_PATH and is dropped before
+    // the suggestion, so one bad string cannot reject a whole profile.
     auto makePath = [&](const char *str) -> XrPath {
-        XrPath p;
-        xrStringToPath(instance, str, &p);
+        XrPath p = XR_NULL_PATH;
+        const XrResult r = xrStringToPath(instance, str, &p);
+        if (XR_FAILED(r)) {
+            ALOGE("xrStringToPath failed (%d): %s", r, str);
+            return XR_NULL_PATH;
+        }
         return p;
+    };
+    auto resolvedBindings = [](const XrActionSuggestedBinding *list, uint32_t count) {
+        std::vector<XrActionSuggestedBinding> usable;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (list[i].binding != XR_NULL_PATH) usable.push_back(list[i]);
+        }
+        return usable;
     };
     // Device logs prove which suggestion the runtime accepted.
     auto logSuggest = [&](const char *profile, XrResult r) {
@@ -244,23 +256,38 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
         "/interaction_profiles/khr/simple_controller",          // universal fallback
     };
 
+    const auto simpleBindings = VROOpenXRSimpleControllerBindings(
+        VROOpenXRSimpleControllerActions{
+            {_leftAimPoseAction, _rightAimPoseAction},
+            {_leftGripPoseAction, _rightGripPoseAction},
+            {_leftTriggerAction, _rightTriggerAction},
+            {_leftVibrateAction, _rightVibrateAction},
+            _menuAction}, makePath);
+
     bool anyProfileAccepted = false;
     for (auto *profileStr : kInteractionProfiles) {
         XrInteractionProfileSuggestedBinding suggestion = {
             XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
         };
         suggestion.interactionProfile     = makePath(profileStr);
-        suggestion.suggestedBindings      = bindings;
-        suggestion.countSuggestedBindings = bindingCount;
+        if (suggestion.interactionProfile == XR_NULL_PATH) continue;
+        const auto selectedBindings = VROOpenXRBindingsForControllerProfile(
+            profileStr, bindings, bindingCount, simpleBindings);
+        const auto usable = resolvedBindings(selectedBindings.data, selectedBindings.count);
+        suggestion.suggestedBindings      = usable.data();
+        suggestion.countSuggestedBindings = static_cast<uint32_t>(usable.size());
 
         XrResult sresult = xrSuggestInteractionProfileBindings(instance, &suggestion);
         logSuggest(profileStr, sresult);
         if (XR_SUCCEEDED(sresult)) {
             anyProfileAccepted = true;
             ALOGV("Suggested interaction profile: %s", profileStr);
-        } else {
-            // XR_ERROR_PATH_UNSUPPORTED here just means this runtime doesn't
-            // implement this profile — expected for every non-matching vendor.
+        } else if (sresult != XR_ERROR_PATH_UNSUPPORTED) {
+            // PATH_UNSUPPORTED means the runtime does not implement this
+            // profile. It happens every session for each non-matching vendor
+            // (Quest v209 rejects khr/simple_controller and pico4s_controller)
+            // and logSuggest already records it at info, so only warn on
+            // other failures.
             ALOGW("Interaction profile not accepted (%d): %s", sresult, profileStr);
         }
     }
@@ -322,9 +349,10 @@ bool VROInputControllerOpenXR::createActionSet(XrInstance instance, XrSession se
                 XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
             };
             handSuggestion.interactionProfile     = handProfile;
-            handSuggestion.suggestedBindings      = handBindings;
-            handSuggestion.countSuggestedBindings =
-                (uint32_t)(sizeof(handBindings) / sizeof(handBindings[0]));
+            const auto usableHand = resolvedBindings(handBindings,
+                (uint32_t)(sizeof(handBindings) / sizeof(handBindings[0])));
+            handSuggestion.suggestedBindings      = usableHand.data();
+            handSuggestion.countSuggestedBindings = static_cast<uint32_t>(usableHand.size());
 
             XrResult hr = xrSuggestInteractionProfileBindings(instance, &handSuggestion);
             logSuggest(kHandProfile, hr);
