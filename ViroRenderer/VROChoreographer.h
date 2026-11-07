@@ -72,6 +72,21 @@ public:
     }
     
     /*
+     Optional render-thread-owned pass, invoked once per eye immediately after
+     the base scene pass and before depth capture, bloom and tone mapping.
+     It receives the same output target and opaque-filled depth buffer. With
+     HDR disabled the target is LDR. The pass must preserve render state and
+     must not clear the target. Set nullptr to detach before releasing resources.
+     Call setter/getter only on the renderer thread, like setBaseRenderPass.
+     */
+    void setCustomPostOpaquePass(std::shared_ptr<VRORenderPass> pass) {
+        _customPostOpaquePass = pass;
+    }
+    std::shared_ptr<VRORenderPass> getCustomPostOpaquePass() const {
+        return _customPostOpaquePass;
+    }
+
+    /*
      Enable or disable HDR rendering. If HDR is disabled, then features like
      Bloom and PBR will not work, and tone-mapping will be disabled. HDR is not
      supported on all devices. If HDR is not supported, this will return false.
@@ -209,6 +224,7 @@ private:
      Pass that renders the 3D scene to a render target.
      */
     std::shared_ptr<VRORenderPass> _baseRenderPass;
+    std::shared_ptr<VRORenderPass> _customPostOpaquePass;
 
     /*
      Simple blitting post process.
