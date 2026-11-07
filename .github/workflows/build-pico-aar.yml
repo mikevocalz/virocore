@@ -7,6 +7,8 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'ViroRenderer/**'
+      - 'scripts/test_post_opaque_hook.py'
       - 'scripts/build-pico-aar.sh'
       - 'scripts/verify-16kb-alignment.py'
       - 'scripts/test_verify_16kb_alignment.py'
@@ -38,6 +40,9 @@ jobs:
           sdkmanager "ndk;$NDK_VER"
           test -d "$ANDROID_HOME/ndk/$NDK_VER"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> "$GITHUB_ENV"
+
+      - name: Verify post-opaque source contract
+        run: python3 scripts/test_post_opaque_hook.py
 
       - name: Test alignment verifier
         run: python3 scripts/test_verify_16kb_alignment.py

@@ -308,6 +308,9 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
             // Render the scene + bloom to the floating point HDR MRT target
             inputs.outputTarget = _hdrTarget;
             _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+            if (_customPostOpaquePass) {
+                _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+            }
 
             // Capture scene depth from the HDR target's depth renderbuffer into the
             // depth texture target, so the next frame can sample it.
@@ -359,6 +362,9 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
             // Render the scene to the floating point HDR target
             inputs.outputTarget = _hdrTarget;
             _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+            if (_customPostOpaquePass) {
+                _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+            }
 
             // Capture scene depth for the next frame
             if (_sceneDepthTarget && _sceneDepthTarget->getWidth() == _hdrTarget->getWidth()) {
@@ -399,6 +405,9 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
     else if (_toneMappingPass && _blitTarget) {
         inputs.outputTarget = _blitTarget;
         _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+        if (_customPostOpaquePass) {
+            _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+        }
 
         // Both slots get the same texture. With tone mapping Disabled the mask
         // only ever selects between two identical values, and leaving its
@@ -423,12 +432,18 @@ void VROChoreographer::renderScene(std::shared_ptr<VROScene> scene,
         
         inputs.outputTarget = _rttTarget;
         _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+        if (_customPostOpaquePass) {
+            _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+        }
         renderToTextureAndDisplay(_rttTarget, driver);
     }
     else {
         // Render to the display directly
         inputs.outputTarget = driver->getDisplay();
         _baseRenderPass->render(scene, outgoingScene, inputs, context, driver);
+        if (_customPostOpaquePass) {
+            _customPostOpaquePass->render(scene, outgoingScene, inputs, context, driver);
+        }
     }
 }
 
