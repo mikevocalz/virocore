@@ -83,6 +83,7 @@ public:
      */
     void updateAimRay(int source, const VROVector3f &origin,
                       const VROVector3f &hitPoint, bool visible, bool surfaceHit = false) {
+        if (!visible && _lasers.find(source) == _lasers.end()) return;
         Laser &laser = getOrCreateLaser(source);
         if (!visible) {
             laser.node->setHidden(true);

@@ -69,6 +69,10 @@ namespace ViroOculus{
         LeftThumbstick  = 10, // left thumbstick scroll axis
         RightThumbstick = 11, // right thumbstick scroll axis
         EyeGaze         = 12, // eye-gaze ray (XR_EXT_eye_gaze_interaction; Quest Pro only)
+        LeftHand        = 13,
+        RightHand       = 14,
+        LeftHandGrip    = 15,
+        RightHandGrip   = 16,
     };
 }
 
