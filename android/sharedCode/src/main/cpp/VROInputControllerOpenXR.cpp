@@ -9,6 +9,7 @@
 #include "VROOpenXRSimpleControllerBindings.h"
 #include <android/log.h>
 #include <cmath>
+#include <algorithm>
 #include "VROLog.h"
 #include "VROInputPresenterOpenXR.h"
 #include "VROVector3f.h"
@@ -551,7 +552,7 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
         }
     }
 
-    // ── Hand tracking — gestures + fill missing-side aim from joints ────────
+    // ── Hand tracking — independent hand-source rays and gestures ──────────
     bool          rightHandValid = false;
     VROVector3f   rightHandPos;
     VROQuaternion rightHandRot;
@@ -564,27 +565,6 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
                  /*skipRight=*/rightValid, /*skipLeft=*/leftValid,
                  rightHandValid, rightHandPos, rightHandRot, rightHandForward,
                  leftHandValid,  leftHandPos,  leftHandRot,  leftHandForward);
-
-    // Hysteresis on hand-tracking poses too — they flicker more than
-    // controllers (joint visibility depends on hand orientation).
-    rightHandValid = stickyPose(_rightHandAim, rightHandValid,
-                                rightHandPos, rightHandRot, rightHandForward);
-    leftHandValid  = stickyPose(_leftHandAim,  leftHandValid,
-                                leftHandPos,  leftHandRot,  leftHandForward);
-
-    // Fill in any side that controller didn't provide, from hand tracking.
-    if (!rightValid && rightHandValid) {
-        rightPos     = rightHandPos;
-        rightRot     = rightHandRot;
-        rightForward = rightHandForward;
-        rightValid   = true;
-    }
-    if (!leftValid && leftHandValid) {
-        leftPos     = leftHandPos;
-        leftRot     = leftHandRot;
-        leftForward = leftHandForward;
-        leftValid   = true;
-    }
 
     // ── Per-source dispatch — both hands handled independently ──────────────
     // Each side calls the source-aware updateHitNode so its hit/hover/click
@@ -606,6 +586,8 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     };
     dispatchSide(rightValid, ViroOculus::Controller,     rightPos, rightRot, rightForward);
     dispatchSide(leftValid,  ViroOculus::LeftController, leftPos,  leftRot,  leftForward);
+    dispatchSide(rightHandValid, ViroOculus::RightHand, rightHandPos, rightHandRot, rightHandForward);
+    dispatchSide(leftHandValid, ViroOculus::LeftHand, leftHandPos, leftHandRot, leftHandForward);
 
     // Controller meshes follow the grip pose (independent of the aim/beam path
     // above). Hidden automatically when the grip pose action is inactive — i.e.
@@ -637,7 +619,9 @@ void VROInputControllerOpenXR::onProcess(XrSession session, XrSpace baseSpace,
     for (const auto &edge : _pendingButtons) {
         const int ray = rayForSource(edge.first);
         if ((ray == ViroOculus::Controller && !rightValid) ||
-            (ray == ViroOculus::LeftController && !leftValid)) continue;
+            (ray == ViroOculus::LeftController && !leftValid) ||
+            (ray == ViroOculus::RightHand && !rightHandValid) ||
+            (ray == ViroOculus::LeftHand && !leftHandValid)) continue;
         VROInputControllerBase::onButtonEvent(edge.first, edge.second);
     }
     _pendingButtons.clear();
@@ -731,11 +715,17 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
     rightAimValidOut = false;
     leftAimValidOut  = false;
     for (int hand = 0; hand < 2; ++hand) {
-        const int source = (hand == 0) ? ViroOculus::LeftController : ViroOculus::Controller;
-        const int gripSource = (hand == 0) ? ViroOculus::LeftGrip : ViroOculus::RightGrip;
+        const int source = (hand == 0) ? ViroOculus::LeftHand : ViroOculus::RightHand;
+        const int gripSource = (hand == 0) ? ViroOculus::LeftHandGrip : ViroOculus::RightHandGrip;
         bool &prevPinch = (hand == 0) ? _prevPinchLeft : _prevPinchRight;
         bool &prevGrab = (hand == 0) ? _prevGrabLeft : _prevGrabRight;
         auto cancelHand = [&]() {
+            _pendingButtons.erase(std::remove_if(_pendingButtons.begin(), _pendingButtons.end(),
+                [source, gripSource](const std::pair<int, VROEventDelegate::ClickState> &edge) {
+                    return edge.first == source || edge.first == gripSource;
+                }), _pendingButtons.end());
+            _handPinch[hand].update(false, 0);
+            _handGrab[hand].update(false, 0);
             const auto pinch = updateInputButton(false, false, prevPinch);
             const auto grab = updateInputButton(false, false, prevGrab);
             if (pinch == VROInputButtonEdge::Cancel || grab == VROInputButtonEdge::Cancel) {
@@ -776,6 +766,25 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
             continue;
         }
 
+        if (_aimExtEnabled && (aimState.status &
+            (XR_HAND_TRACKING_AIM_SYSTEM_GESTURE_BIT_FB | XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB))) {
+            cancelHand();
+            continue;
+        }
+
+        // Invalid grab joints suppress the side before any pinch edge is queued.
+        const auto &palmJoint = jointLocs[XR_HAND_JOINT_PALM_EXT];
+        const auto &middleJoint = jointLocs[XR_HAND_JOINT_MIDDLE_TIP_EXT];
+        auto validPosition = [](const XrHandJointLocationEXT &joint) {
+            const auto &p = joint.pose.position;
+            return (joint.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+                   std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+        };
+        if (!validPosition(palmJoint) || !validPosition(middleJoint)) {
+            cancelHand();
+            continue;
+        }
+
         // ── Aim pose extraction (FB aim ext preferred, joint-derived fallback)
         // Hit-test, processGazeEvent, laser update and onMove are NOT done
         // here — `onProcess` consolidates them after this method returns,
@@ -783,7 +792,8 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         // independent hover/click/laser state. We only stash this hand's
         // aim pose in the matching out-params for the caller to use.
         bool aimComputed = _aimExtEnabled &&
-                           (aimState.status & XR_HAND_TRACKING_AIM_COMPUTED_BIT_FB);
+                           (aimState.status & XR_HAND_TRACKING_AIM_COMPUTED_BIT_FB) &&
+                           (aimState.status & XR_HAND_TRACKING_AIM_VALID_BIT_FB);
         bool          handAimValid   = false;
         VROVector3f   handAimPos;
         VROQuaternion handAimRot;
@@ -802,12 +812,17 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
 
             bool tipValid   = (indexTip.locationFlags  & XR_SPACE_LOCATION_POSITION_VALID_BIT);
             bool proxValid  = (indexProx.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
-            bool wristValid = (wrist.locationFlags     & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+            bool wristValid = validPosition(wrist) &&
+                              (wrist.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
 
             if (tipValid && proxValid && wristValid) {
                 VROVector3f tipPos  = xrVec3ToVRO(indexTip.pose.position);
                 VROVector3f proxPos = xrVec3ToVRO(indexProx.pose.position);
                 handAimForward = (tipPos - proxPos);
+                if (!VROHandDirectionIsValid(handAimForward.x, handAimForward.y, handAimForward.z)) {
+                    cancelHand();
+                    continue;
+                }
                 handAimForward.normalize();
                 handAimPos     = xrVec3ToVRO(wrist.pose.position);
                 handAimRot     = xrQuatToVRO(wrist.pose.orientation);
@@ -817,8 +832,7 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
 
         if (handAimValid) {
             if (hand == 0 && !skipLeft) {
-                // Left hand: only relevant when the left controller didn't
-                // provide an aim. Caller will dispatch via LeftController source.
+                // Controller ownership suppresses this side; otherwise use LeftHand.
                 leftAimValidOut    = true;
                 leftAimPosOut      = handAimPos;
                 leftAimRotOut      = handAimRot;
@@ -836,27 +850,40 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
             continue;
         }
 
-        // ── Pinch detection ───────────────────────────────────────────────────
-        // Prefer FB pinch strength (continuous 0-1) over raw tip distance.
-        bool pinched = false;
+        VROHandPinchEdge pinchEdge;
         if (aimComputed) {
-            pinched = (aimState.pinchStrengthIndex >= 0.7f);
+            pinchEdge = _handPinch[hand].update(true, aimState.pinchStrengthIndex);
         } else {
-            auto &thumbTip = jointLocs[XR_HAND_JOINT_THUMB_TIP_EXT];
-            auto &indexTip = jointLocs[XR_HAND_JOINT_INDEX_TIP_EXT];
-            if ((thumbTip.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
-                (indexTip.locationFlags  & XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
-                float dx = thumbTip.pose.position.x - indexTip.pose.position.x;
-                float dy = thumbTip.pose.position.y - indexTip.pose.position.y;
-                float dz = thumbTip.pose.position.z - indexTip.pose.position.z;
-                pinched = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.02f);
+            const auto &thumbTip = jointLocs[XR_HAND_JOINT_THUMB_TIP_EXT];
+            const auto &indexTip = jointLocs[XR_HAND_JOINT_INDEX_TIP_EXT];
+            if (!validPosition(thumbTip) || !validPosition(indexTip)) {
+                if (hand == 0) leftAimValidOut = false;
+                else rightAimValidOut = false;
+                cancelHand();
+                continue;
             }
+            const float dx = thumbTip.pose.position.x - indexTip.pose.position.x;
+            const float dy = thumbTip.pose.position.y - indexTip.pose.position.y;
+            const float dz = thumbTip.pose.position.z - indexTip.pose.position.z;
+            pinchEdge = _handPinch[hand].updateDistance(true, std::sqrt(dx*dx + dy*dy + dz*dz));
         }
-        if (pinched && !prevPinch)
-            queueButtonEvent(source, VROEventDelegate::ClickState::ClickDown);
-        else if (!pinched && prevPinch)
-            queueButtonEvent(source, VROEventDelegate::ClickState::ClickUp);
-        prevPinch = pinched;
+        switch (pinchEdge) {
+            case VROHandPinchEdge::Down:
+                queueButtonEvent(source, VROEventDelegate::ClickState::ClickDown);
+                prevPinch = true;
+                break;
+            case VROHandPinchEdge::Up:
+                queueButtonEvent(source, VROEventDelegate::ClickState::ClickUp);
+                prevPinch = false;
+                break;
+            case VROHandPinchEdge::Cancel:
+                if (hand == 0) leftAimValidOut = false;
+                else rightAimValidOut = false;
+                cancelHand();
+                continue;
+            case VROHandPinchEdge::None:
+                break;
+        }
 
         // ── Grab detection (middle tip to palm distance) ──────────────────────
         auto &palm      = jointLocs[XR_HAND_JOINT_PALM_EXT];
@@ -868,11 +895,21 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
             float dz = middleTip.pose.position.z - palm.pose.position.z;
             bool grabbed = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.06f);
 
-            if (grabbed && !prevGrab)
-                queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickDown);
-            else if (!grabbed && prevGrab)
-                queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickUp);
-            prevGrab = grabbed;
+            switch (_handGrab[hand].update(true, grabbed ? 1.0f : 0.0f)) {
+                case VROHandPinchEdge::Down:
+                    queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickDown);
+                    prevGrab = true;
+                    break;
+                case VROHandPinchEdge::Up:
+                    queueButtonEvent(gripSource, VROEventDelegate::ClickState::ClickUp);
+                    prevGrab = false;
+                    break;
+                case VROHandPinchEdge::Cancel:
+                    cancelHand();
+                    break;
+                case VROHandPinchEdge::None:
+                    break;
+            }
         }
     }
 }
@@ -891,6 +928,8 @@ void VROInputControllerOpenXR::queueButtonEvent(int source, VROEventDelegate::Cl
 
 int VROInputControllerOpenXR::rayForSource(int source) const {
     switch (source) {
+        case ViroOculus::LeftHandGrip: return ViroOculus::LeftHand;
+        case ViroOculus::RightHandGrip: return ViroOculus::RightHand;
         case ViroOculus::AButton:
         case ViroOculus::RightGrip:
         case ViroOculus::RightThumbstick:

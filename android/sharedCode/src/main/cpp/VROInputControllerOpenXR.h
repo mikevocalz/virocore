@@ -27,6 +27,7 @@
 #ifndef ANDROID_VROINPUTCONTROLLEROPENXR_H
 #define ANDROID_VROINPUTCONTROLLEROPENXR_H
 
+#include "VROHandPinchState.h"
 #include <functional>
 #include <memory>
 #include <utility>
@@ -217,6 +218,8 @@ private:
     bool             _handTrackingEnabled = true;
 
     // Per-hand gesture state (edge detection)
+    VROHandPinchState _handPinch[2];
+    VROHandPinchState _handGrab[2];
     bool _prevPinchLeft  = false;
     bool _prevPinchRight = false;
     bool _prevGrabLeft   = false;
@@ -266,8 +269,7 @@ private:
      * both right and left independently). This method only collects state.
      *
      * `skipRight` / `skipLeft` are true when the matching controller already
-     * produced a valid aim this frame — in that case we still run gesture
-     * detection (pinch, grab) but do not collect the hand's aim pose.
+     * produced a valid aim this frame — in that case hand gestures and aim are suppressed for that side.
      */
     void processHands(XrSpace baseSpace, XrTime time, const VROCamera &camera,
                       bool skipRight, bool skipLeft,
