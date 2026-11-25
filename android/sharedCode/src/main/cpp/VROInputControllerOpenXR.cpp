@@ -716,33 +716,58 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                                               VROVector3f &leftAimPosOut,
                                               VROQuaternion &leftAimRotOut,
                                               VROVector3f &leftAimForwardOut) {
+    (void)camera;
     rightAimValidOut = false;
     leftAimValidOut  = false;
+    // One read per frame; the JNI thread may flip this at any time.
+    const bool handTrackingEnabled = _handTrackingEnabled.load(std::memory_order_relaxed);
+
     for (int hand = 0; hand < 2; ++hand) {
         const int source = (hand == 0) ? ViroOculus::LeftHand : ViroOculus::RightHand;
         const int gripSource = (hand == 0) ? ViroOculus::LeftHandGrip : ViroOculus::RightHandGrip;
         bool &prevPinch = (hand == 0) ? _prevPinchLeft : _prevPinchRight;
         bool &prevGrab = (hand == 0) ? _prevGrabLeft : _prevGrabRight;
-        auto cancelHand = [&]() {
+        bool          &aimValidOut   = (hand == 0) ? leftAimValidOut   : rightAimValidOut;
+        VROVector3f   &aimPosOut     = (hand == 0) ? leftAimPosOut     : rightAimPosOut;
+        VROQuaternion &aimRotOut     = (hand == 0) ? leftAimRotOut     : rightAimRotOut;
+        VROVector3f   &aimForwardOut = (hand == 0) ? leftAimForwardOut : rightAimForwardOut;
+
+        // Drop this hand's queued edges and release its ray source. Called
+        // after the pinch/grab state machines have already emitted their edge
+        // for this frame, so it never decides whether a Cancel happens; it
+        // only forwards one.
+        auto releaseHandSource = [&]() {
             _pendingButtons.erase(std::remove_if(_pendingButtons.begin(), _pendingButtons.end(),
                 [source, gripSource](const std::pair<int, VROEventDelegate::ClickState> &edge) {
                     return edge.first == source || edge.first == gripSource;
                 }), _pendingButtons.end());
-            _handPinch[hand].update(false, 0);
-            _handGrab[hand].update(false, 0);
             const auto pinch = updateInputButton(false, false, prevPinch);
             const auto grab = updateInputButton(false, false, prevGrab);
             if (pinch == VROInputButtonEdge::Cancel || grab == VROInputButtonEdge::Cancel) {
                 VROInputControllerBase::cancelSource(source);
             }
+            aimValidOut = false;
         };
+
+        // Hard cancel, no grace: controller owns the side, tracking disabled,
+        // tracker gone, system gesture or menu press. Disarms both gestures.
+        auto cancelHandNow = [&]() {
+            _handPinch[hand].cancel();
+            _handGrab[hand].cancel();
+            releaseHandSource();
+        };
+
+        // No usable sample this frame: tracking inactive, joints invalid, or
+        // the latched metric has gone away. Cancels the press.
+        auto dropoutHand = [&]() { cancelHandNow(); };
+
         XrHandTrackerEXT tracker = (hand == 0) ? _leftHandTracker : _rightHandTracker;
         // Suppress ALL hand input, not just its aim, while this controller owns
         // the side. Holding a controller can otherwise look like a hand pinch
         // and emit a second ClickDown on the same source after trigger release.
         if ((hand == 0 ? skipLeft : skipRight) || !_pfnLocateHandJoints ||
-            !_handTrackingEnabled.load(std::memory_order_relaxed) || tracker == XR_NULL_HANDLE) {
-            cancelHand();
+            !handTrackingEnabled || tracker == XR_NULL_HANDLE) {
+            cancelHandNow();
             continue;
         }
 
@@ -766,111 +791,102 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
 
         XrResult r = _pfnLocateHandJoints(tracker, &locateInfo, &locations);
         if (!XR_SUCCEEDED(r) || !locations.isActive) {
-            cancelHand();
+            dropoutHand();
             continue;
         }
 
+        // The runtime owns the hand during a system gesture or menu press.
+        // Cancel immediately; a stroke must not continue into the system UI.
         if (_aimExtEnabled && (aimState.status &
             (XR_HAND_TRACKING_AIM_SYSTEM_GESTURE_BIT_FB | XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB))) {
-            cancelHand();
+            cancelHandNow();
             continue;
         }
 
-        // Invalid grab joints suppress the side before any pinch edge is queued.
-        const auto &palmJoint = jointLocs[XR_HAND_JOINT_PALM_EXT];
-        const auto &middleJoint = jointLocs[XR_HAND_JOINT_MIDDLE_TIP_EXT];
         auto validPosition = [](const XrHandJointLocationEXT &joint) {
             const auto &p = joint.pose.position;
             return (joint.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
                    std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
         };
+
+        // Invalid grab joints suppress the side before any pinch edge is queued.
+        const auto &palmJoint = jointLocs[XR_HAND_JOINT_PALM_EXT];
+        const auto &middleJoint = jointLocs[XR_HAND_JOINT_MIDDLE_TIP_EXT];
         if (!validPosition(palmJoint) || !validPosition(middleJoint)) {
-            cancelHand();
+            dropoutHand();
             continue;
         }
 
-        // ── Aim pose extraction (FB aim ext preferred, joint-derived fallback)
+        // ── Metric selection ──────────────────────────────────────────────────
+        // Released: prefer FB aim strength when the aim is valid, else joint
+        // distance. Pressed: keep whatever opened the press. The ray origin
+        // follows the metric (aim pose vs wrist), so it cannot jump mid-press.
+        const bool aimComputed = _aimExtEnabled &&
+                                 (aimState.status & XR_HAND_TRACKING_AIM_COMPUTED_BIT_FB) &&
+                                 (aimState.status & XR_HAND_TRACKING_AIM_VALID_BIT_FB);
+        VROHandPinchMetric metric = aimComputed ? VROHandPinchMetric::Strength
+                                                : VROHandPinchMetric::Distance;
+        if (_handPinch[hand].isPressed()) {
+            metric = _handPinch[hand].latchedMetric();
+        }
+
+        // ── Sample + aim pose for the chosen metric ───────────────────────────
         // Hit-test, processGazeEvent, laser update and onMove are NOT done
-        // here — `onProcess` consolidates them after this method returns,
-        // dispatching once per side (right + left) so each hand has
-        // independent hover/click/laser state. We only stash this hand's
-        // aim pose in the matching out-params for the caller to use.
-        bool aimComputed = _aimExtEnabled &&
-                           (aimState.status & XR_HAND_TRACKING_AIM_COMPUTED_BIT_FB) &&
-                           (aimState.status & XR_HAND_TRACKING_AIM_VALID_BIT_FB);
-        bool          handAimValid   = false;
+        // here; `onProcess` dispatches them once per side after this returns.
+        bool          sampleValid = false;
+        float         sample      = 0.0f;
         VROVector3f   handAimPos;
         VROQuaternion handAimRot;
         VROVector3f   handAimForward;
-        if (aimComputed) {
-            handAimPos     = xrVec3ToVRO(aimState.aimPose.position);
-            handAimRot     = xrQuatToVRO(aimState.aimPose.orientation);
-            handAimForward = xrAimForward(aimState.aimPose);
-            handAimValid   = true;
+        if (metric == VROHandPinchMetric::Strength) {
+            if (aimComputed) {
+                handAimPos     = xrVec3ToVRO(aimState.aimPose.position);
+                handAimRot     = xrQuatToVRO(aimState.aimPose.orientation);
+                handAimForward = xrAimForward(aimState.aimPose);
+                sample         = aimState.pinchStrengthIndex;
+                sampleValid    = true;
+            }
         } else {
-            // Fallback: derive aim from index proximal → tip direction,
-            // use wrist joint for position/orientation.
-            auto &indexTip  = jointLocs[XR_HAND_JOINT_INDEX_TIP_EXT];
-            auto &indexProx = jointLocs[XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
-            auto &wrist     = jointLocs[XR_HAND_JOINT_WRIST_EXT];
-
-            bool tipValid   = (indexTip.locationFlags  & XR_SPACE_LOCATION_POSITION_VALID_BIT);
-            bool proxValid  = (indexProx.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
-            bool wristValid = validPosition(wrist) &&
-                              (wrist.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
-
-            if (tipValid && proxValid && wristValid) {
-                VROVector3f tipPos  = xrVec3ToVRO(indexTip.pose.position);
-                VROVector3f proxPos = xrVec3ToVRO(indexProx.pose.position);
-                handAimForward = (tipPos - proxPos);
-                if (!VROHandDirectionIsValid(handAimForward.x, handAimForward.y, handAimForward.z)) {
-                    cancelHand();
-                    continue;
+            // Ray: index proximal → tip direction, wrist for position and
+            // orientation. Pinch: thumb tip to index tip distance.
+            const auto &indexTip  = jointLocs[XR_HAND_JOINT_INDEX_TIP_EXT];
+            const auto &indexProx = jointLocs[XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
+            const auto &thumbTip  = jointLocs[XR_HAND_JOINT_THUMB_TIP_EXT];
+            const auto &wrist     = jointLocs[XR_HAND_JOINT_WRIST_EXT];
+            const bool wristValid = validPosition(wrist) &&
+                                    (wrist.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+            if (validPosition(indexTip) && validPosition(indexProx) &&
+                validPosition(thumbTip) && wristValid) {
+                const VROVector3f tipPos  = xrVec3ToVRO(indexTip.pose.position);
+                const VROVector3f proxPos = xrVec3ToVRO(indexProx.pose.position);
+                VROVector3f forward = tipPos - proxPos;
+                if (VROHandDirectionIsValid(forward.x, forward.y, forward.z)) {
+                    forward.normalize();
+                    handAimForward = forward;
+                    handAimPos     = xrVec3ToVRO(wrist.pose.position);
+                    handAimRot     = xrQuatToVRO(wrist.pose.orientation);
+                    const float dx = thumbTip.pose.position.x - indexTip.pose.position.x;
+                    const float dy = thumbTip.pose.position.y - indexTip.pose.position.y;
+                    const float dz = thumbTip.pose.position.z - indexTip.pose.position.z;
+                    sample      = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    sampleValid = true;
                 }
-                handAimForward.normalize();
-                handAimPos     = xrVec3ToVRO(wrist.pose.position);
-                handAimRot     = xrQuatToVRO(wrist.pose.orientation);
-                handAimValid   = true;
             }
         }
 
-        if (handAimValid) {
-            if (hand == 0 && !skipLeft) {
-                // Controller ownership suppresses this side; otherwise use LeftHand.
-                leftAimValidOut    = true;
-                leftAimPosOut      = handAimPos;
-                leftAimRotOut      = handAimRot;
-                leftAimForwardOut  = handAimForward;
-            } else if (hand == 1 && !skipRight) {
-                rightAimValidOut   = true;
-                rightAimPosOut     = handAimPos;
-                rightAimRotOut     = handAimRot;
-                rightAimForwardOut = handAimForward;
-            }
-        }
-
-        if (!handAimValid) {
-            cancelHand();
+        if (!sampleValid) {
+            dropoutHand();
             continue;
         }
 
-        VROHandPinchEdge pinchEdge;
-        if (aimComputed) {
-            pinchEdge = _handPinch[hand].update(true, aimState.pinchStrengthIndex);
-        } else {
-            const auto &thumbTip = jointLocs[XR_HAND_JOINT_THUMB_TIP_EXT];
-            const auto &indexTip = jointLocs[XR_HAND_JOINT_INDEX_TIP_EXT];
-            if (!validPosition(thumbTip) || !validPosition(indexTip)) {
-                if (hand == 0) leftAimValidOut = false;
-                else rightAimValidOut = false;
-                cancelHand();
-                continue;
-            }
-            const float dx = thumbTip.pose.position.x - indexTip.pose.position.x;
-            const float dy = thumbTip.pose.position.y - indexTip.pose.position.y;
-            const float dz = thumbTip.pose.position.z - indexTip.pose.position.z;
-            pinchEdge = _handPinch[hand].updateDistance(true, std::sqrt(dx*dx + dy*dy + dz*dz));
-        }
+        aimValidOut   = true;
+        aimPosOut     = handAimPos;
+        aimRotOut     = handAimRot;
+        aimForwardOut = handAimForward;
+
+        const VROHandPinchEdge pinchEdge = (metric == VROHandPinchMetric::Strength)
+            ? _handPinch[hand].update(true, sample)
+            : _handPinch[hand].updateDistance(true, sample);
         switch (pinchEdge) {
             case VROHandPinchEdge::Down:
                 queueButtonEvent(source, VROEventDelegate::ClickState::ClickDown);
@@ -881,23 +897,20 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                 prevPinch = false;
                 break;
             case VROHandPinchEdge::Cancel:
-                if (hand == 0) leftAimValidOut = false;
-                else rightAimValidOut = false;
-                cancelHand();
+                // Unreachable with a valid sample; keep the source consistent anyway.
+                releaseHandSource();
                 continue;
             case VROHandPinchEdge::None:
                 break;
         }
 
         // ── Grab detection (middle tip to palm distance) ──────────────────────
-        auto &palm      = jointLocs[XR_HAND_JOINT_PALM_EXT];
-        auto &middleTip = jointLocs[XR_HAND_JOINT_MIDDLE_TIP_EXT];
-        if ((palm.locationFlags      & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
-            (middleTip.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
-            float dx = middleTip.pose.position.x - palm.pose.position.x;
-            float dy = middleTip.pose.position.y - palm.pose.position.y;
-            float dz = middleTip.pose.position.z - palm.pose.position.z;
-            bool grabbed = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.06f);
+        // Both joints were validated above.
+        {
+            const float dx = middleJoint.pose.position.x - palmJoint.pose.position.x;
+            const float dy = middleJoint.pose.position.y - palmJoint.pose.position.y;
+            const float dz = middleJoint.pose.position.z - palmJoint.pose.position.z;
+            const bool grabbed = (sqrtf(dx*dx + dy*dy + dz*dz) < 0.06f);
 
             switch (_handGrab[hand].update(true, grabbed ? 1.0f : 0.0f)) {
                 case VROHandPinchEdge::Down:
@@ -909,7 +922,7 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
                     prevGrab = false;
                     break;
                 case VROHandPinchEdge::Cancel:
-                    cancelHand();
+                    cancelHandNow();
                     break;
                 case VROHandPinchEdge::None:
                     break;

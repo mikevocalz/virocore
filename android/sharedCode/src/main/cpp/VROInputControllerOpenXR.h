@@ -273,6 +273,11 @@ private:
      *
      * `skipRight` / `skipLeft` are true when the matching controller already
      * produced a valid aim this frame — in that case hand gestures and aim are suppressed for that side.
+     *
+     * Pinch metric: FB aim strength when the aim is valid, thumb-index
+     * distance otherwise. The metric and its ray origin (aim pose vs wrist)
+     * are chosen while released and latched for the whole press; losing the
+     * latched metric mid-press cancels the press rather than switching rays.
      */
     void processHands(XrSpace baseSpace, XrTime time, const VROCamera &camera,
                       bool skipRight, bool skipLeft,
@@ -311,7 +316,11 @@ private:
                                  XrTime time, XrAction gripPoseAction, XrSpace gripSpace);
 
 public:
-    /** Enable or disable hand tracking gesture processing. Atomic store; safe from the JNI thread. */
+    /**
+     * Enable or disable hand tracking gesture processing. Atomic store; safe
+     * from the JNI thread. Disabling cancels any open pinch on the next frame
+     * and disarms it, so re-enabling needs an open hand before the next click.
+     */
     void setHandTrackingEnabled(bool enabled) {
         _handTrackingEnabled.store(enabled, std::memory_order_relaxed);
     }
