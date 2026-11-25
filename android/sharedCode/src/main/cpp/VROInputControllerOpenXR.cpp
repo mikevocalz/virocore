@@ -727,6 +727,7 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         const int gripSource = (hand == 0) ? ViroOculus::LeftHandGrip : ViroOculus::RightHandGrip;
         bool &prevPinch = (hand == 0) ? _prevPinchLeft : _prevPinchRight;
         bool &prevGrab = (hand == 0) ? _prevGrabLeft : _prevGrabRight;
+        HeldHandAim &held = _heldHandAim[hand];
         bool          &aimValidOut   = (hand == 0) ? leftAimValidOut   : rightAimValidOut;
         VROVector3f   &aimPosOut     = (hand == 0) ? leftAimPosOut     : rightAimPosOut;
         VROQuaternion &aimRotOut     = (hand == 0) ? leftAimRotOut     : rightAimRotOut;
@@ -746,6 +747,7 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
             if (pinch == VROInputButtonEdge::Cancel || grab == VROInputButtonEdge::Cancel) {
                 VROInputControllerBase::cancelSource(source);
             }
+            held.valid = false;
             aimValidOut = false;
         };
 
@@ -757,9 +759,27 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
             releaseHandSource();
         };
 
-        // No usable sample this frame: tracking inactive, joints invalid, or
-        // the latched metric has gone away. Cancels the press.
-        auto dropoutHand = [&]() { cancelHandNow(); };
+        // Soft dropout: no usable sample this frame. The pinch state decides
+        // whether the press survives (grace window) or cancels. While it
+        // survives, the ray holds the last valid pose so it does not jump.
+        // Grab has no grace window (out of scope here); a held grab keeps the
+        // pre-existing behaviour and cancels the whole hand at once.
+        auto dropoutHand = [&]() {
+            if (_handGrab[hand].isPressed()) {
+                cancelHandNow();
+                return;
+            }
+            _handGrab[hand].cancel();
+            const VROHandPinchEdge edge = _handPinch[hand].invalidSample();
+            if (edge == VROHandPinchEdge::None && _handPinch[hand].isPressed() && held.valid) {
+                aimValidOut   = true;
+                aimPosOut     = held.pos;
+                aimRotOut     = held.rot;
+                aimForwardOut = held.forward;
+                return;
+            }
+            releaseHandSource();
+        };
 
         XrHandTrackerEXT tracker = (hand == 0) ? _leftHandTracker : _rightHandTracker;
         // Suppress ALL hand input, not just its aim, while this controller owns
@@ -879,6 +899,10 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
             continue;
         }
 
+        held.valid    = true;
+        held.pos      = handAimPos;
+        held.rot      = handAimRot;
+        held.forward  = handAimForward;
         aimValidOut   = true;
         aimPosOut     = handAimPos;
         aimRotOut     = handAimRot;

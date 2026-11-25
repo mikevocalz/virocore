@@ -228,6 +228,17 @@ private:
     bool _prevGrabLeft   = false;
     bool _prevGrabRight  = false;
 
+    // Last valid aim pose per hand (0 = left, 1 = right). While a pinch is
+    // riding out VROHandPinchState::kInvalidSampleGraceFrames of bad samples
+    // the ray stays here instead of jumping to the other metric's origin.
+    struct HeldHandAim {
+        bool          valid = false;
+        VROVector3f   pos;
+        VROQuaternion rot;
+        VROVector3f   forward;
+    };
+    HeldHandAim _heldHandAim[2];
+
     // ── Pose hysteresis (B18) ─────────────────────────────────────────────────
     // OpenXR pose probes (`xrLocateSpace`, FB hand-aim) routinely report
     // invalid for one or two frames during normal use (occlusion, IMU
@@ -277,7 +288,8 @@ private:
      * Pinch metric: FB aim strength when the aim is valid, thumb-index
      * distance otherwise. The metric and its ray origin (aim pose vs wrist)
      * are chosen while released and latched for the whole press; losing the
-     * latched metric mid-press cancels the press rather than switching rays.
+     * latched metric mid-press is a dropout that holds the last pose for the
+     * grace window, then cancels. System gesture / menu cancel at once.
      */
     void processHands(XrSpace baseSpace, XrTime time, const VROCamera &camera,
                       bool skipRight, bool skipLeft,

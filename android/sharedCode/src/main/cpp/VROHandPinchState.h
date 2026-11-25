@@ -10,6 +10,19 @@ enum class VROHandPinchMetric { None, Strength, Distance };
 
 class VROHandPinchState {
 public:
+    // Invalid samples (tracking dropout, aim lost, non-finite values) a press
+    // survives before it cancels. The caller keeps the last valid pose for the
+    // same number of frames so the ray does not jump.
+    //
+    // Why 3: a cancelled press lifts the pen, so a one-frame dropout splits a
+    // stroke in two. Holding longer than a few frames keeps ink flowing after
+    // the hand has already opened, which draws a tail the user never made.
+    // At 72-90 Hz, 3 frames is 33-42 ms: enough to ride out the single bad
+    // probes seen on Quest, short enough that stuck ink stays sub-perceptual.
+    // Lower it toward 1 if stuck ink is reported; raise it if strokes split.
+    // Candidate value; not device qualified.
+    static constexpr int kInvalidSampleGraceFrames = 3;
+
     // Joint-distance metric (thumb tip to index tip). Candidate 20 mm press /
     // 25 mm release; not device qualified.
     VROHandPinchEdge updateDistance(bool active, float metres) {
@@ -36,9 +49,16 @@ public:
         return wasPressed ? VROHandPinchEdge::Cancel : VROHandPinchEdge::None;
     }
 
+    // A frame with no usable reading at all (tracking lost, joints invalid).
+    // Counts against the grace window while pressed; disarms while released.
+    VROHandPinchEdge invalidSample() {
+        return updateThresholds(metric, /*valid=*/false, /*press=*/false, /*release=*/false);
+    }
+
     bool isPressed() const { return pressed; }
     bool isArmed() const { return armed; }
     VROHandPinchMetric latchedMetric() const { return metric; }
+    int invalidSampleCount() const { return invalidSamples; }
 
 private:
     VROHandPinchEdge updateThresholds(VROHandPinchMetric sampleMetric, bool valid,
@@ -48,9 +68,13 @@ private:
             // other metric is a dropout, never a reading.
             if (sampleMetric != metric) valid = false;
             if (!valid) {
-                resetToDisarmed();
-                return VROHandPinchEdge::Cancel;
+                if (++invalidSamples >= kInvalidSampleGraceFrames) {
+                    resetToDisarmed();
+                    return VROHandPinchEdge::Cancel;
+                }
+                return VROHandPinchEdge::None;
             }
+            invalidSamples = 0;
             if (release) {
                 pressed = false;
                 metric = VROHandPinchMetric::None;
@@ -76,6 +100,7 @@ private:
         if (press) {
             pressed = true;
             metric = sampleMetric;
+            invalidSamples = 0;
             return VROHandPinchEdge::Down;
         }
         return VROHandPinchEdge::None;
@@ -84,6 +109,7 @@ private:
     void resetToDisarmed() {
         pressed = false;
         armed = false;
+        invalidSamples = 0;
         metric = VROHandPinchMetric::None;
         lastMetric = VROHandPinchMetric::None;
     }
@@ -92,6 +118,7 @@ private:
     // Disarmed at start. A hand that is already pinching when tracking begins
     // (or resumes, or is re-enabled) must open before it can click.
     bool armed = false;
+    int invalidSamples = 0;
     VROHandPinchMetric metric = VROHandPinchMetric::None;      // latched by the open press
     VROHandPinchMetric lastMetric = VROHandPinchMetric::None;  // last metric sampled while released
 };
