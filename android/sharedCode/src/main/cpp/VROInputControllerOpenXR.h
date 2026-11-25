@@ -28,6 +28,7 @@
 #define ANDROID_VROINPUTCONTROLLEROPENXR_H
 
 #include "VROHandPinchState.h"
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -215,7 +216,9 @@ private:
     XrHandTrackerEXT _leftHandTracker  = XR_NULL_HANDLE;
     XrHandTrackerEXT _rightHandTracker = XR_NULL_HANDLE;
     bool             _aimExtEnabled    = false;
-    bool             _handTrackingEnabled = true;
+    // Written from the JNI thread (setHandTrackingEnabled), read once per
+    // frame on the render thread in processHands.
+    std::atomic<bool> _handTrackingEnabled{true};
 
     // Per-hand gesture state (edge detection)
     VROHandPinchState _handPinch[2];
@@ -224,6 +227,17 @@ private:
     bool _prevPinchRight = false;
     bool _prevGrabLeft   = false;
     bool _prevGrabRight  = false;
+
+    // Last valid aim pose per hand (0 = left, 1 = right). While a pinch is
+    // riding out VROHandPinchState::kInvalidSampleGraceFrames of bad samples
+    // the ray stays here instead of jumping to the other metric's origin.
+    struct HeldHandAim {
+        bool          valid = false;
+        VROVector3f   pos;
+        VROQuaternion rot;
+        VROVector3f   forward;
+    };
+    HeldHandAim _heldHandAim[2];
 
     // ── Pose hysteresis (B18) ─────────────────────────────────────────────────
     // OpenXR pose probes (`xrLocateSpace`, FB hand-aim) routinely report
@@ -270,6 +284,12 @@ private:
      *
      * `skipRight` / `skipLeft` are true when the matching controller already
      * produced a valid aim this frame — in that case hand gestures and aim are suppressed for that side.
+     *
+     * Pinch metric: FB aim strength when the aim is valid, thumb-index
+     * distance otherwise. The metric and its ray origin (aim pose vs wrist)
+     * are chosen while released and latched for the whole press; losing the
+     * latched metric mid-press is a dropout that holds the last pose for the
+     * grace window, then cancels. System gesture / menu cancel at once.
      */
     void processHands(XrSpace baseSpace, XrTime time, const VROCamera &camera,
                       bool skipRight, bool skipLeft,
@@ -308,8 +328,14 @@ private:
                                  XrTime time, XrAction gripPoseAction, XrSpace gripSpace);
 
 public:
-    /** Enable or disable hand tracking gesture processing. Thread-safe (atomic store). */
-    void setHandTrackingEnabled(bool enabled) { _handTrackingEnabled = enabled; }
+    /**
+     * Enable or disable hand tracking gesture processing. Atomic store; safe
+     * from the JNI thread. Disabling cancels any open pinch on the next frame
+     * and disarms it, so re-enabling needs an open hand before the next click.
+     */
+    void setHandTrackingEnabled(bool enabled) {
+        _handTrackingEnabled.store(enabled, std::memory_order_relaxed);
+    }
 };
 
 #endif  // ANDROID_VROINPUTCONTROLLEROPENXR_H
