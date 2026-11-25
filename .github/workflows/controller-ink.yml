@@ -13,6 +13,8 @@ jobs:
         run: |
           c++ -std=c++14 -Wall -Wextra -Werror tests/drag_sample_policy_test.cpp -o /tmp/drag-sample-test
           /tmp/drag-sample-test
+      - name: Hand pinch state and OpenXR binding host tests
+        run: tools/run-host-tests.sh
   renderer-release:
     runs-on: ubuntu-latest
     timeout-minutes: 45
