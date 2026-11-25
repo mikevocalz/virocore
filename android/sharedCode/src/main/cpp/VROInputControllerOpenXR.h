@@ -28,6 +28,7 @@
 #define ANDROID_VROINPUTCONTROLLEROPENXR_H
 
 #include "VROHandPinchState.h"
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -215,7 +216,9 @@ private:
     XrHandTrackerEXT _leftHandTracker  = XR_NULL_HANDLE;
     XrHandTrackerEXT _rightHandTracker = XR_NULL_HANDLE;
     bool             _aimExtEnabled    = false;
-    bool             _handTrackingEnabled = true;
+    // Written from the JNI thread (setHandTrackingEnabled), read once per
+    // frame on the render thread in processHands.
+    std::atomic<bool> _handTrackingEnabled{true};
 
     // Per-hand gesture state (edge detection)
     VROHandPinchState _handPinch[2];
@@ -308,8 +311,10 @@ private:
                                  XrTime time, XrAction gripPoseAction, XrSpace gripSpace);
 
 public:
-    /** Enable or disable hand tracking gesture processing. Thread-safe (atomic store). */
-    void setHandTrackingEnabled(bool enabled) { _handTrackingEnabled = enabled; }
+    /** Enable or disable hand tracking gesture processing. Atomic store; safe from the JNI thread. */
+    void setHandTrackingEnabled(bool enabled) {
+        _handTrackingEnabled.store(enabled, std::memory_order_relaxed);
+    }
 };
 
 #endif  // ANDROID_VROINPUTCONTROLLEROPENXR_H

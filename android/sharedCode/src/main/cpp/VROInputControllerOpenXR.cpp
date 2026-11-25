@@ -678,8 +678,12 @@ bool VROInputControllerOpenXR::initHandTracking(XrInstance instance, XrSession s
     r = _pfnCreateHandTracker(session, &info, &_rightHandTracker);
     if (XR_FAILED(r)) {
         ALOGE("xrCreateHandTrackerEXT (right) failed: %d", r);
-        _pfnDestroyHandTracker(_leftHandTracker);
-        _leftHandTracker = XR_NULL_HANDLE;
+        // A failed create leaves the out-handle unspecified; never destroy it.
+        // Tear the left tracker down through the one owner so both handles end
+        // null and processHands sees a consistent "no trackers" state.
+        _rightHandTracker = XR_NULL_HANDLE;
+        destroyHandTrackers();
+        _aimExtEnabled = false;
         return false;
     }
 
@@ -737,7 +741,7 @@ void VROInputControllerOpenXR::processHands(XrSpace baseSpace, XrTime time,
         // the side. Holding a controller can otherwise look like a hand pinch
         // and emit a second ClickDown on the same source after trigger release.
         if ((hand == 0 ? skipLeft : skipRight) || !_pfnLocateHandJoints ||
-            !_handTrackingEnabled || tracker == XR_NULL_HANDLE) {
+            !_handTrackingEnabled.load(std::memory_order_relaxed) || tracker == XR_NULL_HANDLE) {
             cancelHand();
             continue;
         }
