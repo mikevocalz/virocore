@@ -39,7 +39,9 @@ private:
     }
 private:
     bool pressed = false;
-    bool armed = true;
+    // Disarmed at start. A hand that is already pinching when tracking begins
+    // (or resumes, or is re-enabled) must open before it can click.
+    bool armed = false;
 };
 
 inline bool VROHandDirectionIsValid(float x, float y, float z) {
