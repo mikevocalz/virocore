@@ -157,6 +157,12 @@ public:
     // a resting or slowly-drifting ray cannot flood the JS bridge at refresh
     // rate (90 Hz on OpenXR).
     std::map<int, double> _canvasHoverDispatchMillis;
+    /*
+     Ends this source's press without completing a click: its node hears ClickUp
+     and never Clicked, and a drag it started ends. For a touch that turns into a
+     two-finger gesture after the first finger already pressed.
+     */
+    void cancelButtonEvent(int source);
     void onTouchpadEvent(int source, VROEventDelegate::TouchState touchAction, float lastKnownX, float lastKnownY);
     
     /*
@@ -189,6 +195,14 @@ public:
     bool getSourceRay(int source, VROVector3f *origin, VROVector3f *forward) const;
 
 protected:
+
+    /*
+     Set by a touch controller around a ClickUp that ends a tap (a short press
+     that barely moved): a release that no longer resolves to the pressed node,
+     because the node moved away, still completes the click on it, with the
+     press's hit position.
+     */
+    bool _releaseCompletesPress = false;
     
     virtual std::shared_ptr<VROInputPresenter> createPresenter(std::shared_ptr<VRODriver> driver) {
         perror("Error: Derived class should create a presenter for BaseInputController to consume!");
@@ -439,6 +453,9 @@ private:
      no node takes clicks, which the last clicked node cannot record.
      */
     std::set<int> _pressedSources;
+
+    // Hit position of each source's ClickDown, for a click completed by a tap.
+    std::map<int, std::vector<float>> _pressPositionsBySource;
 
     /*
      Last known that was successfully hovered upon.

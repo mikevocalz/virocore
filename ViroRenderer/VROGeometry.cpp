@@ -132,7 +132,7 @@ void VROGeometry::updateSortKeys(VRONode *node, uint32_t hierarchyId, uint32_t h
           blends needs the sorted queue; one with no blending is resolved by
           the depth buffer like any opaque surface.
         */
-        key.transparent = (node->getOpacity() < (1 - kEpsilon) ||
+        key.transparent = (opacity < (1 - kEpsilon) ||
                            material->getTransparency() < (1 - kEpsilon) ||
                            (material->getBlendMode() != VROBlendMode::None &&
                             material->hasDiffuseAlpha()));

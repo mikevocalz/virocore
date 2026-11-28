@@ -10,8 +10,11 @@
 
 #include "VROSceneWeb.h"
 
+#include <algorithm>
 #include <emscripten/bind.h>
 #include <emscripten/em_js.h>
+#include <algorithm>
+#include <cmath>
 
 #include "VROLog.h"
 #include "VRORenderer.h"
@@ -26,6 +29,9 @@
 
 #include "VROSceneController.h"
 #include "VROScene.h"
+#include "VROImageUtil.h"
+#include "VROARPointCloud.h"
+#include "VROFixedParticleEmitter.h"
 #include "VROPortal.h"
 #include "VROPortalFrame.h"
 #include "VRONode.h"
@@ -36,6 +42,7 @@
 #include "VROSurface.h"
 #include "VROText.h"
 #include "VROTypeface.h"
+#include "VROTypefaceWasm.h"
 #include "VROPolyline.h"
 #include "VROPolygon.h"
 #include "VROGeometry.h"
@@ -67,6 +74,7 @@
 #include "VROQuaternion.h"
 #include "VROMorpher.h"
 #include "VROStringUtil.h"
+#include "VROPostProcessEffectFactory.h"
 #include <set>
 
 #include <unordered_map>
@@ -143,6 +151,9 @@ VROSceneWeb::VROSceneWeb(std::string canvasSelector, int width, int height) :
     attribs.depth = 1;
     attribs.stencil = 1;
     attribs.antialias = 1;
+    // Opaque, as a native view is: a see-through canvas showed the page behind
+    // empty space.
+    attribs.alpha = 0;
 
     _context = emscripten_webgl_create_context(_canvasSelector.c_str(), &attribs);
     if (_context <= 0) {
@@ -380,6 +391,23 @@ void VROSceneWeb::drawFrameAR(VROViewport viewport) {
             material->setWritesToDepthBuffer(false);
             material->setNeedsToneMapping(false);
         }
+        // Follow the viewport (the URL bar and rotation both resize it) and crop
+        // the image to fill it, matching the projection; see getView.
+        VROARCameraWeb::View view = _arSession->getWebCamera()->getView(viewport);
+        float bg[6] = {(float) viewport.getX(), (float) viewport.getY(),
+                       (float) viewport.getWidth(), (float) viewport.getHeight(),
+                       view.trimU, view.trimV};
+        if (!std::equal(bg, bg + 6, _cameraBackgroundLayout)) {
+            std::copy(bg, bg + 6, _cameraBackgroundLayout);
+            _cameraBackground->setX(bg[0] + bg[2] / 2.0f);
+            _cameraBackground->setY(bg[1] + bg[3] / 2.0f);
+            _cameraBackground->setWidth(bg[2]);
+            _cameraBackground->setHeight(bg[3]);
+            _cameraBackground->setU0(view.trimU);
+            _cameraBackground->setU1(1 - view.trimU);
+            _cameraBackground->setV0(view.trimV);
+            _cameraBackground->setV1(1 - view.trimV);
+        }
         _cameraBackground->getMaterials()[0]->getDiffuse().setTexture(cameraTexture);
         // A byte-uploaded (viroCreateTextureRGBA) feed is a fresh VROTexture each
         // frame; force its GPU upload now so the background samples real pixels
@@ -416,11 +444,50 @@ void VROSceneWeb::drawFrameAR(VROViewport viewport) {
 
     _inputController->setRenderState(_renderer->getLookAtMatrix(), projection, _width, _height);
 
+    updatePointCloud(frame);
+
     _renderer->prepareFrame(_frame, viewport, fov, rotation, projection, _driver);
     glViewport(viewport.getX(), viewport.getY(), viewport.getWidth(), viewport.getHeight());
     _renderer->renderEye(VROEyeType::Monocular, _renderer->getLookAtMatrix(), projection, viewport, _driver);
     _renderer->renderHUD(VROEyeType::Monocular, VROMatrix4f::identity(), projection, _driver);
     _renderer->endFrame(_driver);
+}
+
+void VROSceneWeb::setPointCloudDisplay(bool display, std::shared_ptr<VROTexture> surfaceTexture,
+                                       VROVector3f scale, int maxPoints) {
+    _displayPointCloud = display;
+    if (!display) {
+        if (_pointCloudNode) _pointCloudNode->removeFromParentNode();
+        if (_pointCloudEmitter) _pointCloudEmitter->forceClearParticles();
+        return;
+    }
+    if (!_pointCloudEmitter) {
+        _pointCloudEmitter = std::make_shared<VROFixedParticleEmitter>(_driver);
+        _pointCloudNode = std::make_shared<VRONode>();
+        _pointCloudNode->setName("PointCloud");
+        _pointCloudNode->setParticleEmitter(_pointCloudEmitter);
+    }
+    _pointCloudEmitter->setMaxParticles(maxPoints > 0 ? maxPoints : 500);
+    _pointCloudEmitter->setParticleScale(scale);
+
+    // The same surface VROARScene gives its emitter: a quad, additive, no bloom.
+    std::shared_ptr<VROSurface> surface = VROSurface::createSurface(1, 1);
+    std::shared_ptr<VROMaterial> material = surface->getMaterials()[0];
+    material->getDiffuse().setTexture(surfaceTexture ? surfaceTexture : getPointCloudTexture());
+    material->setBloomThreshold(-1);
+    material->setBlendMode(VROBlendMode::Add);
+    _pointCloudEmitter->setParticleSurface(surface);
+}
+
+void VROSceneWeb::updatePointCloud(const std::unique_ptr<VROARFrame> &frame) {
+    if (!_displayPointCloud || !_pointCloudEmitter || !frame || !_scene) return;
+    // The bridge swaps the root when it navigates; follow it.
+    std::shared_ptr<VROPortal> root = _scene->getRootNode();
+    if (root && _pointCloudNode->getParentNode() != root) {
+        _pointCloudNode->removeFromParentNode();
+        root->addChildNode(_pointCloudNode);
+    }
+    _pointCloudEmitter->setParticleTransforms(frame->getPointCloud()->getPoints());
 }
 
 void VROSceneWeb::setSize(int width, int height) {
@@ -439,7 +506,9 @@ void VROSceneWeb::onPinch(float scaleFactor, int state) {
         state > (int) VROEventDelegate::PinchState::PinchEnd) {
         return;
     }
-    _inputController->onPinch(
+    // Qualified: VROInputControllerWasm::onPinch(state, scale, x, y) hides the
+    // base overload.
+    _inputController->VROInputControllerBase::onPinch(
         ViroCardBoard::InputSource::Controller,
         scaleFactor,
         static_cast<VROEventDelegate::PinchState>(state));
@@ -458,6 +527,29 @@ void VROSceneWeb::setReticleVisible(bool visible) {
     std::shared_ptr<VROReticle> reticle = presenter->getReticle();
     if (reticle) {
         reticle->setEnabled(visible);
+    }
+}
+
+void VROSceneWeb::onPointerHover(bool active, float x, float y) {
+    if (!_inputController) {
+        return;
+    }
+    if (active) {
+        _inputController->setPointerHover(x, y);
+    } else {
+        _inputController->clearPointerHover();
+    }
+}
+
+void VROSceneWeb::onPinch(int state, float scale, float x, float y) {
+    if (_inputController) {
+        _inputController->onPinch(state, scale, x, y);
+    }
+}
+
+void VROSceneWeb::onRotate(int state, float radians, float x, float y) {
+    if (_inputController) {
+        _inputController->onRotate(state, radians, x, y);
     }
 }
 
@@ -536,15 +628,55 @@ static void viroSetToneMappingEnabled(bool enabled) {
     scene->setToneMappingEnabled(enabled);
 }
 
+// ViroScene's postProcessEffects, in order. They run only on the HDR path, as on
+// native. Returns how many names the engine knows (unknown ones are skipped), or
+// -1 with no scene.
+static int viroSetPostProcessEffects(emscripten::val names) {
+    if (!sScene) return -1;
+    std::shared_ptr<VROScene> scene = sScene->getScene();
+    if (!scene) return -1;
+    std::vector<std::string> effects = emscripten::vecFromJSArray<std::string>(names);
+    scene->setPostProcessingEffects(effects);
+    int known = 0;
+    for (const std::string &effect : effects) {
+        if (VROPostProcessEffectFactory::getEffectForString(effect) != VROPostProcessEffect::None) {
+            known++;
+        }
+    }
+    return known;
+}
+
 static void setViroSceneSize(int width, int height) {
     if (sScene) {
         sScene->setSize(width, height);
     }
 }
 
+// Stops drawing for good: a disposed renderer, or one whose WebGL context was
+// lost, would otherwise keep running beside the renderer that replaces it.
+static void viroStopMainLoop() {
+    emscripten_cancel_main_loop();
+}
+
 static void viroOnTouch(int action, float x, float y) {
     if (sScene) {
         sScene->onTouch(action, x, y);
+    }
+}
+// A mouse with no button held, or (active false) leaving the canvas.
+static void viroOnPointerHover(bool active, float x, float y) {
+    if (sScene) {
+        sScene->onPointerHover(active, x, y);
+    }
+}
+static void viroOnPinch(int state, float scale, float x, float y) {
+    if (sScene) {
+        sScene->onPinch(state, scale, x, y);
+    }
+}
+static void viroOnRotate(int state, float radians, float x, float y) {
+    if (sScene) {
+        sScene->onRotate(state, radians, x, y);
     }
 }
 
@@ -588,6 +720,16 @@ static std::unordered_map<int, std::shared_ptr<VROMaterial>> sMaterials;
 static std::unordered_map<int,
     std::unordered_map<VROGeometry *, std::vector<std::shared_ptr<VROMaterial>>>>
     sShaderOverrideBaselines;
+// The material each node was last given as a shader override.
+static std::unordered_map<int, int> sShaderOverrideSources;
+
+// Per override material handle, the per-mesh copies applyShaderOverrideToNode
+// made from it. A copy takes the override's uniform values once, when it is
+// made, so the uniform setters forward later updates to each live copy. Weak,
+// because a re-applied override replaces its copies and a destroyed node drops
+// them.
+static std::unordered_map<int, std::vector<std::weak_ptr<VROMaterial>>>
+    sShaderOverrideCopies;
 
 // Defined with the physics section below; viroDestroyNode needs it before that.
 static void viroClearPhysicsBody(int nodeHandle);
@@ -606,12 +748,15 @@ static std::unordered_map<int, std::shared_ptr<WebAnimState>> sNodeAnimations;
 #pragma mark - Event marshaling (WASM -> JS)
 
 // Single JS callback the bridge registers to receive node events. Signature:
-//   cb(nodeHandle, eventAction, source, intArg, x, y, z)
-// eventAction matches VROEventDelegate::EventAction:
-//   1=Hover, 2=Click, 7=Scroll, 8=Drag, 10=Pinch.
-// intArg carries ClickState / hover bool / PinchState. For scroll, x/y are the
-// deltas. For drag, x/y/z are the
-// new world position; for pinch, x carries the scale factor.
+//   cb(nodeHandle, eventAction, source, intArg, x, y, z, posCount)
+// posCount is how many of x, y, z the event carried: a click on the background
+// has no position, which the zeros alone cannot say. nodeHandle 0 is the
+// ViroController delegate (node handles start at 1).
+// eventAction matches VROEventDelegate::EventAction: 1=Hover, 2=Click,
+// 7=Scroll, 8=Drag, 10=Pinch, plus Rotate and Fuse. intArg carries ClickState
+// for clicks (1=down,2=up,3=clicked), isHovering (0/1), or the gesture state.
+// For scroll, x/y are the deltas; for drag, x/y/z are the new world position;
+// for pinch and rotate, x carries the scale or the radians.
 static emscripten::val sEventCallback = emscripten::val::undefined();
 
 // Per-node event delegate that forwards to sEventCallback tagged with the node's
@@ -638,10 +783,22 @@ public:
         emit(EventAction::OnDrag, source, 0,
              { newPosition.x, newPosition.y, newPosition.z });
     }
+    // intArg is the gesture state; x carries the scale, or the radians.
     virtual void onPinch(int source, std::shared_ptr<VRONode> node,
                          float scaleFactor, PinchState pinchState) {
-        emit(EventAction::OnPinch, source, (int) pinchState,
-             { scaleFactor, 0.0f, 0.0f });
+        emit(EventAction::OnPinch, source, (int) pinchState, {scaleFactor});
+    }
+    virtual void onRotate(int source, std::shared_ptr<VRONode> node,
+                          float rotationRadians, RotateState rotateState) {
+        emit(EventAction::OnRotate, source, (int) rotateState, {rotationRadians});
+    }
+    // Only a completed fuse, as the native bridges report it; the countdown
+    // ratios above 0 are for a reticle, which the web does not draw.
+    virtual void onFuse(int source, std::shared_ptr<VRONode> node, float timeToFuseRatio) {
+        if (timeToFuseRatio > 0.0f) {
+            return;
+        }
+        emit(EventAction::OnFuse, source, 0, {});
     }
 
 private:
@@ -652,7 +809,7 @@ private:
         float x = pos.size() > 0 ? pos[0] : 0.0f;
         float y = pos.size() > 1 ? pos[1] : 0.0f;
         float z = pos.size() > 2 ? pos[2] : 0.0f;
-        sEventCallback(_handle, action, source, intArg, x, y, z);
+        sEventCallback(_handle, action, source, intArg, x, y, z, (int) pos.size());
     }
     int _handle;
 };
@@ -711,6 +868,30 @@ static void viroSetNodeOpacity(int node, float opacity) {
 }
 static void viroSetNodeVisible(int node, bool visible) {
     if (auto n = getNode(node)) n->setHidden(!visible);
+}
+// A node that is not selectable is skipped by hit tests, along with its whole subtree.
+static void viroSetNodeSelectable(int node, bool selectable) {
+    if (auto n = getNode(node)) n->setSelectable(selectable);
+}
+// Pivots are node-local offsets, built the way VRTNode.mm does: a translation
+// matrix the transform wraps rotation (or scale) in. (0,0,0) is the identity.
+static void viroSetNodeRotationPivot(int node, float x, float y, float z) {
+    if (auto n = getNode(node)) {
+        VROMatrix4f pivot;
+        pivot.translate(x, y, z);
+        n->setRotationPivot(pivot);
+    }
+}
+static void viroSetNodeScalePivot(int node, float x, float y, float z) {
+    if (auto n = getNode(node)) {
+        VROMatrix4f pivot;
+        pivot.translate(x, y, z);
+        n->setScalePivot(pivot);
+    }
+}
+// Hit tests the node's triangles instead of its bounding box, for the whole subtree.
+static void viroSetNodeHighAccuracyEvents(int node, bool enabled) {
+    if (auto n = getNode(node)) n->setHighAccuracyEvents(enabled);
 }
 static void viroSetNodeGeometry(int node, int geometry) {
     auto n = getNode(node);
@@ -791,6 +972,34 @@ static emscripten::val viroGetNodeWorldPosition(int nodeHandle) {
     return out;
 }
 
+// What a ref's getTransformAsync reads on native: last frame's world transform,
+// decomposed as VRTNodeModule does. [px,py,pz, rx,ry,rz (degrees), sx,sy,sz].
+static emscripten::val viroGetNodeWorldTransform(int nodeHandle) {
+    emscripten::val out = emscripten::val::array();
+    auto node = getNode(nodeHandle);
+    if (!node) return out;
+    VROMatrix4f transform = node->getLastWorldTransform();
+    VROVector3f position = transform.extractTranslation();
+    VROVector3f scale = transform.extractScale();
+    VROVector3f rotation = transform.extractRotation(scale).toEuler();
+    float values[9] = { position.x, position.y, position.z,
+                        toDegrees(rotation.x), toDegrees(rotation.y), toDegrees(rotation.z),
+                        scale.x, scale.y, scale.z };
+    for (int i = 0; i < 9; i++) out.set(i, values[i]);
+    return out;
+}
+// The node's and its subtree's box, as getBoundingBoxAsync reads it on native.
+// [minX, maxX, minY, maxY, minZ, maxZ].
+static emscripten::val viroGetNodeBoundingBox(int nodeHandle) {
+    emscripten::val out = emscripten::val::array();
+    auto node = getNode(nodeHandle);
+    if (!node) return out;
+    VROBoundingBox box = node->getUmbrellaBoundingBox();
+    float values[6] = { box.getMinX(), box.getMaxX(), box.getMinY(), box.getMaxY(), box.getMinZ(), box.getMaxZ() };
+    for (int i = 0; i < 6; i++) out.set(i, values[i]);
+    return out;
+}
+
 // Morph targets. A glTF or FBX model carries its blend shapes in the geometry
 // virocore already loaded; nothing on web could name one or move it, so a face
 // rig that animates on a phone sat at its rest pose in a browser.
@@ -843,11 +1052,14 @@ static bool viroSetMorphMode(int nodeHandle, std::string mode) {
     return ok;
 }
 
+static void viroErasePortalDelegate(int node);
 static void viroDestroyNode(int node) {
+    viroErasePortalDelegate(node);
     sNodes.erase(node);
     sNodeDelegates.erase(node);
     sNodeAnimations.erase(node);
     sShaderOverrideBaselines.erase(node);
+    sShaderOverrideSources.erase(node);
     sBillboards.erase(node);
     viroClearPhysicsBody(node);
 }
@@ -858,21 +1070,43 @@ static void viroSetEventCallback(emscripten::val callback) {
     sEventCallback = callback;
 }
 
+static std::shared_ptr<VROWebEventDelegate> nodeDelegate(int node) {
+    auto n = getNode(node);
+    if (!n) return nullptr;
+    auto it = sNodeDelegates.find(node);
+    if (it != sNodeDelegates.end()) return it->second;
+    auto delegate = std::make_shared<VROWebEventDelegate>(node);
+    sNodeDelegates[node] = delegate;
+    n->setEventDelegate(delegate);
+    return delegate;
+}
+
 // eventAction: VROEventDelegate::EventAction (1=Hover, 2=Click, ...).
 static void viroSetNodeEventEnabled(int node, int eventAction, bool enabled) {
-    auto n = getNode(node);
-    if (!n) return;
-
-    auto it = sNodeDelegates.find(node);
-    std::shared_ptr<VROWebEventDelegate> delegate;
-    if (it == sNodeDelegates.end()) {
-        delegate = std::make_shared<VROWebEventDelegate>(node);
-        sNodeDelegates[node] = delegate;
-        n->setEventDelegate(delegate);
-    } else {
-        delegate = it->second;
+    if (auto delegate = nodeDelegate(node)) {
+        delegate->setEnabledEvent(static_cast<VROEventDelegate::EventAction>(eventAction), enabled);
     }
-    delegate->setEnabledEvent(static_cast<VROEventDelegate::EventAction>(eventAction), enabled);
+}
+static void viroSetNodeTimeToFuse(int node, float millis) {
+    if (auto delegate = nodeDelegate(node)) delegate->setTimeToFuse(millis);
+}
+
+// ViroController: a delegate on the input controller's presenter, which the
+// controller hands every click, pinch, rotate and fuse, background hits included.
+// The presenter holds it weakly, so this keeps it alive; setting it again on each
+// call covers a renderer rebuilt after a lost context.
+static std::shared_ptr<VROWebEventDelegate> sControllerDelegate;
+static void viroSetControllerEventEnabled(int eventAction, bool enabled) {
+    if (!sScene) return;
+    std::shared_ptr<VROInputControllerWasm> input = sScene->getInputController();
+    if (!input) return;
+    std::shared_ptr<VROInputPresenter> presenter = input->getPresenter();
+    if (!presenter) return;
+    if (!sControllerDelegate) {
+        sControllerDelegate = std::make_shared<VROWebEventDelegate>(0);
+    }
+    presenter->setEventDelegate(sControllerDelegate);
+    sControllerDelegate->setEnabledEvent(static_cast<VROEventDelegate::EventAction>(eventAction), enabled);
 }
 
 // Configure the native Viro drag solver for a web node.
@@ -907,6 +1141,13 @@ static int viroCreateBox(float width, float height, float length) {
 static int viroCreateSphere(float radius) {
     int h = sNextHandle++;
     sGeometries[h] = VROSphere::createSphere(radius, 20, 20, true);
+    return h;
+}
+// viroCreateSphere keeps its signature for older callers; this takes the segment
+// counts and facing that ViroSphere's props set on native.
+static int viroCreateSphereEx(float radius, int widthSegments, int heightSegments, bool facesOutward) {
+    int h = sNextHandle++;
+    sGeometries[h] = VROSphere::createSphere(radius, widthSegments, heightSegments, facesOutward);
     return h;
 }
 // B6. A surface with explicit UVs, so a caller can crop the texture into the
@@ -951,13 +1192,16 @@ static std::wstring utf8ToWString(const std::string &s) {
     return out;
 }
 
-// Create a text geometry. Alignment/linebreak/clip are int-coded to match
-// VROText's enums. color is RGBA in [0,1]. Uses the preloaded system font.
+// Alignment/linebreak/clip/stroke are int-coded to match VROText's enums, and
+// colors are RGBA in [0,1].
 // hAlign: 0 Left, 1 Right, 2 Center | vAlign: 0 Top, 1 Bottom, 2 Center
 // lineBreak: 0 WordWrap, 1 CharWrap, 2 Justify, 3 None | clip: 0 ClipToBounds, 1 None
-static int viroCreateText(std::string text, float width, float height, int fontSize,
-                          int hAlign, int vAlign, int lineBreak, int clipMode, int maxLines,
-                          float r, float g, float b, float a) {
+// stroke: 0 None, 1 Outline, 2 DropShadow
+static int buildText(std::string text, std::string typefaces, int fontSize, VROFontStyle style,
+                     VROFontWeight weight, VROVector4f color, float extrusion,
+                     int stroke, int strokeWidth, VROVector4f strokeColor,
+                     float width, float height, int hAlign, int vAlign, int lineBreak,
+                     int clipMode, int maxLines) {
     if (!sScene) return 0;
 
     VROTextHorizontalAlignment h;
@@ -980,18 +1224,68 @@ static int viroCreateText(std::string text, float width, float height, int fontS
         default: lb = VROLineBreakMode::WordWrap; break;
     }
     VROTextClipMode clip = (clipMode == 1) ? VROTextClipMode::None : VROTextClipMode::ClipToBounds;
+    VROTextOuterStroke outer = stroke == 1 ? VROTextOuterStroke::Outline
+                             : stroke == 2 ? VROTextOuterStroke::DropShadow
+                             : VROTextOuterStroke::None;
 
-    // kWebSystemFont rather than a name typed here: the face this build carries
-    // is a redistribution decision, and it should be made in one place.
-    std::shared_ptr<VROText> textGeom = VROText::createText(
-        utf8ToWString(text), kWebSystemFont, fontSize,
-        VROFontStyle::Normal, VROFontWeight::Regular,
-        {r, g, b, a}, 0 /*extrusion*/, width, height,
+    std::shared_ptr<VROText> textGeom = std::make_shared<VROText>(
+        utf8ToWString(text), typefaces, fontSize, style, weight, color, extrusion,
+        outer, strokeWidth, strokeColor, width, height,
         h, v, lb, clip, maxLines, sScene->getDriver());
+    textGeom->update();
 
     int handle = sNextHandle++;
     sGeometries[handle] = textGeom;
     return handle;
+}
+
+// Create a text geometry in the regular system face (kWebSystemFont, so the face
+// this build carries is decided in one place).
+static int viroCreateText(std::string text, float width, float height, int fontSize,
+                          int hAlign, int vAlign, int lineBreak, int clipMode, int maxLines,
+                          float r, float g, float b, float a) {
+    return buildText(text, kWebSystemFont, fontSize, VROFontStyle::Normal, VROFontWeight::Regular,
+                     {r, g, b, a}, 0, 0, 2, {1, 1, 1, 1}, width, height,
+                     hAlign, vAlign, lineBreak, clipMode, maxLines);
+}
+
+static float numberOr(const emscripten::val &o, const char *key, float fallback) {
+    emscripten::val v = o[key];
+    return v.isNumber() ? v.as<float>() : fallback;
+}
+
+static VROVector4f colorOr(const emscripten::val &o, const char *key, VROVector4f fallback) {
+    emscripten::val c = o[key];
+    if (c.isUndefined() || c.isNull()) return fallback;
+    return { numberOr(c, "r", 1), numberOr(c, "g", 1), numberOr(c, "b", 1), numberOr(c, "a", 1) };
+}
+
+// viroCreateText with the style a ViroText can set. `o` holds the same fields by
+// name plus typefaces (a comma-separated family list, falling back to the system
+// face), weight (100-900), italic, extrusion, and stroke, strokeWidth (glyph
+// pixels) and strokeColor. A weight or style other than the regular one draws in
+// the face viroTextFaceFile names, which the caller writes into the FS first.
+static int viroCreateStyledText(std::string text, emscripten::val o) {
+    emscripten::val family = o["typefaces"];
+    std::string typefaces = family.isString() ? family.as<std::string>() : "";
+    if (typefaces.empty()) typefaces = kWebSystemFont;
+    int weight = (int) std::lround(numberOr(o, "weight", 400) / 100.0f) * 100;
+    weight = std::max(100, std::min(900, weight));
+    return buildText(text, typefaces, (int) numberOr(o, "fontSize", 18),
+                     o["italic"].isTrue() ? VROFontStyle::Italic : VROFontStyle::Normal,
+                     (VROFontWeight) weight, colorOr(o, "color", {1, 1, 1, 1}),
+                     numberOr(o, "extrusion", 0), (int) numberOr(o, "stroke", 0),
+                     (int) numberOr(o, "strokeWidth", 2), colorOr(o, "strokeColor", {1, 1, 1, 1}),
+                     numberOr(o, "width", 1), numberOr(o, "height", 1),
+                     (int) numberOr(o, "hAlign", 0), (int) numberOr(o, "vAlign", 0),
+                     (int) numberOr(o, "lineBreak", 0), (int) numberOr(o, "clipMode", 0),
+                     (int) numberOr(o, "maxLines", 0));
+}
+
+// The face file (no suffix) a text at this weight and style draws in.
+static std::string viroTextFaceFile(int weight, bool italic) {
+    return VROTypefaceWasm::systemFaceFile((VROFontWeight) weight,
+                                           italic ? VROFontStyle::Italic : VROFontStyle::Normal);
 }
 // Create a polyline from a flat [x,y,z, x,y,z, …] point list, with a thickness.
 static int viroCreatePolyline(emscripten::val points, float thickness) {
@@ -1014,6 +1308,28 @@ static int viroCreatePolygon(emscripten::val points) {
     }
     int h = sNextHandle++;
     sGeometries[h] = VROPolygon::createPolygon(path);
+    return h;
+}
+
+// viroCreatePolygon with ViroPolygon's holes and uvCoordinates. `holes` is an
+// array of flat [x,y,z, …] lists, one per hole.
+static int viroCreatePolygonEx(emscripten::val points, emscripten::val holes,
+                               float u0, float v0, float u1, float v1) {
+    auto toPath = [](emscripten::val list) {
+        std::vector<float> f = emscripten::convertJSArrayToNumberVector<float>(list);
+        std::vector<VROVector3f> path;
+        for (size_t i = 0; i + 2 < f.size(); i += 3) {
+            path.push_back({ f[i], f[i + 1], f[i + 2] });
+        }
+        return path;
+    };
+    std::vector<std::vector<VROVector3f>> holePaths;
+    int holeCount = holes["length"].as<int>();
+    for (int i = 0; i < holeCount; i++) {
+        holePaths.push_back(toPath(holes[i]));
+    }
+    int h = sNextHandle++;
+    sGeometries[h] = VROPolygon::createPolygon(toPath(points), holePaths, u0, v0, u1, v1);
     return h;
 }
 
@@ -1054,6 +1370,71 @@ static int viroCreateGeometry(emscripten::val vertices, emscripten::val normals,
     return handle;
 }
 
+// One element per submesh, as native ViroGeometry builds them: indices is every
+// submesh's indices end to end, counts the length of each. Each submesh takes
+// the material at its own index (VROGeometry wraps past the last one).
+static int viroCreateGeometrySubmeshes(emscripten::val vertices, emscripten::val normals,
+                                       emscripten::val texcoords, emscripten::val indices,
+                                       emscripten::val counts) {
+    std::vector<float> v = emscripten::convertJSArrayToNumberVector<float>(vertices);
+    std::vector<float> n = emscripten::convertJSArrayToNumberVector<float>(normals);
+    std::vector<float> t = emscripten::convertJSArrayToNumberVector<float>(texcoords);
+    std::vector<uint32_t> idx = emscripten::convertJSArrayToNumberVector<uint32_t>(indices);
+    std::vector<int> sizes = emscripten::convertJSArrayToNumberVector<int>(counts);
+    if (v.empty() || idx.empty()) return 0;
+
+    int vertexCount = (int) v.size() / 3;
+    std::vector<std::shared_ptr<VROGeometrySource>> sources;
+    auto vData = std::make_shared<VROData>((void *) v.data(), (int)(v.size() * sizeof(float)));
+    sources.push_back(std::make_shared<VROGeometrySource>(
+        vData, VROGeometrySourceSemantic::Vertex, vertexCount, true, 3, 4, 0, 12));
+    if (!n.empty()) {
+        auto nData = std::make_shared<VROData>((void *) n.data(), (int)(n.size() * sizeof(float)));
+        sources.push_back(std::make_shared<VROGeometrySource>(
+            nData, VROGeometrySourceSemantic::Normal, (int) n.size() / 3, true, 3, 4, 0, 12));
+    }
+    if (!t.empty()) {
+        auto tData = std::make_shared<VROData>((void *) t.data(), (int)(t.size() * sizeof(float)));
+        sources.push_back(std::make_shared<VROGeometrySource>(
+            tData, VROGeometrySourceSemantic::Texcoord, (int) t.size() / 2, true, 2, 4, 0, 8));
+    }
+
+    // One element per entry, empty or short ones too (native VRTGeometry does the
+    // same), so every later submesh keeps the material at its own index.
+    std::vector<std::shared_ptr<VROGeometryElement>> elements;
+    size_t offset = 0;
+    bool anyTriangles = false;
+    for (int size : sizes) {
+        size_t count = size > 0 ? (size_t) size : 0;
+        if (offset + count > idx.size()) break;
+        int triangles = (int) count / 3;
+        auto iData = std::make_shared<VROData>((void *) (idx.data() + offset),
+                                               (int) (triangles * 3 * sizeof(uint32_t)));
+        elements.push_back(std::make_shared<VROGeometryElement>(
+            iData, VROGeometryPrimitiveType::Triangle, triangles, 4, false));
+        anyTriangles = anyTriangles || triangles > 0;
+        offset += count;
+    }
+    if (!anyTriangles) return 0;
+
+    int handle = sNextHandle++;
+    sGeometries[handle] = std::make_shared<VROGeometry>(sources, elements);
+    return handle;
+}
+
+// Every material at once, as native's materials prop: a box with six takes one
+// per face (VROBox rebuilds its elements when the count moves between 1 and 6).
+static void viroSetGeometryMaterials(int geometry, emscripten::val materials) {
+    auto g = getGeometry(geometry);
+    if (!g) return;
+    std::vector<int> handles = emscripten::convertJSArrayToNumberVector<int>(materials);
+    std::vector<std::shared_ptr<VROMaterial>> list;
+    for (int h : handles) {
+        if (auto m = getMaterial(h)) list.push_back(m);
+    }
+    if (!list.empty()) g->setMaterials(list);
+}
+
 static void viroSetGeometryMaterial(int geometry, int material) {
     auto g = getGeometry(geometry);
     auto m = getMaterial(material);
@@ -1073,8 +1454,43 @@ static int viroCreateMaterial() {
     sMaterials[h] = std::make_shared<VROMaterial>();
     return h;
 }
+// Which properties a material was given, so a shader override copies only those
+// onto a model, as the native bridges copy only the keys the material was
+// registered with. A VROMaterial cannot tell: one built from nothing but shader
+// modifiers still reports a white diffuse, which would white out a textured
+// model. viro calls each setter only for a key the material names.
+enum WebAuthored {
+    kAuthoredAlpha = 1 << 0,
+    kAuthoredBloom = 1 << 1,
+    kAuthoredChromaKey = 1 << 2,
+    kAuthoredDiffuseColor = 1 << 3,
+    kAuthoredDiffuseIntensity = 1 << 4,
+    kAuthoredShininess = 1 << 5,
+    kAuthoredRoughness = 1 << 6,
+    kAuthoredMetalness = 1 << 7,
+    kAuthoredBlendMode = 1 << 8,
+    kAuthoredCullMode = 1 << 9,
+    kAuthoredWritesDepth = 1 << 10,
+    kAuthoredReadsDepth = 1 << 11,
+    kAuthoredEmissionColor = 1 << 12,
+    // One bit per viroSetMaterialTexture channel, from here.
+    kAuthoredTexture0 = 1 << 13,
+};
+static std::unordered_map<const VROMaterial *, int> sAuthored;
+static void markAuthored(const std::shared_ptr<VROMaterial> &m, int bits) { sAuthored[m.get()] |= bits; }
+
 static void viroSetMaterialDiffuseColor(int material, float r, float g, float b, float a) {
-    if (auto m = getMaterial(material)) m->getDiffuse().setColor({r, g, b, a});
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->getDiffuse().setColor({r, g, b, a});
+    markAuthored(m, kAuthoredDiffuseColor);
+}
+// Also scales an emission texture, so one without a colour stays black.
+static void viroSetMaterialEmissionColor(int material, float r, float g, float b) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->getEmission().setColor({r, g, b, 1.0});
+    markAuthored(m, kAuthoredEmissionColor);
 }
 // model: 0=Constant, 1=Lambert, 2=Blinn, 3=Phong, 4=PhysicallyBased
 static void viroSetMaterialLightingModel(int material, int model) {
@@ -1090,24 +1506,38 @@ static void viroSetMaterialLightingModel(int material, int model) {
     }
 }
 static void viroDestroyMaterial(int material) {
+    if (auto m = getMaterial(material)) sAuthored.erase(m.get());
     sMaterials.erase(material);
+    sShaderOverrideCopies.erase(material);
 }
 
 // Scalar material properties.
 static void viroSetMaterialShininess(int material, float shininess) {
-    if (auto m = getMaterial(material)) m->setShininess(shininess);
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setShininess(shininess);
+    markAuthored(m, kAuthoredShininess);
 }
 static void viroSetMaterialFresnelExponent(int material, float fresnel) {
     if (auto m = getMaterial(material)) m->setFresnelExponent(fresnel);
 }
 static void viroSetMaterialRoughness(int material, float roughness) {
-    if (auto m = getMaterial(material)) m->getRoughness().setColor({roughness, roughness, roughness, 1.0});
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->getRoughness().setColor({roughness, roughness, roughness, 1.0});
+    markAuthored(m, kAuthoredRoughness);
 }
 static void viroSetMaterialMetalness(int material, float metalness) {
-    if (auto m = getMaterial(material)) m->getMetalness().setColor({metalness, metalness, metalness, 1.0});
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->getMetalness().setColor({metalness, metalness, metalness, 1.0});
+    markAuthored(m, kAuthoredMetalness);
 }
 static void viroSetMaterialDiffuseIntensity(int material, float intensity) {
-    if (auto m = getMaterial(material)) m->getDiffuse().setIntensity(intensity);
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->getDiffuse().setIntensity(intensity);
+    markAuthored(m, kAuthoredDiffuseIntensity);
 }
 // mode: 0=Back, 1=Front, 2=None (VROCullMode)
 static void viroSetMaterialCullMode(int material, int mode) {
@@ -1118,6 +1548,7 @@ static void viroSetMaterialCullMode(int material, int mode) {
         case 2: m->setCullMode(VROCullMode::None); break;
         default: m->setCullMode(VROCullMode::Back); break;
     }
+    markAuthored(m, kAuthoredCullMode);
 }
 // mode: 0=None,1=Alpha,2=Add,3=Multiply,4=Subtract,5=Screen (VROBlendMode)
 static void viroSetMaterialBlendMode(int material, int mode) {
@@ -1131,12 +1562,43 @@ static void viroSetMaterialBlendMode(int material, int mode) {
         case 5: m->setBlendMode(VROBlendMode::Screen); break;
         default: m->setBlendMode(VROBlendMode::None); break;
     }
+    markAuthored(m, kAuthoredBlendMode);
 }
 static void viroSetMaterialWritesToDepthBuffer(int material, bool writes) {
-    if (auto m = getMaterial(material)) m->setWritesToDepthBuffer(writes);
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setWritesToDepthBuffer(writes);
+    markAuthored(m, kAuthoredWritesDepth);
 }
 static void viroSetMaterialReadsFromDepthBuffer(int material, bool reads) {
-    if (auto m = getMaterial(material)) m->setReadsFromDepthBuffer(reads);
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setReadsFromDepthBuffer(reads);
+    markAuthored(m, kAuthoredReadsDepth);
+}
+static void viroSetMaterialTransparency(int material, float alpha) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setTransparency(alpha);
+    markAuthored(m, kAuthoredAlpha);
+}
+// Under 0 takes the material out of the bloom pass, as native's default -1 does.
+static void viroSetMaterialBloomThreshold(int material, float threshold) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setBloomThreshold(threshold);
+    markAuthored(m, kAuthoredBloom);
+}
+// mask: VROColorMask bits (Red 1, Green 2, Blue 4, Alpha 8).
+static void viroSetMaterialColorWriteMask(int material, int mask) {
+    if (auto m = getMaterial(material)) m->setColorWriteMask((VROColorMask) (mask & VROColorMaskAll));
+}
+static void viroSetMaterialChromaKey(int material, bool enabled, float r, float g, float b) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setChromaKeyFilteringColor({r, g, b});
+    m->setChromaKeyFilteringEnabled(enabled);
+    markAuthored(m, kAuthoredChromaKey);
 }
 
 // entryPoint: "geometry"|"vertex"|"surface"|"fragment"|"lightingModel"|"image".
@@ -1207,28 +1669,44 @@ static void viroRemoveAllMaterialShaderModifiers(int material) {
 // re-pushes every entry to the GL uniform of the same name every frame, so
 // there's no per-frame work to do here and no thread hop needed (this file is
 // synchronous, unlike the JNI/ObjC bridges these mirror).
+template <typename T>
+static void setShaderUniformWithCopies(int material, const std::string &name, const T &value) {
+    auto m = getMaterial(material);
+    if (!m) return;
+    m->setShaderUniform(name, value);
+
+    auto it = sShaderOverrideCopies.find(material);
+    if (it == sShaderOverrideCopies.end()) return;
+    auto &copies = it->second;
+    copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                [](const std::weak_ptr<VROMaterial> &c) { return c.expired(); }),
+                 copies.end());
+    for (const auto &weak : copies) {
+        if (auto copy = weak.lock()) copy->setShaderUniform(name, value);
+    }
+}
+
 static void viroSetMaterialShaderUniformFloat(int material, std::string name, float value) {
-    if (auto m = getMaterial(material)) m->setShaderUniform(name, value);
+    setShaderUniformWithCopies(material, name, value);
 }
 static void viroSetMaterialShaderUniformVec2(int material, std::string name, float x, float y) {
-    if (auto m = getMaterial(material)) m->setShaderUniform(name, VROVector2f(x, y));
+    setShaderUniformWithCopies(material, name, VROVector2f(x, y));
 }
 static void viroSetMaterialShaderUniformVec3(int material, std::string name, float x, float y, float z) {
-    if (auto m = getMaterial(material)) m->setShaderUniform(name, VROVector3f(x, y, z));
+    setShaderUniformWithCopies(material, name, VROVector3f(x, y, z));
 }
 static void viroSetMaterialShaderUniformVec4(int material, std::string name, float x, float y, float z, float w) {
-    if (auto m = getMaterial(material)) m->setShaderUniform(name, VROVector4f(x, y, z, w));
+    setShaderUniformWithCopies(material, name, VROVector4f(x, y, z, w));
 }
 // matrix: JS array/typed array of 16 floats, matching VROMatrix4f's flat-array constructor.
 static void viroSetMaterialShaderUniformMat4(int material, std::string name, emscripten::val matrix) {
-    auto m = getMaterial(material);
-    if (!m) return;
+    if (!getMaterial(material)) return;
     std::vector<float> elements = emscripten::convertJSArrayToNumberVector<float>(matrix);
     if (elements.size() != 16) {
         pwarn("viroSetMaterialShaderUniformMat4: matrix must have 16 elements, got %zu", elements.size());
         return;
     }
-    m->setShaderUniform(name, VROMatrix4f(elements.data()));
+    setShaderUniformWithCopies(material, name, VROMatrix4f(elements.data()));
 }
 
 // --- Physics ---
@@ -1245,6 +1723,8 @@ static void viroSetMaterialShaderUniformMat4(int material, std::string name, ems
 // no-op: it detaches every body it knows about.
 
 static bool sPhysicsEnabled = false;
+// physicsWorld.drawBounds, kept so a world made later still gets it.
+static bool sPhysicsDebugDraw = false;
 
 /** Reports a collision to JS as (viroTag of A, viroTag of B, point, normal). */
 static emscripten::val sCollisionCallback = emscripten::val::undefined();
@@ -1307,6 +1787,7 @@ static void viroSetPhysicsWorld(bool enabled, float gx, float gy, float gz) {
         return;
     }
     world->setGravity({ gx, gy, gz });
+    world->setDebugDrawVisible(sPhysicsDebugDraw);
     for (auto &entry : sPhysicsBodies) {
         // Remove first: this runs again on every scene change and on a hot
         // reload, and the world rejects a body it already holds ("Attempted to
@@ -1346,8 +1827,15 @@ static void viroSetPhysicsBody(int nodeHandle, int type, float mass,
     if (shapeType >= 0) {
         std::vector<float> params =
             emscripten::convertJSArrayToNumberVector<float>(shapeParams);
-        shape = std::make_shared<VROPhysicsShape>(
-            (VROPhysicsShape::VROShapeType) shapeType, params);
+        if (shapeType == (int) VROPhysicsShape::VROShapeType::AutoCompound && params.empty()) {
+            // The compound inferred from the node's children, which the body
+            // regenerates on its next update. Built from the node rather than
+            // from a type and no params, which logs an "unsupported type" error.
+            shape = std::make_shared<VROPhysicsShape>(node, true);
+        } else {
+            shape = std::make_shared<VROPhysicsShape>(
+                (VROPhysicsShape::VROShapeType) shapeType, params);
+        }
     }
 
     // The tag lives on the node: VROPhysicsBody::getTag() reads it from there,
@@ -1392,10 +1880,57 @@ static void viroApplyPhysicsImpulse(int nodeHandle, float x, float y, float z) {
     it->second->applyImpulse({ x, y, z }, { 0, 0, 0 });
 }
 
+// Native's physicsBody force and torque (VRTNode applyForcesOnBody): applied on
+// every step until replaced. forces is [fx, fy, fz, px, py, pz] per force, the
+// position relative to the body's centre. A new body (a changed shape) starts
+// with none, so the caller sends them again after viroSetPhysicsBody.
+static void viroSetPhysicsForces(int nodeHandle, emscripten::val forces,
+                                 float tx, float ty, float tz) {
+    auto it = sPhysicsBodies.find(nodeHandle);
+    if (it == sPhysicsBodies.end()) return;
+    std::shared_ptr<VROPhysicsBody> body = it->second;
+    body->clearForces();
+    std::vector<float> f = emscripten::convertJSArrayToNumberVector<float>(forces);
+    for (size_t i = 0; i + 5 < f.size(); i += 6) {
+        body->applyForce({ f[i], f[i + 1], f[i + 2] }, { f[i + 3], f[i + 4], f[i + 5] });
+    }
+    if (tx != 0 || ty != 0 || tz != 0) {
+        body->applyTorque({ tx, ty, tz });
+    }
+}
+
 static void viroApplyPhysicsTorque(int nodeHandle, float x, float y, float z) {
     auto it = sPhysicsBodies.find(nodeHandle);
     if (it == sPhysicsBodies.end()) return;
     it->second->applyTorqueImpulse({ x, y, z });
+}
+
+// findCollisionsWithRayAsync / findCollisionsWithShapeAsync: true when anything
+// was hit. Each body hit gets an onCollision with rayTag as the other party,
+// through the collision callback, as native reports it. Never creates a world.
+static bool viroFindCollisionsWithRay(float fx, float fy, float fz, float tx, float ty, float tz,
+                                      bool closest, std::string rayTag) {
+    auto world = physicsWorld(false);
+    if (!world || !sPhysicsEnabled) return false;
+    return world->findCollisionsWithRay({ fx, fy, fz }, { tx, ty, tz }, closest, rayTag);
+}
+static bool viroFindCollisionsWithShape(float fx, float fy, float fz, float tx, float ty, float tz,
+                                        int shapeType, emscripten::val shapeParams,
+                                        std::string rayTag) {
+    auto world = physicsWorld(false);
+    if (!world || !sPhysicsEnabled) return false;
+    std::vector<float> params = emscripten::convertJSArrayToNumberVector<float>(shapeParams);
+    // VROPhysicsShape only logs a bad type or short params and then reads them.
+    bool box = shapeType == (int) VROPhysicsShape::VROShapeType::Box && params.size() >= 3;
+    bool sphere = shapeType == (int) VROPhysicsShape::VROShapeType::Sphere && params.size() >= 1;
+    if (!box && !sphere) return false;
+    auto shape = std::make_shared<VROPhysicsShape>((VROPhysicsShape::VROShapeType) shapeType, params);
+    return world->findCollisionsWithShape({ fx, fy, fz }, { tx, ty, tz }, shape, rayTag);
+}
+
+static void viroSetPhysicsDebugDraw(bool visible) {
+    sPhysicsDebugDraw = visible;
+    if (auto world = physicsWorld(false)) world->setDebugDrawVisible(visible);
 }
 
 static void viroClearPhysicsBody(int nodeHandle) {
@@ -1409,13 +1944,12 @@ static void viroClearPhysicsBody(int nodeHandle) {
 
 // --- Shader overrides (a registered material merged onto a loaded model) ---
 //
-// The web counterpart of VRTNode.mm's applyShaderOverridesRecursive, and
-// deliberately the same merge: the model keeps its own colours and textures, and
-// the override contributes the seven rendering properties plus its shader
-// modifiers and uniforms. Copying the colour here would make a model read one way
-// in a browser and another on a phone, which is the difference this exists to
-// close; the shared defect is that neither surface honours an authored colour on
-// a model, and that belongs to the native merge, not here.
+// The web counterpart of VRTNode.mm's shader-override merge and
+// VRTMergeAuthoredMaterialProperties. The model keeps its own materials; the
+// override brings its lighting model, its shader modifiers and uniforms, and each
+// other property only where the author set it (sAuthored). A colour without a
+// texture tints the model and leaves its texture in place; a material carrying
+// only modifiers changes nothing else.
 //
 // A node handed to the bridge usually draws nothing itself — a loaded model hangs
 // its geometry off child nodes — so this walks the subtree rather than reading
@@ -1426,21 +1960,53 @@ static void viroClearPhysicsBody(int nodeHandle) {
 // re-applying a changed override merges onto the model's own materials again
 // rather than compounding onto the previous merge.
 
+static VROMaterialVisual &visualForChannel(VROMaterial &m, int channel) {
+    switch (channel) {
+        case 1: return m.getSpecular();
+        case 2: return m.getNormal();
+        case 3: return m.getRoughness();
+        case 4: return m.getMetalness();
+        case 5: return m.getAmbientOcclusion();
+        case 6: return m.getEmission();
+        case 7: return m.getReflective();
+        default: return m.getDiffuse();
+    }
+}
+static const int kTextureChannels = 8;
+
 static void mergeShaderOverride(const std::shared_ptr<VROMaterial> &source,
                                 const std::shared_ptr<VROMaterial> &dest) {
     dest->setLightingModel(source->getLightingModel());
-    dest->setShininess(source->getShininess());
-    dest->setBlendMode(source->getBlendMode());
-    dest->setTransparencyMode(source->getTransparencyMode());
-    dest->setCullMode(source->getCullMode());
-    dest->setWritesToDepthBuffer(source->getWritesToDepthBuffer());
-    dest->setReadsFromDepthBuffer(source->getReadsFromDepthBuffer());
 
     // Modifiers are added, not replaced: dest is a copy of the model's own
     // material and still carries the loader's modifiers, so clearing them would
     // stop a rigged mesh skinning. Each merge starts from the baseline, so
     // nothing accumulates across applications.
     dest->setThreadRestrictionEnabled(false);
+    auto found = sAuthored.find(source.get());
+    int authored = found == sAuthored.end() ? 0 : found->second;
+    if (authored & kAuthoredShininess) dest->setShininess(source->getShininess());
+    if (authored & kAuthoredBlendMode) dest->setBlendMode(source->getBlendMode());
+    if (authored & kAuthoredCullMode) dest->setCullMode(source->getCullMode());
+    if (authored & kAuthoredWritesDepth) dest->setWritesToDepthBuffer(source->getWritesToDepthBuffer());
+    if (authored & kAuthoredReadsDepth) dest->setReadsFromDepthBuffer(source->getReadsFromDepthBuffer());
+    if (authored & kAuthoredDiffuseColor) dest->getDiffuse().setColor(source->getDiffuse().getColor());
+    if (authored & kAuthoredDiffuseIntensity) dest->getDiffuse().setIntensity(source->getDiffuse().getIntensity());
+    if (authored & kAuthoredRoughness) dest->getRoughness().setColor(source->getRoughness().getColor());
+    if (authored & kAuthoredMetalness) dest->getMetalness().setColor(source->getMetalness().getColor());
+    if (authored & kAuthoredEmissionColor) dest->getEmission().setColor(source->getEmission().getColor());
+    for (int channel = 0; channel < kTextureChannels; channel++) {
+        if (authored & (kAuthoredTexture0 << channel)) {
+            visualForChannel(*dest, channel).setTexture(visualForChannel(*source, channel).getTexture());
+        }
+    }
+    // Native copies no colour write mask onto a model, so neither does this.
+    if (authored & kAuthoredAlpha) dest->setTransparency(source->getTransparency());
+    if (authored & kAuthoredBloom) dest->setBloomThreshold(source->getBloomThreshold());
+    if (authored & kAuthoredChromaKey) {
+        dest->setChromaKeyFilteringColor(source->getChromaKeyFilteringColor());
+        dest->setChromaKeyFilteringEnabled(source->isChromaKeyFilteringEnabled());
+    }
     for (const auto &modifier : source->getShaderModifiers()) {
         dest->addShaderModifier(modifier);
     }
@@ -1456,7 +2022,8 @@ static void mergeShaderOverride(const std::shared_ptr<VROMaterial> &source,
 static void applyShaderOverrideToNode(
     const std::shared_ptr<VRONode> &node,
     const std::shared_ptr<VROMaterial> &source,
-    std::unordered_map<VROGeometry *, std::vector<std::shared_ptr<VROMaterial>>> &baselines) {
+    std::unordered_map<VROGeometry *, std::vector<std::shared_ptr<VROMaterial>>> &baselines,
+    std::vector<std::weak_ptr<VROMaterial>> &copies) {
 
     std::shared_ptr<VROGeometry> geometry = node->getGeometry();
     // An empty material list means the loader has not populated this geometry
@@ -1473,12 +2040,13 @@ static void applyShaderOverrideToNode(
             auto copy = std::make_shared<VROMaterial>(original);
             mergeShaderOverride(source, copy);
             merged.push_back(copy);
+            copies.push_back(copy);
         }
         geometry->setMaterials(merged);
     }
 
     for (const auto &child : node->getChildNodes()) {
-        applyShaderOverrideToNode(child, source, baselines);
+        applyShaderOverrideToNode(child, source, baselines, copies);
     }
 }
 
@@ -1488,7 +2056,9 @@ static void viroApplyShaderOverride(int nodeHandle, int materialHandle) {
     if (!node || !material) {
         return;
     }
-    applyShaderOverrideToNode(node, material, sShaderOverrideBaselines[nodeHandle]);
+    sShaderOverrideSources[nodeHandle] = materialHandle;
+    applyShaderOverrideToNode(node, material, sShaderOverrideBaselines[nodeHandle],
+                              sShaderOverrideCopies[materialHandle]);
 }
 
 // --- Textures ---
@@ -1635,18 +2205,21 @@ static void viroSetTextureFilter(int texture, int minFilter, int magFilter, int 
         t->setMipFilter(filterModeValue(mipFilter));
     }
 }
-// channel: 0=diffuse,1=specular,2=normal,3=roughness,4=metalness,5=ambientOcclusion
+// channel: 0=diffuse,1=specular,2=normal,3=roughness,4=metalness,5=ambientOcclusion,
+// 6=emission,7=reflective (a cube texture)
 static void viroSetMaterialTexture(int material, int channel, int texture) {
     auto m = getMaterial(material);
     auto t = getTexture(texture);
     if (!m || !t) return;
-    switch (channel) {
-        case 1: m->getSpecular().setTexture(t); break;
-        case 2: m->getNormal().setTexture(t); break;
-        case 3: m->getRoughness().setTexture(t); break;
-        case 4: m->getMetalness().setTexture(t); break;
-        case 5: m->getAmbientOcclusion().setTexture(t); break;
-        default: m->getDiffuse().setTexture(t); break;
+    if (channel < 0 || channel >= kTextureChannels) channel = 0;
+    // VROMaterialVisual::setTexture aborts on a texture type its channel does not take.
+    if ((channel == 7) != (t->getType() == VROTextureType::TextureCube)) return;
+    visualForChannel(*m, channel).setTexture(t);
+    markAuthored(m, kAuthoredTexture0 << channel);
+    // A registered material's textures load after the model it overrides has
+    // usually been merged, so merge again where this is the current override.
+    for (const auto &entry : sShaderOverrideSources) {
+        if (entry.second == material) viroApplyShaderOverride(entry.first, material);
     }
 }
 static void viroDestroyTexture(int texture) {
@@ -1655,9 +2228,7 @@ static void viroDestroyTexture(int texture) {
 }
 // sampler2D shader uniform. texture may be VIRO_INVALID_HANDLE (0) to clear it.
 static void viroSetMaterialShaderUniformTexture(int material, std::string name, int texture) {
-    auto m = getMaterial(material);
-    if (!m) return;
-    m->setShaderUniform(name, getTexture(texture));
+    setShaderUniformWithCopies(material, name, getTexture(texture));
 }
 
 // Create a cube texture from six RGBA8 faces (order: +X,-X,+Y,-Y,+Z,-Z), each
@@ -1681,6 +2252,16 @@ static int viroCreateTextureCubeRGBA(emscripten::val px, emscripten::val nx,
 }
 
 // --- Lighting environment (IBL) ---
+
+// mode is VROStereoMode's value (1 None, 2 LeftRight, 3 RightLeft, 4 TopBottom,
+// 5 BottomTop). Call it before the texture goes on a material: the shader that
+// shows one half of the image is picked when the material compiles.
+static void viroSetTextureStereoMode(int texture, int mode) {
+    if (mode < 1 || mode > 5) return;
+    if (std::shared_ptr<VROTexture> t = getTexture(texture)) {
+        t->setStereoMode((VROStereoMode) mode);
+    }
+}
 
 // Load a radiance .hdr file (already written to the virtual FS at `path`) into a
 // texture usable as an image-based lighting environment.
@@ -1721,6 +2302,38 @@ static void viroSetBackgroundRotation(float x, float y, float z) {
         VROQuaternion q(x, y, z);
         sScene->getRootNode()->setBackgroundRotation(q);
     }
+}
+
+// The portal whose background a node sets: the node itself when it is one,
+// else its nearest portal ancestor, as native's getParentPortal(). The scene
+// root is a portal, so outside any ViroPortalScene this is the scene's own.
+static std::shared_ptr<VROPortal> backgroundPortal(int nodeHandle) {
+    std::shared_ptr<VRONode> node = getNode(nodeHandle);
+    if (!node) return nullptr;
+    if (std::shared_ptr<VROPortal> portal = std::dynamic_pointer_cast<VROPortal>(node)) {
+        return portal;
+    }
+    std::shared_ptr<VROPortal> parent = node->getParentPortal();
+    return parent ? parent : (sScene ? sScene->getRootNode() : nullptr);
+}
+static void viroSetNodeBackgroundSphere(int node, int texture) {
+    auto portal = backgroundPortal(node);
+    auto t = getTexture(texture);
+    if (portal && t) portal->setBackgroundSphere(t);
+}
+static void viroSetNodeBackgroundCube(int node, int texture) {
+    auto portal = backgroundPortal(node);
+    auto t = getTexture(texture);
+    if (portal && t) portal->setBackgroundCube(t);
+}
+static void viroSetNodeBackgroundRotation(int node, float x, float y, float z) {
+    if (auto portal = backgroundPortal(node)) portal->setBackgroundRotation(VROQuaternion(x, y, z));
+}
+// Native removes a 360 image's background when the image goes. removeBackground
+// itself does not check that there is one.
+static void viroRemoveNodeBackground(int node) {
+    auto portal = backgroundPortal(node);
+    if (portal && portal->getBackground()) portal->removeBackground();
 }
 
 // --- Particle emitter ---
@@ -1841,6 +2454,97 @@ static void viroSetParticleModifier(int nodeHandle, int which,
 }
 
 // Toggle a node's emitter run/pause state.
+// The emitter settings native sets on every props update (VRTParticleEmitter
+// updateEmitterState, updateSpawnModifier, updatePhysicsModifier). Every key is
+// optional and an absent one leaves the emitter as it is:
+//   delay, duration (ms), loop, fixedToEmitter, blendMode (a material blend
+//   name), bloomThreshold (-1 off), emissionRatePerSecond, emissionRatePerMeter
+//   and particleLifetime [min, max], maxParticles, velocity [min xyz, max xyz],
+//   spawnVolume [shape, onSurface, ...params] (shape as viroCreateParticleEmitter),
+//   bursts [factor (0 time, 1 distance), start, interval, min, max, cycles] per
+//   burst, explosion [x, y, z, impulse, deceleration] (impulse < 0 clears it),
+//   reset (true restarts the emission cycle and drops live particles).
+static void viroConfigureParticleEmitter(int nodeHandle, emscripten::val c) {
+    std::shared_ptr<VRONode> node = getNode(nodeHandle);
+    std::shared_ptr<VROParticleEmitter> e = node ? node->getParticleEmitter() : nullptr;
+    if (!e || c.isUndefined() || c.isNull()) return;
+    auto has = [&](const char *key) {
+        emscripten::val v = c[key];
+        return !v.isUndefined() && !v.isNull();
+    };
+    auto floats = [&](const char *key) {
+        return emscripten::convertJSArrayToNumberVector<float>(c[key]);
+    };
+
+    if (has("delay")) e->setDelay(c["delay"].as<double>());
+    if (has("duration")) e->setDuration(c["duration"].as<double>());
+    if (has("loop")) e->setLoop(c["loop"].as<bool>());
+    if (has("fixedToEmitter")) e->setFixedToEmitter(c["fixedToEmitter"].as<bool>());
+    if (has("blendMode")) {
+        VROBlendMode mode = VROMaterial::getBlendModeFromString(c["blendMode"].as<std::string>());
+        if (mode != VROBlendMode::None) e->setBlendMode(mode);
+    }
+    if (has("bloomThreshold")) e->setBloomThreshold(c["bloomThreshold"].as<float>());
+    if (has("emissionRatePerSecond")) {
+        std::vector<float> r = floats("emissionRatePerSecond");
+        if (r.size() >= 2) e->setEmissionRatePerSecond({ (int) r[0], (int) r[1] });
+    }
+    if (has("particleLifetime")) {
+        std::vector<float> r = floats("particleLifetime");
+        if (r.size() >= 2) e->setParticleLifeTime({ (int) r[0], (int) r[1] });
+    }
+    if (has("maxParticles")) e->setMaxParticles(c["maxParticles"].as<int>());
+    if (has("velocity")) {
+        std::vector<float> v = floats("velocity");
+        if (v.size() >= 6) {
+            e->setVelocityModifier(std::make_shared<VROParticleModifier>(
+                VROVector3f(v[0], v[1], v[2]), VROVector3f(v[3], v[4], v[5])));
+        }
+    }
+    if (has("emissionRatePerMeter")) {
+        std::vector<float> r = floats("emissionRatePerMeter");
+        if (r.size() >= 2) e->setEmissionRatePerDistance({ (int) r[0], (int) r[1] });
+    }
+    if (has("spawnVolume")) {
+        std::vector<float> v = floats("spawnVolume");
+        if (v.size() >= 2) {
+            VROParticleSpawnVolume volume;
+            switch ((int) v[0]) {
+                case 0: volume.shape = VROParticleSpawnVolume::Shape::Box; break;
+                case 1: volume.shape = VROParticleSpawnVolume::Shape::Sphere; break;
+                default: volume.shape = VROParticleSpawnVolume::Shape::Point; break;
+            }
+            volume.spawnOnSurface = v[1] != 0;
+            volume.shapeParams.assign(v.begin() + 2, v.end());
+            e->setParticleSpawnVolume(volume);
+        }
+    }
+    if (has("bursts")) {
+        std::vector<float> b = floats("bursts");
+        std::vector<VROParticleEmitter::VROParticleBurst> bursts;
+        for (size_t i = 0; i + 5 < b.size(); i += 6) {
+            VROParticleEmitter::VROParticleBurst burst;
+            burst.referenceFactor = b[i] == 1 ? VROParticleModifier::VROModifierFactor::Distance
+                                              : VROParticleModifier::VROModifierFactor::Time;
+            burst.referenceValueStart = b[i + 1];
+            burst.referenceValueInterval = b[i + 2];
+            burst.numberOfParticles = { (int) b[i + 3], (int) b[i + 4] };
+            burst.cycles = b[i + 5] > 0 ? (int) b[i + 5] : 1;
+            bursts.push_back(burst);
+        }
+        e->setParticleBursts(bursts);
+    }
+    if (has("explosion")) {
+        std::vector<float> x = floats("explosion");
+        if (x.size() >= 5 && x[3] >= 0) {
+            e->setInitialExplosion({ x[0], x[1], x[2] }, x[3], x[4]);
+        } else {
+            e->setInitialExplosion({ 0, 0, 0 }, -1);
+        }
+    }
+    if (has("reset")) e->resetEmissionCycle(c["reset"].as<bool>());
+}
+
 static void viroSetParticleEmitterRun(int nodeHandle, bool run) {
     std::shared_ptr<VRONode> node = getNode(nodeHandle);
     if (node && node->getParticleEmitter()) {
@@ -1875,6 +2579,47 @@ static void viroSetPortalPassable(int portalScene, bool passable) {
     if (scene) {
         scene->setPassable(passable);
     }
+}
+
+/** Reports a portal crossing to JS as (portal scene handle, entered). */
+static emscripten::val sPortalCallback = emscripten::val::undefined();
+static void viroSetPortalCallback(emscripten::val cb) {
+    sPortalCallback = cb;
+}
+
+class WebPortalDelegate : public VROPortalDelegate {
+public:
+    explicit WebPortalDelegate(int handle) : _handle(handle) {}
+    void onPortalEnter() override { emit(true); }
+    void onPortalExit() override { emit(false); }
+private:
+    void emit(bool entered) {
+        if (sPortalCallback.isUndefined() || sPortalCallback.isNull()) {
+            return;
+        }
+        sPortalCallback(_handle, entered);
+    }
+    int _handle;
+};
+
+// VROPortal holds its delegate weakly, so the strong reference lives here.
+static std::unordered_map<int, std::shared_ptr<WebPortalDelegate>> sPortalDelegates;
+
+static void viroErasePortalDelegate(int node) {
+    sPortalDelegates.erase(node);
+}
+
+static void viroSetPortalEventsEnabled(int portalScene, bool enabled) {
+    std::shared_ptr<VROPortal> scene = std::dynamic_pointer_cast<VROPortal>(getNode(portalScene));
+    if (!scene) return;
+    if (!enabled) {
+        scene->setPortalDelegate(nullptr);
+        sPortalDelegates.erase(portalScene);
+        return;
+    }
+    auto delegate = std::make_shared<WebPortalDelegate>(portalScene);
+    sPortalDelegates[portalScene] = delegate;
+    scene->setPortalDelegate(delegate);
 }
 
 // --- Lights ---
@@ -1935,8 +2680,8 @@ static void viroSetLightInfluenceBitMask(int light, int mask) {
 // decide whether the result is usable — a map too small or a bias too low is
 // the difference between a shadow and a field of acne.
 //
-// No shadowOrthographicPosition: the native navigators expose it but VROLight
-// has no setter for it, so there is nothing to forward it to. Six of the seven.
+// shadowOrthographicPosition has no setter here: native sets it as the light's
+// position (viroSetLightPosition), which the shadow pass reads.
 static void viroSetLightShadowOpacity(int light, float opacity) {
     if (auto l = getLight(light)) l->setShadowOpacity(opacity);
 }
@@ -2001,6 +2746,15 @@ static void viroSetCameraOrthographicScale(int node, float scale) {
         return;
     }
     n->getCamera()->setOrthographicHeight(scale);
+}
+
+// Degrees across the viewport's longer side; 0 returns to the renderer's default.
+static void viroSetCameraFieldOfView(int node, float degrees) {
+    auto n = getNode(node);
+    if (!n || !n->getCamera()) {
+        return;
+    }
+    n->getCamera()->setFieldOfViewY(degrees);
 }
 
 // --- Model loading (GLB / glTF / VRX / OBJ) ---
@@ -2105,13 +2859,45 @@ static void viroStartAnimation(int nodeHandle, std::string name, bool loop) {
     emitAnim(nodeHandle, 0);
     runAnim(nodeHandle, state);
 }
+// The declarative passes each node has committed (viroCommitAnimation) and not
+// yet finished, so the three calls below reach them as well as a model's own
+// animation, as native's VRTManagedAnimation pauses either kind. A node can run
+// several at once (a parallel chain); a looping one never finishes and is held
+// until stopped.
+struct WebNodeTransaction {
+    std::shared_ptr<VROTransaction> transaction;
+    bool paused;
+};
+static std::unordered_map<int, std::vector<WebNodeTransaction>> sNodeTransactions;
+static int sOpenTransactionNode = 0;
+
+static bool transactionFinished(const WebNodeTransaction &entry) {
+    return entry.transaction->getT() >= 1.0 - kEpsilon;
+}
+
 static void viroPauseAnimation(int nodeHandle) {
     auto it = sNodeAnimations.find(nodeHandle);
     if (it != sNodeAnimations.end()) it->second->anim->pause();
+    auto t = sNodeTransactions.find(nodeHandle);
+    if (t == sNodeTransactions.end()) return;
+    for (WebNodeTransaction &entry : t->second) {
+        if (!entry.paused && !transactionFinished(entry)) {
+            VROTransaction::pause(entry.transaction);
+            entry.paused = true;
+        }
+    }
 }
 static void viroResumeAnimation(int nodeHandle) {
     auto it = sNodeAnimations.find(nodeHandle);
     if (it != sNodeAnimations.end()) it->second->anim->resume();
+    auto t = sNodeTransactions.find(nodeHandle);
+    if (t == sNodeTransactions.end()) return;
+    for (WebNodeTransaction &entry : t->second) {
+        if (entry.paused) {
+            VROTransaction::resume(entry.transaction);
+            entry.paused = false;
+        }
+    }
 }
 static void viroStopAnimation(int nodeHandle, bool jumpToEnd) {
     auto it = sNodeAnimations.find(nodeHandle);
@@ -2119,6 +2905,17 @@ static void viroStopAnimation(int nodeHandle, bool jumpToEnd) {
         it->second->anim->terminate(jumpToEnd);
         sNodeAnimations.erase(it);
     }
+    auto t = sNodeTransactions.find(nodeHandle);
+    if (t == sNodeTransactions.end()) return;
+    for (WebNodeTransaction &entry : t->second) {
+        if (!transactionFinished(entry)) VROTransaction::terminate(entry.transaction, jumpToEnd);
+    }
+    sNodeTransactions.erase(t);
+}
+
+// Its presence is what tells the bridge the three calls above reach declarative passes.
+static bool viroCanPauseDeclarativeAnimations() {
+    return true;
 }
 
 // --- Declarative animations (ViroAnimations: transform/opacity via transaction) ---
@@ -2140,6 +2937,7 @@ static VROTimingFunctionType easingValue(int easing) {
 }
 
 static void viroBeginAnimation(int nodeHandle, float duration, float delay, bool loop, int easing) {
+    sOpenTransactionNode = nodeHandle;
     VROTransaction::begin();
     VROTransaction::setAnimationDuration(duration);
     if (delay > 0) {
@@ -2152,7 +2950,13 @@ static void viroBeginAnimation(int nodeHandle, float duration, float delay, bool
     });
 }
 static void viroCommitAnimation() {
-    VROTransaction::commit();
+    std::shared_ptr<VROTransaction> transaction = VROTransaction::commit();
+    if (sOpenTransactionNode) {
+        std::vector<WebNodeTransaction> &held = sNodeTransactions[sOpenTransactionNode];
+        held.erase(std::remove_if(held.begin(), held.end(), transactionFinished), held.end());
+        held.push_back({ transaction, false });
+    }
+    sOpenTransactionNode = 0;
 }
 
 #pragma mark - AR
@@ -2204,6 +3008,36 @@ static void viroARSetCameraImageSize(float width, float height) {
     if (session) session->setCameraImageSize(width, height);
 }
 
+// The tracker's feature points, world space (Y-up), as a flat x,y,z array, and
+// their ids (same order; may be empty). They ride on every frame until replaced,
+// which is what ViroARScene's onARPointCloudUpdate and displayPointCloud read.
+static void viroARSetPointCloud(emscripten::val xyz, emscripten::val ids) {
+    if (!sScene) return;
+    std::shared_ptr<VROARSessionWeb> session = sScene->getARSession();
+    if (!session) return;
+    std::vector<float> flat = emscripten::convertJSArrayToNumberVector<float>(xyz);
+    std::vector<double> idv = emscripten::convertJSArrayToNumberVector<double>(ids);
+    std::vector<VROVector4f> points;
+    points.reserve(flat.size() / 3);
+    for (size_t i = 0; i + 2 < flat.size(); i += 3) {
+        // The 4th component is ARCore's confidence; the web tracker has none.
+        points.emplace_back(flat[i], flat[i + 1], flat[i + 2], 1.0f);
+    }
+    std::vector<uint64_t> identifiers;
+    identifiers.reserve(idv.size());
+    for (double d : idv) identifiers.push_back(static_cast<uint64_t>(d));
+    session->setPointCloud(std::move(points), std::move(identifiers));
+}
+
+// displayPointCloud: draw the feature points as particles. textureHandle < 0
+// keeps the default dot; sx/sy/sz is each particle's world size.
+static void viroARDisplayPointCloud(bool display, int textureHandle,
+                                    float sx, float sy, float sz, int maxPoints) {
+    if (!sScene) return;
+    sScene->setPointCloudDisplay(display, textureHandle >= 0 ? getTexture(textureHandle) : nullptr,
+                                 VROVector3f(sx, sy, sz), maxPoints);
+}
+
 // The camera's real intrinsics. Prefer this over viroARSetCameraImageSize
 // wherever the host knows them: without them the frustum is a fixed 60-degree
 // vertical field of view, and 3-D content is then projected through a different
@@ -2253,6 +3087,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetPBREnabled", &viroSetPBREnabled);
     emscripten::function("viroSetShadowsEnabled", &viroSetShadowsEnabled);
     emscripten::function("viroSetToneMappingEnabled", &viroSetToneMappingEnabled);
+    emscripten::function("viroSetPostProcessEffects", &viroSetPostProcessEffects);
     emscripten::function("viroGetBuildId", &viroGetBuildId);
 
     // Physics
@@ -2262,12 +3097,23 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetPhysicsVelocity", &viroSetPhysicsVelocity);
     emscripten::function("viroApplyPhysicsImpulse", &viroApplyPhysicsImpulse);
     emscripten::function("viroApplyPhysicsTorque", &viroApplyPhysicsTorque);
+    emscripten::function("viroSetPhysicsForces", &viroSetPhysicsForces);
+    emscripten::function("viroFindCollisionsWithRay", &viroFindCollisionsWithRay);
+    emscripten::function("viroFindCollisionsWithShape", &viroFindCollisionsWithShape);
+    emscripten::function("viroSetPhysicsDebugDraw", &viroSetPhysicsDebugDraw);
     emscripten::function("viroClearPhysicsBody", &viroClearPhysicsBody);
     emscripten::function("viroSetCollisionCallback", &viroSetCollisionCallback);
     emscripten::function("viroOnTouch", &viroOnTouch);
-    emscripten::function("viroOnPinch", &viroOnPinch);
+    emscripten::function("viroStopMainLoop", &viroStopMainLoop);
+    // Two overloads, told apart by embind by argument count: (state, scale, x, y)
+    // hit-tests at the two fingers' midpoint (viro-web-renderer 1.4.0); the
+    // older (scale, state) form pinches whatever is already hit.
+    emscripten::function("viroOnPinch", emscripten::select_overload<void(int, float, float, float)>(&viroOnPinch));
+    emscripten::function("viroOnPinch", emscripten::select_overload<void(float, int)>(&viroOnPinch));
     emscripten::function("viroOnScroll", &viroOnScroll);
     emscripten::function("viroSetReticleVisible", &viroSetReticleVisible);
+    emscripten::function("viroOnPointerHover", &viroOnPointerHover);
+    emscripten::function("viroOnRotate", &viroOnRotate);
     emscripten::function("viroBuildDemoCube", &viroBuildDemoCube);
 
     // Scene graph C API (handle-based)
@@ -2278,6 +3124,10 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetNodeScale", &viroSetNodeScale);
     emscripten::function("viroSetNodeOpacity", &viroSetNodeOpacity);
     emscripten::function("viroSetNodeVisible", &viroSetNodeVisible);
+    emscripten::function("viroSetNodeSelectable", &viroSetNodeSelectable);
+    emscripten::function("viroSetNodeRotationPivot", &viroSetNodeRotationPivot);
+    emscripten::function("viroSetNodeScalePivot", &viroSetNodeScalePivot);
+    emscripten::function("viroSetNodeHighAccuracyEvents", &viroSetNodeHighAccuracyEvents);
     emscripten::function("viroSetNodeGeometry", &viroSetNodeGeometry);
     emscripten::function("viroAddChildNode", &viroAddChildNode);
     emscripten::function("viroRemoveNodeFromParent", &viroRemoveNodeFromParent);
@@ -2287,23 +3137,34 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetNodeShadowCastingBitMask", &viroSetNodeShadowCastingBitMask);
     emscripten::function("viroSetNodeBillboard", &viroSetNodeBillboard);
     emscripten::function("viroGetNodeWorldPosition", &viroGetNodeWorldPosition);
+    emscripten::function("viroGetNodeWorldTransform", &viroGetNodeWorldTransform);
+    emscripten::function("viroGetNodeBoundingBox", &viroGetNodeBoundingBox);
+    emscripten::function("viroSetNodeTimeToFuse", &viroSetNodeTimeToFuse);
+    emscripten::function("viroSetControllerEventEnabled", &viroSetControllerEventEnabled);
     emscripten::function("viroSetMorphTargetWeight", &viroSetMorphTargetWeight);
     emscripten::function("viroGetMorphTargetKeys", &viroGetMorphTargetKeys);
     emscripten::function("viroSetMorphMode", &viroSetMorphMode);
 
     emscripten::function("viroCreateBox", &viroCreateBox);
     emscripten::function("viroCreateSphere", &viroCreateSphere);
+    emscripten::function("viroCreateSphereEx", &viroCreateSphereEx);
     emscripten::function("viroCreateSurface", &viroCreateSurface);
     emscripten::function("viroCreateSurfaceUV", &viroCreateSurfaceUV);
     emscripten::function("viroCreateText", &viroCreateText);
+    emscripten::function("viroCreateStyledText", &viroCreateStyledText);
+    emscripten::function("viroTextFaceFile", &viroTextFaceFile);
     emscripten::function("viroCreatePolyline", &viroCreatePolyline);
     emscripten::function("viroCreatePolygon", &viroCreatePolygon);
+    emscripten::function("viroCreatePolygonEx", &viroCreatePolygonEx);
     emscripten::function("viroCreateGeometry", &viroCreateGeometry);
     emscripten::function("viroSetGeometryMaterial", &viroSetGeometryMaterial);
+    emscripten::function("viroSetGeometryMaterials", &viroSetGeometryMaterials);
+    emscripten::function("viroCreateGeometrySubmeshes", &viroCreateGeometrySubmeshes);
     emscripten::function("viroDestroyGeometry", &viroDestroyGeometry);
 
     emscripten::function("viroCreateMaterial", &viroCreateMaterial);
     emscripten::function("viroSetMaterialDiffuseColor", &viroSetMaterialDiffuseColor);
+    emscripten::function("viroSetMaterialEmissionColor", &viroSetMaterialEmissionColor);
     emscripten::function("viroSetMaterialLightingModel", &viroSetMaterialLightingModel);
     emscripten::function("viroDestroyMaterial", &viroDestroyMaterial);
     emscripten::function("viroSetMaterialShininess", &viroSetMaterialShininess);
@@ -2315,6 +3176,10 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetMaterialBlendMode", &viroSetMaterialBlendMode);
     emscripten::function("viroSetMaterialWritesToDepthBuffer", &viroSetMaterialWritesToDepthBuffer);
     emscripten::function("viroSetMaterialReadsFromDepthBuffer", &viroSetMaterialReadsFromDepthBuffer);
+    emscripten::function("viroSetMaterialTransparency", &viroSetMaterialTransparency);
+    emscripten::function("viroSetMaterialBloomThreshold", &viroSetMaterialBloomThreshold);
+    emscripten::function("viroSetMaterialColorWriteMask", &viroSetMaterialColorWriteMask);
+    emscripten::function("viroSetMaterialChromaKey", &viroSetMaterialChromaKey);
     emscripten::function("viroAddMaterialShaderModifier", &viroAddMaterialShaderModifier);
     emscripten::function("viroRemoveAllMaterialShaderModifiers", &viroRemoveAllMaterialShaderModifiers);
     emscripten::function("viroSetMaterialShaderUniformFloat", &viroSetMaterialShaderUniformFloat);
@@ -2325,6 +3190,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroApplyShaderOverride", &viroApplyShaderOverride);
 
     emscripten::function("viroCreateTextureRGBA", &viroCreateTextureRGBA);
+    emscripten::function("viroSetTextureStereoMode", &viroSetTextureStereoMode);
     emscripten::function("viroSetTextureWrap", &viroSetTextureWrap);
     emscripten::function("viroSetTextureFilter", &viroSetTextureFilter);
     emscripten::function("viroSetMaterialTexture", &viroSetMaterialTexture);
@@ -2338,14 +3204,21 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetBackgroundSphere", &viroSetBackgroundSphere);
     emscripten::function("viroSetBackgroundCube", &viroSetBackgroundCube);
     emscripten::function("viroSetBackgroundRotation", &viroSetBackgroundRotation);
+    emscripten::function("viroSetNodeBackgroundSphere", &viroSetNodeBackgroundSphere);
+    emscripten::function("viroSetNodeBackgroundCube", &viroSetNodeBackgroundCube);
+    emscripten::function("viroSetNodeBackgroundRotation", &viroSetNodeBackgroundRotation);
+    emscripten::function("viroRemoveNodeBackground", &viroRemoveNodeBackground);
     emscripten::function("viroCreateParticleEmitter", &viroCreateParticleEmitter);
     emscripten::function("viroSetParticleEmitterRun", &viroSetParticleEmitterRun);
+    emscripten::function("viroConfigureParticleEmitter", &viroConfigureParticleEmitter);
     emscripten::function("viroSetParticleAcceleration", &viroSetParticleAcceleration);
     emscripten::function("viroSetParticleModifier", &viroSetParticleModifier);
     emscripten::function("viroCreatePortalScene", &viroCreatePortalScene);
     emscripten::function("viroCreatePortalFrame", &viroCreatePortalFrame);
     emscripten::function("viroSetPortalEntrance", &viroSetPortalEntrance);
     emscripten::function("viroSetPortalPassable", &viroSetPortalPassable);
+    emscripten::function("viroSetPortalCallback", &viroSetPortalCallback);
+    emscripten::function("viroSetPortalEventsEnabled", &viroSetPortalEventsEnabled);
 
     emscripten::function("viroSetEventCallback", &viroSetEventCallback);
     emscripten::function("viroSetNodeEventEnabled", &viroSetNodeEventEnabled);
@@ -2375,6 +3248,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetActiveCameraNode", &viroSetActiveCameraNode);
     emscripten::function("viroSetCameraProjection", &viroSetCameraProjection);
     emscripten::function("viroSetCameraOrthographicScale", &viroSetCameraOrthographicScale);
+    emscripten::function("viroSetCameraFieldOfView", &viroSetCameraFieldOfView);
 
     emscripten::function("viroSetModelLoadCallback", &viroSetModelLoadCallback);
     emscripten::function("viroLoadModel", &viroLoadModel);
@@ -2385,6 +3259,7 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroPauseAnimation", &viroPauseAnimation);
     emscripten::function("viroResumeAnimation", &viroResumeAnimation);
     emscripten::function("viroStopAnimation", &viroStopAnimation);
+    emscripten::function("viroCanPauseDeclarativeAnimations", &viroCanPauseDeclarativeAnimations);
 
     emscripten::function("viroBeginAnimation", &viroBeginAnimation);
     emscripten::function("viroCommitAnimation", &viroCommitAnimation);
@@ -2393,6 +3268,8 @@ EMSCRIPTEN_BINDINGS(viro_web) {
     emscripten::function("viroSetFloorVisible", &viroSetFloorVisible);
     emscripten::function("viroARSetPose", &viroARSetPose);
     emscripten::function("viroARSetCameraBackground", &viroARSetCameraBackground);
+    emscripten::function("viroARSetPointCloud", &viroARSetPointCloud);
+    emscripten::function("viroARDisplayPointCloud", &viroARDisplayPointCloud);
     emscripten::function("viroARSetCameraImageSize", &viroARSetCameraImageSize);
     emscripten::function("viroARSetCameraIntrinsics", &viroARSetCameraIntrinsics);
 }

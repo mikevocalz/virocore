@@ -68,6 +68,17 @@ public:
     }
     bool hasIntrinsics() const { return _fx > 0 && _fy > 0; }
 
+    /**
+     The part of the camera image the viewport shows. As on native (ARKit's
+     displayTransform, ARCore's background texcoords), the image is cropped to
+     fill the viewport, never stretched: equal amounts come off both ends of
+     the axis that does not fit. l, r, t, b are the frustum's half-extents at
+     unit depth; trimU and trimV the fraction of the image cut from each side.
+     The projection and the background both read this, so they cannot disagree.
+     */
+    struct View { float l, r, t, b, trimU, trimV; };
+    View getView(VROViewport viewport) const;
+
 private:
     VROMatrix4f _rotation;
     VROVector3f _position;
@@ -130,6 +141,12 @@ public:
     /** Real intrinsics for the projection; see VROARCameraWeb::setIntrinsics. */
     void setCameraIntrinsics(float fx, float fy, float cx, float cy,
                              float w, float h);
+    /**
+     The tracker's feature points, world space (Y-up), with their ids. Every frame
+     built after this carries them, as ARKit's rawFeaturePoints and ARCore's point
+     cloud do, until the next call replaces them.
+     */
+    void setPointCloud(std::vector<VROVector4f> points, std::vector<uint64_t> identifiers);
 
     // --- VROARSession ---
     void run() override { _running = true; }
@@ -164,6 +181,7 @@ public:
     std::unique_ptr<VROARFrame> &updateFrame() override;
     std::unique_ptr<VROARFrame> &getLastFrame() override { return _currentFrame; }
     std::shared_ptr<VROTexture> getCameraBackgroundTexture() override { return _background; }
+    std::shared_ptr<VROARCameraWeb> getWebCamera() const { return _camera; }
     void setViewport(VROViewport viewport) override { _viewport = viewport; }
     void setOrientation(VROCameraOrientation orientation) override { _orientation = orientation; }
     void setWorldOrigin(VROMatrix4f relativeTransform) override {}
@@ -177,6 +195,7 @@ private:
     std::shared_ptr<VROARCameraWeb> _camera;
     std::shared_ptr<VROTexture> _background;
     std::vector<std::shared_ptr<VROARAnchor>> _anchors;
+    std::shared_ptr<VROARPointCloud> _pointCloud;
     VROViewport _viewport;
     VROCameraOrientation _orientation;
     bool _running;

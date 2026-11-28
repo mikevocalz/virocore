@@ -28,6 +28,7 @@
 #if VRO_METAL
 
 #include "VROSharedStructures.h"
+#include "VROImageUtil.h"
 #include "VROMetalUtils.h"
 #include "VROShaderModifier.h"
 #include "VRODriverMetal.h"
@@ -403,6 +404,20 @@ void VROMaterialSubstrateMetal::loadPhongLighting(const VROMaterial &material,
     _program = getPooledShader(vertexProgram, fragmentProgram, library);
 }
 
+int VROMaterialSubstrateMetal::pbrMaps(const VROMaterial &material) {
+    // Which PBR maps a material has. Occlusion on a second UV set is left out: the Metal
+    // path reads one set of texture coordinates.
+    int maps = 0;
+    if (material.getDiffuse().getTextureType() == VROTextureType::Texture2D) maps |= VRO_PBR_MAP_BASE;
+    if (material.getNormal().getTextureType() == VROTextureType::Texture2D) maps |= VRO_PBR_MAP_NORMAL;
+    if (material.getRoughness().getTextureType() == VROTextureType::Texture2D ||
+        material.getMetalness().getTextureType() == VROTextureType::Texture2D) maps |= VRO_PBR_MAP_METAL_ROUGH;
+    if (material.getAmbientOcclusion().getTextureType() == VROTextureType::Texture2D &&
+        material.getAmbientOcclusion().getTexcoordSet() == 0) maps |= VRO_PBR_MAP_AO;
+    if (material.getEmission().getTextureType() == VROTextureType::Texture2D) maps |= VRO_PBR_MAP_EMISSIVE;
+    return maps;
+}
+
 void VROMaterialSubstrateMetal::loadPBRLighting(const VROMaterial &material,
                                                id <MTLLibrary> library, id <MTLDevice> device,
                                                VRODriverMetal &driver) {
@@ -410,7 +425,20 @@ void VROMaterialSubstrateMetal::loadPBRLighting(const VROMaterial &material,
     std::string fragmentProgram;
 
     VROMaterialVisual &diffuse = material.getDiffuse();
-    if (diffuse.getTextureType() == VROTextureType::None) {
+    int maps = pbrMaps(material);
+    if ((maps & ~VRO_PBR_MAP_BASE) != 0) {
+        // glTF maps: the base color at 0 (blank when absent), the others at 8-11.
+        fragmentProgram = "pbr_lighting_fragment_maps";
+        std::shared_ptr<VROTexture> blank = getBlankTexture(VROTextureType::Texture2D);
+        auto mapOrBlank = [&](VROMaterialVisual &visual, int bit) {
+            return (maps & bit) ? visual.getTexture() : blank;
+        };
+        _textures.push_back(mapOrBlank(diffuse, VRO_PBR_MAP_BASE));
+        _indexedTextures.push_back({ 8,  mapOrBlank(material.getNormal(), VRO_PBR_MAP_NORMAL) });
+        _indexedTextures.push_back({ 9,  mapOrBlank(material.getRoughness(), VRO_PBR_MAP_METAL_ROUGH) });
+        _indexedTextures.push_back({ 10, mapOrBlank(material.getAmbientOcclusion(), VRO_PBR_MAP_AO) });
+        _indexedTextures.push_back({ 11, mapOrBlank(material.getEmission(), VRO_PBR_MAP_EMISSIVE) });
+    } else if (diffuse.getTextureType() == VROTextureType::None) {
         fragmentProgram = "pbr_lighting_fragment_c";
     } else {
         fragmentProgram = "pbr_lighting_fragment_t";
@@ -484,6 +512,16 @@ VROConcurrentBuffer &VROMaterialSubstrateMetal::bindMaterialUniforms(float opaci
     uniforms->ao = _material.getAmbientOcclusion().getColor().x;
     uniforms->tone_mapping_mask = _material.needsToneMapping() ? 1.0f : 0.0f;
     uniforms->bloom_threshold = _material.getBloomThreshold();
+    uniforms->texture_transform = toMatrixFloat4x4(_material.getDiffuse().getContentsTransform());
+    VROVector4f emission = _material.getEmission().getColor();
+    uniforms->emissive_color = toVectorFloat3(VROVector3f(emission.x, emission.y, emission.z));
+    uniforms->ignores_diffuse_alpha = _material.getIgnoresDiffuseAlpha() ? 1 : 0;
+    uniforms->pbr_maps = pbrMaps(_material);
+    uniforms->metalness_intensity = _material.getMetalness().getIntensity();
+    uniforms->roughness_intensity = _material.getRoughness().getIntensity();
+    uniforms->normal_scale = _material.getNormal().getIntensity();
+    uniforms->ao_strength = _material.getAmbientOcclusion().getIntensity();
+    uniforms->emissive_texture_transform = toMatrixFloat4x4(_material.getEmission().getContentsTransform());
 
     // Fill custom uniforms buffer based on the layout created during inflation
     if (!_material.getShaderModifiers().empty()) {
@@ -672,8 +710,9 @@ void VROMaterialSubstrateMetal::bindLights(int lightsHash,
             light_uniforms.attenuation_start_distance = light->getAttenuationStartDistance();
             light_uniforms.attenuation_end_distance = light->getAttenuationEndDistance();
             light_uniforms.attenuation_falloff_exp = light->getAttenuationFalloffExponent();
-            light_uniforms.spot_inner_angle = degrees_to_radians(light->getSpotInnerAngle());
-            light_uniforms.spot_outer_angle = degrees_to_radians(light->getSpotOuterAngle());
+            // cosines of the half angles, as VROLightingUBO gives the GL shaders
+            light_uniforms.spot_inner_angle = cos(degrees_to_radians(light->getSpotInnerAngle() * 0.5));
+            light_uniforms.spot_outer_angle = cos(degrees_to_radians(light->getSpotOuterAngle() * 0.5));
             light_uniforms.intensity = light->getIntensity();
 
             // Shadowing. VROShadowPreprocess assigns each shadow-casting light a slice

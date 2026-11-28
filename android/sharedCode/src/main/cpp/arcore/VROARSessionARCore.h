@@ -185,6 +185,7 @@ public:
     void setOcclusionMode(VROOcclusionMode mode) override;
     bool isOcclusionSupported() const override;
     void onWorldMeshEnabled(bool enabled) override;
+    void setDepthCaptureEnabled(bool enabled) override;
     void setFrontCameraEnabled(bool enabled);
     bool isFrontCameraEnabled() const { return _frontCameraEnabled; }
 
@@ -304,11 +305,23 @@ public:
      recordFrameForRecording() and setRecordingJavaCallback() below.
      */
     bool isRecordingSupported() const override { return true; }
+    bool isRecordingDepthSupported() const override;
     void startRecording(const VROARRecordingConfig &config,
                          std::function<void()> onSuccess,
                          std::function<void(std::string error)> onFailure) override;
-    void stopRecording() override;
+    /*
+     The files are written in Java, so the result passed here carries only
+     success; ARScene.stopRecording() returns the counts and sizes.
+     */
+    using VROARSession::stopRecording;
+    void stopRecording(std::function<void(const VROARRecordingResult &result)> onStopped) override;
     VROARRecordingStatus getRecordingStatus() const override;
+
+    /*
+     Whether the recording started last writes depth: it asked for it and the
+     session was measuring depth. Valid from the startRecording() success callback.
+     */
+    bool isRecordingDepth() const { return _recordingDepth; }
 
     /*
      Android-only, not part of VROARSession's shared interface: the JNI layer
@@ -376,6 +389,12 @@ public:
 private:
 
     /*
+     Moves a ReactVision resolve result onto an ARCore anchor added to this session.
+     Invoke from the rendering thread.
+     */
+    std::shared_ptr<VROARAnchor> trackResolvedAnchor(std::shared_ptr<VROARAnchor> resolved);
+
+    /*
      AR session recording (see the public API above). Global ref to the Java
      ARScene object recordFrameForRecording() calls back into; released in
      stopRecording()/setRecordingJavaCallback(nullptr).
@@ -383,6 +402,23 @@ private:
     jobject _recordingJavaCallback = nullptr;
     VROARRecordingStatus _recordingStatus = VROARRecordingStatus::None;
     void recordFrameForRecording(VROARFrameARCore *arFrame);
+
+    /*
+     Whether the running recording writes depth (see isRecordingDepth()), and the timestamp of the last
+     depth image handed to it (-1 before the first). Only touched on the render
+     thread.
+     */
+    bool _recordingDepth = false;
+    int64_t _lastRecordedDepthTimestampNs = -1;
+
+    /*
+     Copies the frame's smoothed depth (16-bit, millimetres) and the raw depth's
+     confidence (8-bit) into tightly packed buffers, unless the depth image is
+     not newer than the last recorded one by the recording's minimum interval.
+     Returns false, with the outputs unspecified, when there is nothing to record.
+     */
+    bool copyDepthForRecording(std::vector<uint8_t> &depth, std::vector<uint8_t> &confidence,
+                               int *width, int *height, int64_t *timestampNs);
 
     /*
      The ARCore session.
@@ -424,6 +460,7 @@ private:
     bool _semanticModeEnabled = false;
     bool _worldMeshDepthNeeded = false;  // set by onWorldMeshEnabled
     bool _frontCameraEnabled = false;            // use front camera via AR_AUGMENTED_FACE_MODE_MESH3D
+    bool _paused = false;  // pause() was called and run() has not been since: a config change keeps it paused
     bool _cloudAnchorsDisabledForFaceMode = false; // once disabled for face mode, keep disabled
 
     bool updateARCoreConfig();

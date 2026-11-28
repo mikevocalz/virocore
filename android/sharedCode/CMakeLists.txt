@@ -105,7 +105,6 @@ include_directories(${VIRO_RENDERER_SRC}
                     ${VIRO_ANDROID_INCLUDES}/freetype/include
                     ${VIRO_ANDROID_INCLUDES}/protobuf/include
                     ${VIRO_ANDROID_INCLUDES}/bullet/include
-                    ${VIRO_ANDROID_INCLUDES}/opencv/include
                     ${VIRO_ANDROID_INCLUDES}/arcore/include)
 
 # ── OpenXR loader (via Prefab from openxr_loader_for_android AAR) ─────────────
@@ -147,6 +146,7 @@ add_library( # Sets the name of the library.
              ${VIRO_ANDROID_SRC}/VROOpenXRRivePanelProducer.cpp
              ${VIRO_ANDROID_SRC}/VROOpenXRRivePanelFallback.cpp
              ${VIRO_ANDROID_SRC}/VRORivePanel.cpp
+             ${VIRO_ANDROID_SRC}/VROHandOcclusionOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXR.cpp
              ${VIRO_ANDROID_SRC}/VROARSessionOpenXRSharedFrame.cpp
              ${VIRO_ANDROID_SRC}/Colocation_JNI.cpp
@@ -576,10 +576,15 @@ set_target_properties( lib-LinearMath
 # before building ViroCore.  It is OPTIONAL: open-source builds without the .so
 # compile stub implementations that report the feature as unavailable.
 #
-# To enable: run reactvisioncca/scripts/build_android.sh and copy the .so files
+# To enable: run spatial/scripts/build_android.sh and copy the .so files
 # to android/sharedCode/src/main/jniLibs/{abi}/ before building ViroCore.
+# The sibling checkout is spatial/ (the repo's name); reactvisioncca/ is the
+# folder's old name, still found so a checkout that kept it keeps building.
 
-set(RVCCA_DIR "${CMAKE_SOURCE_DIR}/../../../reactvisioncca")
+set(RVCCA_DIR "${CMAKE_SOURCE_DIR}/../../../spatial")
+if(NOT EXISTS "${RVCCA_DIR}/include" AND EXISTS "${CMAKE_SOURCE_DIR}/../../../reactvisioncca/include")
+    set(RVCCA_DIR "${CMAKE_SOURCE_DIR}/../../../reactvisioncca")
+endif()
 set(RVCCA_SO  "${VIRO_ANDROID_LIBS}/${ANDROID_ABI}/libreactvisioncca.so")
 set(RVCCA_HDR "${RVCCA_DIR}/include/ReactVisionCCA/RVCCACloudAnchorProvider.h")
 

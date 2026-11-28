@@ -44,14 +44,18 @@ public:
         _material(material),
         _permissibleContentsMask(permissibleContentsMask),
         _contentsColor({ 1.0, 1.0, 1.0, 1.0 }),
-        _intensity(1.0)
+        _intensity(1.0),
+        _hasContentsTransform(false),
+        _texcoordSet(0)
     {}
 
     VROMaterialVisual(VROMaterial &material, int permissibleContentsMask, VROVector4f color) :
             _material(material),
             _permissibleContentsMask(permissibleContentsMask),
             _contentsColor(color),
-            _intensity(1.0)
+            _intensity(1.0),
+            _hasContentsTransform(false),
+            _texcoordSet(0)
     {}
     
     /*
@@ -95,6 +99,40 @@ public:
     
     VROVector4f getColor() const {
         return _contentsColor;
+    }
+
+    /*
+     Set the color without the fade or the substrate rebuild setColor() does, for a
+     value driven every frame by an animation (glTF KHR_animation_pointer). The
+     shaders read the color when they bind the material, so it shows on the next draw.
+     */
+    void setColorImmediate(VROVector4f color) {
+        _contentsColor = color;
+    }
+
+    /*
+     The transform applied to the texture coordinates before this visual's texture is
+     sampled (glTF KHR_texture_transform). Only the diffuse visual's is used, and it
+     applies to every texture of the material, which all sample the diffuse texture
+     coordinates. The first call rebuilds the substrate, so the shader gains the
+     transform; later calls, such as an animation's, only change the value.
+     */
+    void setContentsTransform(VROMatrix4f transform);
+    const VROMatrix4f &getContentsTransform() const {
+        return _contentsTransform;
+    }
+    bool hasContentsTransform() const {
+        return _hasContentsTransform;
+    }
+
+    /*
+     The set of texture coordinates this visual's texture samples: 0 (the geometry's
+     texcoord source) or 1 (its Texcoord1 source). Only the ambient occlusion visual
+     reads a second set (a glTF occlusion map or lightmap on TEXCOORD_1).
+     */
+    void setTexcoordSet(int set);
+    int getTexcoordSet() const {
+        return _texcoordSet;
     }
     
     std::shared_ptr<VROTexture> getTexture() const {
@@ -144,6 +182,8 @@ private:
      the material is attached to.
      */
     VROMatrix4f _contentsTransform;
+    bool _hasContentsTransform;
+    int _texcoordSet;
     
 };
 
