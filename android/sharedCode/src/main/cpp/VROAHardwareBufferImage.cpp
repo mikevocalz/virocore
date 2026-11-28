@@ -15,13 +15,15 @@
 #include <cstring>
 #include <mutex>
 
-namespace {
-
 // The library is built for minSdk 24 and AHardwareBuffer arrived in API 26,
 // so the NDK declares its functions unavailable at compile time. They are
 // looked up in libandroid.so at runtime instead; on API 24-25 the lookup
-// fails and the import reports it.
+// fails and the import reports it. The type itself is the global one that
+// <EGL/eglext.h> forward-declares.
 struct AHardwareBuffer;
+
+namespace {
+
 typedef void (*AHBAcquireFn)(AHardwareBuffer *);
 typedef void (*AHBReleaseFn)(AHardwareBuffer *);
 
@@ -103,8 +105,7 @@ std::unique_ptr<VROAHardwareBufferImage> VROAHardwareBufferImage::create(uint64_
     }
 
     AHardwareBuffer *ahb = reinterpret_cast<AHardwareBuffer *>(static_cast<uintptr_t>(buffer));
-    EGLClientBuffer clientBuffer = fns.getNativeClientBuffer(
-        reinterpret_cast<const struct AHardwareBuffer *>(ahb));
+    EGLClientBuffer clientBuffer = fns.getNativeClientBuffer(ahb);
     if (clientBuffer == nullptr) {
         pinfo("VROAHardwareBufferImage: eglGetNativeClientBufferANDROID returned null (0x%x)",
               eglGetError());
