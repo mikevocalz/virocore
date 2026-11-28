@@ -73,6 +73,10 @@ FOUNDATION_EXPORT const unsigned char ViroKitVersionString[];
 #import <ViroKit/VROMaterialVisual.h>
 #import <ViroKit/VROAnimatedTextureOpenGL.h>
 #import <ViroKit/VROTexture.h>
+#import <ViroKit/NitroCanvasSharedTextureABI.h>
+#import <ViroKit/VROExternalSurfaceTexture.h>
+#import <ViroKit/VRONitroCanvasLookup.h>
+#import <ViroKit/VRONitroCanvasSource.h>
 #import <ViroKit/VROTextureSubstrate.h>
 #import <ViroKit/VROLight.h>
 #import <ViroKit/VROImage.h>

@@ -29,11 +29,16 @@
 #include "VROTexture.h"
 #include "VROOpenGL.h"
 #include <atomic>
+#include <cstdint>
 #include <memory>
 class VRORenderContext;
+class VROFrameListener;
 class VROFrameSynchronizer;
 class VRODriver;
 class VRODriverOpenGL;
+class VROAHardwareBufferImage;
+class VRONitroCanvasSource;
+struct NitroCanvasSharedTextureHandle;
 
 /*
  VROAndroidViewTexture is responsible for constructing and initializing
@@ -67,6 +72,21 @@ class VRODriverOpenGL;
  function (VROPanelCoverage.h), alpha only for straight input and all four
  channels for premultiplied input. Radius 0, the default, leaves every texel
  unchanged.
+
+ Two sources feed the OES texture:
+
+ - Surface (default): a VideoSink SurfaceTexture whose Surface is handed to
+   the Java object through setVideoSink(Surface); each latched frame is
+   resolved.
+ - Nitro canvas lookup (setNitroCanvasSurface() before init()): no Surface is
+   made. Every frame, before rendering, the texture calls the producer's
+   nitro_canvas_lookup_v2 for its surface id (VRONitroCanvasSource). A new
+   frame's AHardwareBuffer is bound to the OES texture through an EGLImage,
+   re-imported only when the buffer, size or colour flag changes; the
+   producer's fence is waited on (VROConsumeNativeFence) and the frame is
+   resolved like a latched one. A producer that publishes a SurfaceTexture GL
+   name instead (Route A) is resolved from that name directly. A size change
+   rebuilds the resolve target at the producer's new size.
  */
 /*
  Which Java class owns the texture. Only used to name the live-count log
@@ -89,8 +109,25 @@ public:
 
     /*
      Must be invoked from the rendering thread after construction.
+     frameSynchronizer is required in nitro canvas lookup mode (it drives the
+     per-frame lookup) and unused otherwise.
      */
-    void init(std::shared_ptr<VRODriverOpenGL> driver);
+    void init(std::shared_ptr<VRODriverOpenGL> driver,
+              std::shared_ptr<VROFrameSynchronizer> frameSynchronizer = nullptr);
+
+    /*
+     Switch to nitro canvas lookup mode for `surfaceId` (a JS CanvasSurface
+     id). Call once, after construction and before init(). Any thread.
+     */
+    void setNitroCanvasSurface(int32_t surfaceId);
+    int32_t getNitroCanvasSurfaceId() const { return _nitroSurfaceId; }
+
+    /*
+     One lookup-mode frame: poll the producer, import, fence, resolve.
+     Rendering thread. Returns true when a new frame was shown. Called by the
+     frame listener init() registers; public for that listener only.
+     */
+    bool updateFromNitroCanvasSurface();
 
     /*
      Called on the rendering thread right after the SurfaceTexture whose OES
@@ -159,6 +196,21 @@ private:
 
     const VROAndroidViewTextureKind _kind;
 
+    // Lookup mode. _nitroSurfaceId is 0 in Surface mode.
+    int32_t _nitroSurfaceId;
+    std::unique_ptr<VRONitroCanvasSource> _nitroSource;
+    std::unique_ptr<VROAHardwareBufferImage> _nitroImage;
+    std::shared_ptr<VROFrameListener> _nitroFrameListener;
+    // The OES name resolve() samples: _textureId, or the producer's own name
+    // for a Route A (SurfaceTexture) frame.
+    GLuint _resolveSourceTexture;
+    bool _sRGBStorage;
+
+    bool importNitroCanvasFrame(const NitroCanvasSharedTextureHandle &handle);
+    // Rebuild the mipmapped target at a new producer size. Rendering thread.
+    bool resizeResolveTarget(int width, int height);
+    bool createResolveTarget(bool sRGBStorage);
+    void destroyResolveTarget();
     bool createResolveResources(bool sRGBStorage);
     void resolve();
     // Copies the last latched frame again with the current corner and alpha

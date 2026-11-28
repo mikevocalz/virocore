@@ -60,6 +60,17 @@ jobs:
               "sharedCode/src/test/cpp/$test.cpp" -o "$RUNNER_TEMP/$test"
             "$RUNNER_TEMP/$test"
           done
+      - name: Nitro canvas lookup host test
+        # Builds the nitro_canvas_lookup_v2 consumer with a fake producer
+        # export; -rdynamic lets dlsym(RTLD_DEFAULT) see it as on a device.
+        run: |
+          c++ -std=c++14 -Wall -Wextra -Werror -UNDEBUG -rdynamic \
+            -I../ViroRenderer \
+            sharedCode/src/test/cpp/VRONitroCanvasSourceTest.cpp \
+            ../ViroRenderer/VRONitroCanvasLookup.cpp \
+            ../ViroRenderer/VRONitroCanvasSource.cpp \
+            -ldl -o "$RUNNER_TEMP/VRONitroCanvasSourceTest"
+          "$RUNNER_TEMP/VRONitroCanvasSourceTest"
       - name: Code checks
         run: ./gradlew :viroreact:check
       - name: Archive Lint report

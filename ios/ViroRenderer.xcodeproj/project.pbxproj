@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E9AC00A10000000000000001 /* VRONitroCanvasLookup.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000001 /* VRONitroCanvasLookup.cpp */; };
+		E9AC00B10000000000000001 /* VRONitroCanvasLookup.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000001 /* VRONitroCanvasLookup.cpp */; };
+		E9AC00A10000000000000002 /* VRONitroCanvasSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000002 /* VRONitroCanvasSource.cpp */; };
+		E9AC00B10000000000000002 /* VRONitroCanvasSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000002 /* VRONitroCanvasSource.cpp */; };
+		E9AC00C10000000000000003 /* VRONitroCanvasLookup.h in Headers */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000003 /* VRONitroCanvasLookup.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		E9AC00C10000000000000004 /* VRONitroCanvasSource.h in Headers */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000004 /* VRONitroCanvasSource.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		E9AC00C10000000000000005 /* VROExternalSurfaceTexture.h in Headers */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000005 /* VROExternalSurfaceTexture.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		E9AC00C10000000000000006 /* NitroCanvasSharedTextureABI.h in Headers */ = {isa = PBXBuildFile; fileRef = E9AC00F00000000000000006 /* NitroCanvasSharedTextureABI.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0060000856FC817B11DFCEF0 /* VROTypefaceCollection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 793570B86B311B13FD3F8A7C /* VROTypefaceCollection.cpp */; };
 		0072804AC1239B098DB6518E /* VRORenderer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 96B212D539DB438DA3A387FA /* VRORenderer.cpp */; };
 		00CCAC1BF8C9F0AA8D0625E0 /* VROCompress.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3CF79B8B41241598CC7D6450 /* VROCompress.cpp */; };
@@ -1274,6 +1282,12 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E9AC00F00000000000000001 /* VRONitroCanvasLookup.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = VRONitroCanvasLookup.cpp; sourceTree = "<group>"; };
+		E9AC00F00000000000000002 /* VRONitroCanvasSource.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = VRONitroCanvasSource.cpp; sourceTree = "<group>"; };
+		E9AC00F00000000000000003 /* VRONitroCanvasLookup.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VRONitroCanvasLookup.h; sourceTree = "<group>"; };
+		E9AC00F00000000000000004 /* VRONitroCanvasSource.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VRONitroCanvasSource.h; sourceTree = "<group>"; };
+		E9AC00F00000000000000005 /* VROExternalSurfaceTexture.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VROExternalSurfaceTexture.h; sourceTree = "<group>"; };
+		E9AC00F00000000000000006 /* NitroCanvasSharedTextureABI.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = NitroCanvasSharedTextureABI.h; sourceTree = "<group>"; };
 		009E8E64DFA29C77F570176E /* VRODriver.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VRODriver.cpp; path = ../ViroRenderer/VRODriver.cpp; sourceTree = "<absolute>"; };
 		0474FF2AA2586E72363D1B37 /* VROAnimatable.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VROAnimatable.cpp; path = ../ViroRenderer/VROAnimatable.cpp; sourceTree = "<absolute>"; };
 		06403F3872FC2AEEF086DEC6 /* VROShapeUtils.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = VROShapeUtils.cpp; path = ../ViroRenderer/VROShapeUtils.cpp; sourceTree = "<absolute>"; };
@@ -2794,6 +2808,12 @@
 				A597F8EF201ADD17007EE387 /* VROBRDFRenderPass.cpp */,
 				A597F8EE201ADD16007EE387 /* VROBRDFRenderPass.h */,
 				E5C7A10000000001A0000001 /* VROExternalSurfaceTexture.cpp */,
+				E9AC00F00000000000000001 /* VRONitroCanvasLookup.cpp */,
+				E9AC00F00000000000000002 /* VRONitroCanvasSource.cpp */,
+				E9AC00F00000000000000003 /* VRONitroCanvasLookup.h */,
+				E9AC00F00000000000000004 /* VRONitroCanvasSource.h */,
+				E9AC00F00000000000000005 /* VROExternalSurfaceTexture.h */,
+				E9AC00F00000000000000006 /* NitroCanvasSharedTextureABI.h */,
 			);
 			name = Renderer;
 			sourceTree = "<group>";
@@ -4322,6 +4342,10 @@
 				8FC908871CA458EB00069C89 /* VRONodeCamera.h in Headers */,
 				8FD4DF381C18F500003DC425 /* VROMaterialVisual.h in Headers */,
 				8FD4DF391C18F500003DC425 /* VROTexture.h in Headers */,
+				E9AC00C10000000000000003 /* VRONitroCanvasLookup.h in Headers */,
+				E9AC00C10000000000000004 /* VRONitroCanvasSource.h in Headers */,
+				E9AC00C10000000000000005 /* VROExternalSurfaceTexture.h in Headers */,
+				E9AC00C10000000000000006 /* NitroCanvasSharedTextureABI.h in Headers */,
 				8F292C2020A9E78100635C0D /* VROTextureSubstrate.h in Headers */,
 				8FDDB4B31DB1316700DE0968 /* VROUniform.h in Headers */,
 				8F3488B31EE83DD3008917CB /* VROARSessionInertial.h in Headers */,
@@ -5401,6 +5425,8 @@
 				14426EEDC8513DBFAE126A49 /* VROARSessionRecorderIOS.mm in Sources */,
 				9F2A45203A91D7E0E12C5734 /* VROARWorldMesh.cpp in Sources */,
 				E5C7A10000000001B0000001 /* VROExternalSurfaceTexture.cpp in Sources */,
+				E9AC00A10000000000000001 /* VRONitroCanvasLookup.cpp in Sources */,
+				E9AC00A10000000000000002 /* VRONitroCanvasSource.cpp in Sources */,
 				E5C7A10000000001B0000002 /* VROExternalSurfaceTextureImpl.mm in Sources */,
 				A1B2C3D40000000000TSDF01 /* VROTSDFVolume.cpp in Sources */,
 			);
@@ -5549,6 +5575,8 @@
 				7CEFDAE56318349A3E81E25D /* VROVisionOSRenderStubs.cpp in Sources */,
 				03B7FE975986133ED1AA3814 /* Shaders.metal in Sources */,
 				E5C7A10000000001B0000003 /* VROExternalSurfaceTexture.cpp in Sources */,
+				E9AC00B10000000000000001 /* VRONitroCanvasLookup.cpp in Sources */,
+				E9AC00B10000000000000002 /* VRONitroCanvasSource.cpp in Sources */,
 				E5C7A10000000001B0000004 /* VROExternalSurfaceTextureImpl.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
