@@ -12,6 +12,7 @@
 #include "VROAHardwareBufferImage.h"
 #include "VROTextureSubstrateOpenGL.h"
 #include "VRODriverOpenGL.h"
+#include "VROPanelGLStateGuard.h"
 #include "VROLog.h"
 
 #include <GLES2/gl2.h>
@@ -45,6 +46,9 @@ importRouteB(const VROSharedTextureHandle &handle,
         return nullptr;
     }
 
+    // Runs at frame start, outside any draw: restore the bindings the
+    // driver's state cache believes in.
+    VROPanelGLStateGuard guard;
     GLuint texId = 0;
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, texId);

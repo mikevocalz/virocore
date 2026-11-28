@@ -179,8 +179,9 @@ VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int 
         _sizeUniform(-1),
         _radiusUniform(-1),
         _premultipliedUniform(-1),
-        _cornerRadiusXPx(0.0f),
-        _cornerRadiusYPx(0.0f),
+        _cornerRadiusM(0.0f),
+        _panelWidthM(0.0f),
+        _panelHeightM(0.0f),
         _premultipliedAlpha(false),
         _kind(kind),
         _nitroSurfaceId(0),
@@ -435,10 +436,11 @@ void VROAndroidViewTexture::onExternalFrameLatched(GLuint oesTextureId) {
 
 void VROAndroidViewTexture::setCornerRadius(float radiusMeters, float widthMeters,
                                             float heightMeters) {
-    VROPanelCornerRadii radii = VROPanelCornerRadiiPx(radiusMeters, widthMeters, heightMeters,
-                                                      (float) _width, (float) _height);
-    _cornerRadiusXPx.store(radii.x);
-    _cornerRadiusYPx.store(radii.y);
+    // Kept in meters; resolve() converts at the texture's current pixel size,
+    // which a nitro canvas producer can change.
+    _cornerRadiusM.store(radiusMeters);
+    _panelWidthM.store(widthMeters);
+    _panelHeightM.store(heightMeters);
     scheduleResolve();
 }
 
@@ -484,7 +486,10 @@ void VROAndroidViewTexture::resolve() {
 
     glUseProgram(_resolveProgram);
     glUniform2f(_sizeUniform, (GLfloat) _width, (GLfloat) _height);
-    glUniform2f(_radiusUniform, _cornerRadiusXPx.load(), _cornerRadiusYPx.load());
+    VROPanelCornerRadii radii = VROPanelCornerRadiiPx(_cornerRadiusM.load(), _panelWidthM.load(),
+                                                      _panelHeightM.load(),
+                                                      (float) _width, (float) _height);
+    glUniform2f(_radiusUniform, radii.x, radii.y);
     glUniform1f(_premultipliedUniform, _premultipliedAlpha.load() ? 1.0f : 0.0f);
     glBindVertexArray(_resolveVAO);
     glActiveTexture(GL_TEXTURE0);
@@ -557,7 +562,8 @@ bool VROAndroidViewTexture::importNitroCanvasFrame(const NitroCanvasSharedTextur
 }
 
 bool VROAndroidViewTexture::updateFromNitroCanvasSurface() {
-    if (!_nitroSource || _textureId == 0) {
+    // No resolve program means init() failed; there is nothing to draw with.
+    if (!_nitroSource || _textureId == 0 || _resolveProgram == 0) {
         return false;
     }
     VRONitroCanvasFrame frame;
@@ -577,6 +583,7 @@ bool VROAndroidViewTexture::updateFromNitroCanvasSurface() {
         }
     }
     if (frame.storageChanged || !_hasLatchedFrame) {
+        VROPanelGLStateGuard guard;
         if (!importNitroCanvasFrame(frame.handle)) {
             _nitroSource->invalidateStorage();
             return false;

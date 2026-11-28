@@ -164,6 +164,24 @@ int main() {
     assert(frame.storageChanged);
     assert(source.getFrameCount() == 5);
 
+    // Two sources on one id: the producer hands the frame out once, both
+    // see it, and only the one that took it gets the fence.
+    {
+        VRONitroCanvasSource first(7);
+        VRONitroCanvasSource second(7);
+        fence = pipeReadEnd(&writeEnd);
+        gProducer.payload = makePayload(0x4000, 64, 64, fence);
+        gProducer.ready = true;
+        assert(first.poll(&frame));
+        assert(frame.handle.ahardwareBuffer == 0x4000 && frame.handle.fenceFd == fence);
+        assert(second.poll(&frame));
+        assert(frame.handle.ahardwareBuffer == 0x4000 && frame.handle.fenceFd == -1);
+        assert(!first.poll(&frame));
+        assert(!second.poll(&frame));
+        close(fence);
+        close(writeEnd);
+    }
+
     // A different surface id never sees this producer's frames.
     VRONitroCanvasSource other(8);
     gProducer.ready = true;

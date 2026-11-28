@@ -104,11 +104,16 @@ std::unique_ptr<VROAHardwareBufferImage> VROAHardwareBufferImage::create(uint64_
         return nullptr;
     }
 
+    // Take our reference first: the pointer is the producer's, and it may
+    // drop or replace the buffer on its own thread at any time.
     AHardwareBuffer *ahb = reinterpret_cast<AHardwareBuffer *>(static_cast<uintptr_t>(buffer));
+    fns.acquire(ahb);
+
     EGLClientBuffer clientBuffer = fns.getNativeClientBuffer(ahb);
     if (clientBuffer == nullptr) {
         pinfo("VROAHardwareBufferImage: eglGetNativeClientBufferANDROID returned null (0x%x)",
               eglGetError());
+        fns.release(ahb);
         return nullptr;
     }
 
@@ -118,11 +123,11 @@ std::unique_ptr<VROAHardwareBufferImage> VROAHardwareBufferImage::create(uint64_
                                         clientBuffer, attributes);
     if (image == EGL_NO_IMAGE_KHR) {
         pinfo("VROAHardwareBufferImage: eglCreateImageKHR failed (0x%x)", eglGetError());
+        fns.release(ahb);
         return nullptr;
     }
 
-    // Our own reference, released in the destructor after the image.
-    fns.acquire(ahb);
+    // The reference taken above is released in the destructor, after the image.
     return std::unique_ptr<VROAHardwareBufferImage>(
         new VROAHardwareBufferImage(buffer, display, image));
 }
@@ -146,6 +151,9 @@ bool VROAHardwareBufferImage::bindTo(GLuint textureName) const {
     const ImportFns &fns = importFns();
     if (textureName == 0 || !fns.imageTargetTexture2D) {
         return false;
+    }
+    // Drop errors left by earlier GL work so they are not blamed on this bind.
+    while (glGetError() != GL_NO_ERROR) {
     }
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureName);
     fns.imageTargetTexture2D(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES) _image);

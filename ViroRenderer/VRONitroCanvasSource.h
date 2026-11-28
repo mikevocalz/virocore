@@ -14,7 +14,10 @@
 #define VRONitroCanvasSource_h
 
 #include <cstdint>
+#include <memory>
 #include "NitroCanvasSharedTextureABI.h"
+
+struct VRONitroCanvasChannel;
 
 /*
  One new producer frame, as returned by VRONitroCanvasSource::poll().
@@ -40,9 +43,20 @@ struct VRONitroCanvasFrame {
  */
 typedef bool (*VRONitroCanvasPollFn)(int32_t surfaceId, NitroCanvasSharedTextureHandle *out);
 
+/*
+ Several textures may bind the same surface id (the same canvas on two
+ materials, or a texture re-created before the old one is collected). The
+ producer hands each published frame out once, so sources on one id share a
+ process-wide channel: whichever polls first takes the frame from the
+ producer, and the others receive the same handle on their next poll. Only
+ the source that took it from the producer gets the fence; the rest share the
+ rendering thread's GL context, where that wait is already queued ahead of
+ them.
+ */
 class VRONitroCanvasSource {
 public:
     explicit VRONitroCanvasSource(int32_t surfaceId, VRONitroCanvasPollFn pollFn = nullptr);
+    ~VRONitroCanvasSource();
 
     int32_t getSurfaceId() const { return _surfaceId; }
 
@@ -67,6 +81,8 @@ public:
 private:
     const int32_t _surfaceId;
     VRONitroCanvasPollFn _pollFn;
+    std::shared_ptr<VRONitroCanvasChannel> _channel;
+    uint64_t _seenGeneration;
 
     bool _hasStorage;
     uint64_t _iosurface;

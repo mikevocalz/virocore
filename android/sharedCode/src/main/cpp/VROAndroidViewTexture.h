@@ -188,8 +188,10 @@ private:
     GLint _premultipliedUniform;
 
     // Written from any thread, read by resolve() on the rendering thread.
-    std::atomic<float> _cornerRadiusXPx;
-    std::atomic<float> _cornerRadiusYPx;
+    // Corner radius and the panel size it is relative to, in meters.
+    std::atomic<float> _cornerRadiusM;
+    std::atomic<float> _panelWidthM;
+    std::atomic<float> _panelHeightM;
     std::atomic<bool> _premultipliedAlpha;
 
     std::weak_ptr<VRODriverOpenGL> _driver;
