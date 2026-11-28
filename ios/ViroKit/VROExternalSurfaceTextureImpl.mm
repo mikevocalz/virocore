@@ -413,22 +413,244 @@ VROExternalSurfaceTextureImpl_importHandle(const VROSharedTextureHandle &handle,
 
 #else
 
+/*
+ OpenGL ES half (the iOS ViroKit framework builds against GLES):
+ IOSurface -> CVPixelBuffer -> CVOpenGLESTextureCache -> GL_TEXTURE_2D.
+
+ Same shape as the Metal importer above: one cache entry per producer
+ IOSurface, built the first frame the surface is seen and reused after. The
+ texture cache is created against the EAGLContext current on the render
+ thread. GL defers deletion of a texture that queued commands still use, so a
+ replaced entry can be released at once and needs no retire list.
+ */
+
 #include "VROExternalSurfaceTexture.h"
-#include "VROTextureSubstrate.h"
+#include "VROTextureSubstrateOpenGL.h"
+#include "VRODriverOpenGL.h"
 #include "VROLog.h"
 
-/*
- iOS builds ViroKit against OpenGL ES, where the import would go
- IOSurface -> CVPixelBuffer -> CVOpenGLESTextureCache -> GL_TEXTURE_2D, as
- VROExternalSurfaceTexture.h describes. That route is not written. The symbol
- is defined anyway so the OpenGL ES build of ViroKit links, and returning null
- is the "skip this frame" answer the caller already handles.
- */
+#include <CoreVideo/CoreVideo.h>
+#include <IOSurface/IOSurfaceRef.h>
+#include <OpenGLES/EAGL.h>
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES2/glext.h>
+
+#include <utility>
+#include <vector>
+
+namespace {
+
+const size_t kMaxCachedSurfacesGL = 4;
+
+class VROImportedSurfaceGL {
+
+public:
+
+    VROImportedSurfaceGL(IOSurfaceRef surface, IOSurfaceID surfaceId, bool sRGB,
+                         CVPixelBufferRef pixelBuffer, CVOpenGLESTextureRef texture) :
+        _surface(surface), _surfaceId(surfaceId), _sRGB(sRGB),
+        _pixelBuffer(pixelBuffer), _texture(texture) {
+        CFRetain(_surface);
+    }
+
+    ~VROImportedSurfaceGL() {
+        CFRelease(_texture);
+        CVPixelBufferRelease(_pixelBuffer);
+        CFRelease(_surface);
+    }
+
+    VROImportedSurfaceGL(const VROImportedSurfaceGL &) = delete;
+    VROImportedSurfaceGL &operator=(const VROImportedSurfaceGL &) = delete;
+
+    bool matches(IOSurfaceRef surface, IOSurfaceID surfaceId, bool sRGB) const {
+        return _surface == surface && _surfaceId == surfaceId && _sRGB == sRGB;
+    }
+    GLuint getName() const { return CVOpenGLESTextureGetName(_texture); }
+    GLenum getTarget() const { return CVOpenGLESTextureGetTarget(_texture); }
+
+private:
+
+    IOSurfaceRef _surface;
+    IOSurfaceID _surfaceId;
+    bool _sRGB;
+    CVPixelBufferRef _pixelBuffer;
+    CVOpenGLESTextureRef _texture;
+
+};
+
+// Holds its import alive for as long as the renderer samples it. The GL name
+// belongs to CoreVideo (owned = false).
+class VROExternalSurfaceSubstrateGL : public VROTextureSubstrateOpenGL {
+
+public:
+
+    VROExternalSurfaceSubstrateGL(std::shared_ptr<VROImportedSurfaceGL> surface,
+                                  std::shared_ptr<VRODriverOpenGL> driver) :
+        VROTextureSubstrateOpenGL(surface->getTarget(), surface->getName(), driver, false),
+        _surface(std::move(surface)) {
+    }
+
+private:
+
+    std::shared_ptr<VROImportedSurfaceGL> _surface;
+
+};
+
+class VROSharedTextureImporterGL {
+
+public:
+
+    ~VROSharedTextureImporterGL() {
+        _live.clear();
+        if (_cache != nullptr) {
+            CFRelease(_cache);
+        }
+    }
+
+    std::unique_ptr<VROTextureSubstrate> importHandle(const VROSharedTextureHandle &handle,
+                                                      std::shared_ptr<VRODriverOpenGL> driver) {
+        IOSurfaceRef surface = reinterpret_cast<IOSurfaceRef>(static_cast<uintptr_t>(handle.iosurface));
+        if (surface == nullptr) {
+            pinfo("VROExternalSurfaceTexture: Apple handle has no IOSurface set");
+            return nullptr;
+        }
+        if (IOSurfaceGetPixelFormat(surface) != kCVPixelFormatType_32BGRA) {
+            pinfo("VROExternalSurfaceTexture: IOSurface pixel format 0x%x is not 32BGRA",
+                  (unsigned int) IOSurfaceGetPixelFormat(surface));
+            return nullptr;
+        }
+        if (!bindCache()) {
+            return nullptr;
+        }
+
+        const bool sRGB = (handle.flags & NITRO_CANVAS_FLAG_SRGB) != 0;
+        const IOSurfaceID surfaceId = IOSurfaceGetID(surface);
+        std::shared_ptr<VROImportedSurfaceGL> entry;
+        for (size_t i = 0; i < _live.size(); i++) {
+            if (_live[i]->matches(surface, surfaceId, sRGB)) {
+                entry = _live[i];
+                _live.erase(_live.begin() + i);
+                break;
+            }
+        }
+        if (!entry) {
+            entry = import(surface, surfaceId, sRGB);
+            if (!entry) {
+                return nullptr;
+            }
+        }
+        _live.insert(_live.begin(), entry);
+        while (_live.size() > kMaxCachedSurfacesGL) {
+            _live.pop_back();
+        }
+        return std::unique_ptr<VROTextureSubstrate>(new VROExternalSurfaceSubstrateGL(entry, driver));
+    }
+
+private:
+
+    bool bindCache() {
+        EAGLContext *context = [EAGLContext currentContext];
+        if (context == nil) {
+            pinfo("VROExternalSurfaceTexture: no current EAGLContext on the render thread");
+            return false;
+        }
+        const void *identity = (__bridge const void *) context;
+        if (_cache != nullptr && _cacheContext == identity) {
+            return true;
+        }
+        _live.clear();
+        if (_cache != nullptr) {
+            CFRelease(_cache);
+            _cache = nullptr;
+        }
+        CVReturn result = CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, nullptr, context,
+                                                       nullptr, &_cache);
+        if (result != kCVReturnSuccess || _cache == nullptr) {
+            _cache = nullptr;
+            pinfo("VROExternalSurfaceTexture: CVOpenGLESTextureCacheCreate failed (%d)", (int) result);
+            return false;
+        }
+        _cacheContext = identity;
+        return true;
+    }
+
+    std::shared_ptr<VROImportedSurfaceGL> import(IOSurfaceRef surface, IOSurfaceID surfaceId, bool sRGB) {
+        CVPixelBufferRef pixelBuffer = nullptr;
+        CVReturn result = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface,
+                                                           nullptr, &pixelBuffer);
+        if (result != kCVReturnSuccess || pixelBuffer == nullptr) {
+            pinfo("VROExternalSurfaceTexture: CVPixelBufferCreateWithIOSurface failed (%d)", (int) result);
+            return nullptr;
+        }
+        // The sRGB internal format makes sampling decode to linear, as the
+        // Metal path's _sRGB view does.
+        CVOpenGLESTextureRef texture = nullptr;
+        result = CVOpenGLESTextureCacheCreateTextureFromImage(kCFAllocatorDefault, _cache, pixelBuffer,
+                                                              nullptr, GL_TEXTURE_2D,
+                                                              sRGB ? GL_SRGB8_ALPHA8 : GL_RGBA,
+                                                              (GLsizei) CVPixelBufferGetWidth(pixelBuffer),
+                                                              (GLsizei) CVPixelBufferGetHeight(pixelBuffer),
+                                                              GL_BGRA, GL_UNSIGNED_BYTE, 0, &texture);
+        if (result != kCVReturnSuccess || texture == nullptr) {
+            CVPixelBufferRelease(pixelBuffer);
+            pinfo("VROExternalSurfaceTexture: CVOpenGLESTextureCacheCreateTextureFromImage failed (%d)",
+                  (int) result);
+            return nullptr;
+        }
+        GLuint name = CVOpenGLESTextureGetName(texture);
+        glBindTexture(GL_TEXTURE_2D, name);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return std::make_shared<VROImportedSurfaceGL>(surface, surfaceId, sRGB, pixelBuffer, texture);
+    }
+
+    CVOpenGLESTextureCacheRef _cache = nullptr;
+    const void *_cacheContext = nullptr;
+    std::vector<std::shared_ptr<VROImportedSurfaceGL>> _live;
+
+};
+
+} // namespace
+
 std::unique_ptr<VROTextureSubstrate>
 VROExternalSurfaceTextureImpl_importHandle(const VROSharedTextureHandle &handle,
                                            std::shared_ptr<VRODriver> &driver) {
-    pinfo("VROExternalSurfaceTexture: the OpenGL ES import route is not implemented on iOS");
-    return nullptr;
+    std::shared_ptr<VRODriverOpenGL> glDriver = std::dynamic_pointer_cast<VRODriverOpenGL>(driver);
+    if (!glDriver) {
+        pinfo("VROExternalSurfaceTexture: driver is not OpenGL ES, cannot import an IOSurface");
+        return nullptr;
+    }
+    if (handle.width <= 0 || handle.height <= 0) {
+        pinfo("VROExternalSurfaceTexture: Apple handle has degenerate size %dx%d",
+              handle.width, handle.height);
+        return nullptr;
+    }
+    // One importer for the process, reached only from the render thread.
+    static VROSharedTextureImporterGL importer;
+    return importer.importHandle(handle, glDriver);
 }
 
 #endif // VRO_METAL
+
+/*
+ Apple fence. handle.fenceFd is an MTLSharedEvent signaled value, and the ABI
+ carries no handle to the event itself, so there is nothing to wait on and
+ nothing to close. The Apple producer (nitro-canvas-in-Vision
+ HybridCanvasSurface.swift) never sends one: it publishes only after its GPU
+ work completes (WebGPU onSubmittedWorkDone, or a CPU write under
+ IOSurfaceLock), so the value is always -1 today. A producer that starts
+ sending values is logged once, because sampling could then race its write.
+ */
+void VROExternalSurfaceTextureImpl_consumeFence(const VROSharedTextureHandle &handle,
+                                                std::shared_ptr<VRODriver> &driver) {
+    (void) driver;
+    static bool sLogged = false;
+    if (handle.fenceFd >= 0 && !sLogged) {
+        sLogged = true;
+        pinfo("VROExternalSurfaceTexture: producer sent MTLSharedEvent value %d, which the v2 ABI "
+              "cannot resolve to an event; sampling without a GPU wait", (int) handle.fenceFd);
+    }
+}

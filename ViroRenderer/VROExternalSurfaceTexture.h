@@ -17,6 +17,9 @@
 #include "NitroCanvasSharedTextureABI.h"
 
 class VRODriver;
+class VROFrameListener;
+class VROFrameSynchronizer;
+class VRONitroCanvasSource;
 class VROTextureSubstrate;
 
 /*
@@ -62,10 +65,22 @@ using VROSharedTextureHandle = NitroCanvasSharedTextureHandle;
              or SurfaceTexture                    → GL_TEXTURE_EXTERNAL_OES (Route A)
 
  The texture identity is stable for the lifetime of the CanvasSurface; the
- underlying substrate is hot-swapped on each producer frame via
- updateFromHandle(). On Android, shader modifiers that sample the texture
- must call setRequiresExternalSurfaceTexture(true) on themselves so the
- sampler2D → samplerExternalOES rewrite fires at shader compile time.
+ underlying substrate is swapped through updateFromHandle() when the
+ producer's storage changes. On Android the texture type is TextureEGLImage,
+ so a material using it as its diffuse texture gets the sampler2D →
+ samplerExternalOES rewrite automatically. A custom shader modifier that
+ samples it under another name still has to call
+ setRequiresExternalSurfaceTexture(true) on itself.
+
+ Two ways to feed it:
+
+ 1. Push: the caller imports each frame itself with updateFromHandle().
+ 2. Lookup by surface id (nitro-canvas-in-Vision rive.5 and later): construct
+    with createForNitroCanvasSurface() and attach it to the renderer's frame
+    synchronizer. Each frame, on the rendering thread and before anything is
+    drawn, the texture calls the producer's nitro_canvas_lookup_v2 (resolved
+    with dlsym, see VRONitroCanvasLookup), waits on the producer's fence, and
+    imports new storage only when the buffer, size or colour flag changed.
  */
 class VROExternalSurfaceTexture : public VROTexture {
 public:
@@ -86,6 +101,40 @@ public:
     void updateFromHandle(const VROSharedTextureHandle &handle,
                           std::shared_ptr<VRODriver> &driver);
 
+    /*
+     A texture bound to nitro-canvas-in-Vision surface `surfaceId` (the `id`
+     of the JS CanvasSurface). width/height are the producer's current pixel
+     size, used until the first frame arrives; the producer's handle is
+     authoritative afterwards. Nothing is polled until
+     attachToFrameSynchronizer() (or the caller drives
+     updateFromNitroCanvasSurface() itself).
+     */
+    static std::shared_ptr<VROExternalSurfaceTexture>
+        createForNitroCanvasSurface(int32_t surfaceId, int width, int height, bool sRGB = true);
+
+    /*
+     Poll the producer once and import what it published. Rendering thread,
+     with the driver's context current. Returns true when a new frame was
+     accepted. A no-op returning false for a texture not bound to a surface.
+     */
+    bool updateFromNitroCanvasSurface(std::shared_ptr<VRODriver> &driver);
+
+    /*
+     Register for onFrameWillRender so updateFromNitroCanvasSurface() runs
+     every frame before rendering. The synchronizer keeps only a weak
+     reference; the registration ends with this texture, or with
+     detachFromFrameSynchronizer(). Rendering thread.
+     */
+    void attachToFrameSynchronizer(std::shared_ptr<VROFrameSynchronizer> frameSynchronizer,
+                                   std::shared_ptr<VRODriver> driver);
+    void detachFromFrameSynchronizer();
+
+    // The bound surface id, or 0 for a push-mode texture.
+    int32_t getNitroCanvasSurfaceId() const;
+
+    // Producer frames accepted so far in lookup mode.
+    uint64_t getNitroCanvasFrameCount() const;
+
     int getWidth() const { return _width; }
     int getHeight() const { return _height; }
 
@@ -93,6 +142,11 @@ private:
     int _width;
     int _height;
     bool _sRGB;
+
+    std::unique_ptr<VRONitroCanvasSource> _nitroSource;
+    std::shared_ptr<VROFrameListener> _frameListener;
+    std::weak_ptr<VROFrameSynchronizer> _frameSynchronizer;
+    bool _hasImportedStorage;
 };
 
 #endif /* VROExternalSurfaceTexture_h */

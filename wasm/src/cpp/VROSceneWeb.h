@@ -34,6 +34,10 @@ class VROARSessionWeb;
 class VROViewport;
 class VROSurface;
 
+class VROFixedParticleEmitter;
+class VROTexture;
+class VROARFrame;
+
 class VROSceneWeb {
 public:
     // canvasSelector is a CSS selector for the target <canvas>, e.g. "#viroCanvas".
@@ -46,6 +50,9 @@ public:
     // Forward a DOM pointer/touch event into the input controller.
     // action: 0 = down, 1 = move, 2 = up. x/y in device pixels, top-left origin.
     void onTouch(int action, float x, float y);
+    void onPinch(int state, float scale, float x, float y);
+    void onPointerHover(bool active, float x, float y);
+    void onRotate(int state, float radians, float x, float y);
 
     // Forward a browser two-pointer pinch into Viro's existing pinch pipeline.
     // state matches VROEventDelegate::PinchState: 1=start, 2=move, 3=end.
@@ -71,6 +78,8 @@ public:
     // the way the native scene navigators do through their view.
     std::shared_ptr<VRORenderer> getRenderer();
 
+    std::shared_ptr<VROInputControllerWasm> getInputController() { return _inputController; }
+
     // The active scene, which owns the physics world.
     std::shared_ptr<VROScene> getScene();
 
@@ -81,6 +90,12 @@ public:
     void setFloorVisible(bool visible);
     std::shared_ptr<VROARSessionWeb> getARSession();
 
+    // ViroARScene's displayPointCloud: draw the session's feature points as
+    // particles, the way VROARScene does on iOS and Android. `surfaceTexture` null
+    // keeps the default dot; scale is the particle's world size.
+    void setPointCloudDisplay(bool display, std::shared_ptr<VROTexture> surfaceTexture,
+                              VROVector3f scale, int maxPoints);
+
     // Build a hardcoded spinning cube demo (smoke test; not used by the bridge).
     void buildCubeScene();
 
@@ -90,6 +105,7 @@ private:
     void buildEmptyScene();
     // AR render loop (used when _arSession is set); mirrors the native ARCore path.
     void drawFrameAR(VROViewport viewport);
+    void updatePointCloud(const std::unique_ptr<VROARFrame> &frame);
 
     int _frame;
     int _width, _height;
@@ -115,6 +131,12 @@ private:
     // Screen-space surface that draws the live camera feed behind the scene.
     // Created lazily on the first AR frame; its diffuse is the JS-uploaded texture.
     std::shared_ptr<VROSurface> _cameraBackground;
+    float _cameraBackgroundLayout[6] = {-1, -1, -1, -1, -1, -1};
+    // displayPointCloud: a node in the scene carrying a fixed-particle emitter fed
+    // from each frame's point cloud. Null until it is first asked for.
+    std::shared_ptr<VRONode> _pointCloudNode;
+    std::shared_ptr<VROFixedParticleEmitter> _pointCloudEmitter;
+    bool _displayPointCloud = false;
 
     // Demo-only: the cube node spun each frame by buildCubeScene().
     std::shared_ptr<VRONode> _boxNode;

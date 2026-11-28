@@ -33,6 +33,10 @@
 #include "VROPanelCoverage.h"
 #include "VROPanelGLStateGuard.h"
 #include "VROPanelShaderSources.h"
+#include "VROAHardwareBufferImage.h"
+#include "VROFrameListener.h"
+#include "VROFrameSynchronizer.h"
+#include "VRONitroCanvasSource.h"
 
 #include <atomic>
 #include <cmath>
@@ -95,6 +99,31 @@ bool hasExtension(const char *name) {
     return extensions != nullptr && strstr(extensions, name) != nullptr;
 }
 
+/*
+ Per-frame hook for a texture in nitro canvas lookup mode. The synchronizer
+ holds this weakly and the texture owns it, so the registration ends with the
+ texture.
+ */
+class VRONitroCanvasViewTextureListener : public VROFrameListener {
+public:
+    explicit VRONitroCanvasViewTextureListener(std::weak_ptr<VROTexture> texture) :
+        _texture(std::move(texture)) {}
+
+    void onFrameWillRender(const VRORenderContext &context) override {
+        (void) context;
+        std::shared_ptr<VROTexture> texture = _texture.lock();
+        if (texture) {
+            std::static_pointer_cast<VROAndroidViewTexture>(texture)->updateFromNitroCanvasSurface();
+        }
+    }
+    void onFrameDidRender(const VRORenderContext &context) override {
+        (void) context;
+    }
+
+private:
+    std::weak_ptr<VROTexture> _texture;
+};
+
 } // namespace
 
 extern "C" {
@@ -150,10 +179,14 @@ VROAndroidViewTexture::VROAndroidViewTexture(VRO_OBJECT jRenderableTexture, int 
         _sizeUniform(-1),
         _radiusUniform(-1),
         _premultipliedUniform(-1),
-        _cornerRadiusXPx(0.0f),
-        _cornerRadiusYPx(0.0f),
+        _cornerRadiusM(0.0f),
+        _panelWidthM(0.0f),
+        _panelHeightM(0.0f),
         _premultipliedAlpha(false),
-        _kind(kind) {
+        _kind(kind),
+        _nitroSurfaceId(0),
+        _resolveSourceTexture(0),
+        _sRGBStorage(false) {
 
     JNIEnv *env = VROPlatformGetJNIEnv();
     _jAndroidViewTexture = env->NewGlobalRef(jRenderableTexture);
@@ -168,7 +201,9 @@ VROAndroidViewTexture::~VROAndroidViewTexture() {
     JNIEnv *env = VROPlatformGetJNIEnv();
     env->DeleteGlobalRef(_jAndroidViewTexture);
     env->DeleteGlobalRef(_jVideoSinkSurface);
-    VROPlatformDestroyVideoSink(_textureId);
+    if (!_nitroSource) {
+        VROPlatformDestroyVideoSink(_textureId);
+    }
     _jAndroidViewTexture = NULL;
     _jVideoSinkSurface = NULL;
     const int live = --liveCount(_kind);
@@ -198,7 +233,13 @@ VROAndroidViewTexture::~VROAndroidViewTexture() {
     }
 }
 
-void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
+void VROAndroidViewTexture::setNitroCanvasSurface(int32_t surfaceId) {
+    _nitroSurfaceId = surfaceId;
+    _nitroSource.reset(new VRONitroCanvasSource(surfaceId));
+}
+
+void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver,
+                                 std::shared_ptr<VROFrameSynchronizer> frameSynchronizer) {
     _driver = driver;
     VROPanelGLStateGuard guard;
 
@@ -228,6 +269,8 @@ void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
     // sampling decodes in hardware, matching every other image texture. On an
     // RGBA8 swapchain (NonLinear mode) store the bytes as-is, as before.
     bool sRGBStorage = driver && driver->isLinearRenderingEnabled();
+    _sRGBStorage = sRGBStorage;
+    _resolveSourceTexture = _textureId;
     if (createResolveResources(sRGBStorage)) {
         std::unique_ptr<VROTextureSubstrate> substrate = std::unique_ptr<VROTextureSubstrateOpenGL>(
                 new VROTextureSubstrateOpenGL(GL_TEXTURE_2D, _resolveTexture, driver, true));
@@ -239,6 +282,21 @@ void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
     } else {
         perr("VROAndroidViewTexture: could not build the %dx%d mipmapped resolve target",
              _width, _height);
+    }
+
+    if (_nitroSource) {
+        // Lookup mode: no Surface. The producer's buffers come through
+        // nitro_canvas_lookup_v2 at the start of every frame.
+        if (frameSynchronizer) {
+            _nitroFrameListener = std::make_shared<VRONitroCanvasViewTextureListener>(shared_from_this());
+            frameSynchronizer->addFrameListener(_nitroFrameListener);
+        } else {
+            perr("%s: nitro canvas surface %d has no frame synchronizer; it will never update",
+                 kindName(_kind), (int) _nitroSurfaceId);
+        }
+        pinfo("%s: bound to nitro canvas surface %d (%dx%d)", kindName(_kind),
+              (int) _nitroSurfaceId, _width, _height);
+        return;
     }
 
     // Finally create the VideoSink's surface to be used for rendering our Android views onto.
@@ -253,7 +311,7 @@ void VROAndroidViewTexture::init(std::shared_ptr<VRODriverOpenGL> driver) {
     env->DeleteLocalRef(cls);
 }
 
-bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
+bool VROAndroidViewTexture::createResolveTarget(bool sRGBStorage) {
     if (_width <= 0 || _height <= 0) {
         return false;
     }
@@ -292,6 +350,24 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glGenerateMipmap(GL_TEXTURE_2D);
+    pinfo("VROAndroidViewTexture: %dx%d resolve target, %d mip levels, %s storage",
+          _width, _height, (int) levels, sRGBStorage ? "sRGB" : "RGBA8");
+    return true;
+}
+
+void VROAndroidViewTexture::destroyResolveTarget() {
+    // The texture itself belongs to the substrate once one exists; only the
+    // framebuffer is released here.
+    if (_resolveFramebuffer) {
+        glDeleteFramebuffers(1, &_resolveFramebuffer);
+        _resolveFramebuffer = 0;
+    }
+}
+
+bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
+    if (!createResolveTarget(sRGBStorage)) {
+        return false;
+    }
 
     std::string fragmentSource = VROPanelResolveFragmentShader(sRGBStorage);
     GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kVROPanelResolveVertexShader);
@@ -334,8 +410,8 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    pinfo("VROAndroidViewTexture: %dx%d resolve target, %d mip levels, %s storage",
-          _width, _height, (int) levels, sRGBStorage ? "sRGB" : "RGBA8");
+    pinfo("VROAndroidViewTexture: %dx%d resolve program ready, %s storage",
+          _width, _height, sRGBStorage ? "sRGB" : "RGBA8");
     return true;
 }
 
@@ -360,10 +436,11 @@ void VROAndroidViewTexture::onExternalFrameLatched(GLuint oesTextureId) {
 
 void VROAndroidViewTexture::setCornerRadius(float radiusMeters, float widthMeters,
                                             float heightMeters) {
-    VROPanelCornerRadii radii = VROPanelCornerRadiiPx(radiusMeters, widthMeters, heightMeters,
-                                                      (float) _width, (float) _height);
-    _cornerRadiusXPx.store(radii.x);
-    _cornerRadiusYPx.store(radii.y);
+    // Kept in meters; resolve() converts at the texture's current pixel size,
+    // which a nitro canvas producer can change.
+    _cornerRadiusM.store(radiusMeters);
+    _panelWidthM.store(widthMeters);
+    _panelHeightM.store(heightMeters);
     scheduleResolve();
 }
 
@@ -409,14 +486,110 @@ void VROAndroidViewTexture::resolve() {
 
     glUseProgram(_resolveProgram);
     glUniform2f(_sizeUniform, (GLfloat) _width, (GLfloat) _height);
-    glUniform2f(_radiusUniform, _cornerRadiusXPx.load(), _cornerRadiusYPx.load());
+    VROPanelCornerRadii radii = VROPanelCornerRadiiPx(_cornerRadiusM.load(), _panelWidthM.load(),
+                                                      _panelHeightM.load(),
+                                                      (float) _width, (float) _height);
+    glUniform2f(_radiusUniform, radii.x, radii.y);
     glUniform1f(_premultipliedUniform, _premultipliedAlpha.load() ? 1.0f : 0.0f);
     glBindVertexArray(_resolveVAO);
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0, 0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, _textureId);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, _resolveSourceTexture);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     glBindTexture(GL_TEXTURE_2D, _resolveTexture);
     glGenerateMipmap(GL_TEXTURE_2D);
+}
+
+bool VROAndroidViewTexture::resizeResolveTarget(int width, int height) {
+    std::shared_ptr<VRODriverOpenGL> driver = _driver.lock();
+    if (!driver || width <= 0 || height <= 0) {
+        return false;
+    }
+    VROPanelGLStateGuard guard;
+    destroyResolveTarget();
+    const int oldWidth = _width;
+    const int oldHeight = _height;
+    _width = width;
+    _height = height;
+    _resolveTexture = 0;
+    if (!createResolveTarget(_sRGBStorage)) {
+        perr("%s: could not rebuild the resolve target at %dx%d", kindName(_kind), width, height);
+        // The previous substrate (and its texture) stays in place; the frame
+        // is skipped until a later resize succeeds.
+        if (_resolveTexture) {
+            glDeleteTextures(1, &_resolveTexture);
+            _resolveTexture = 0;
+        }
+        destroyResolveTarget();
+        _width = oldWidth;
+        _height = oldHeight;
+        _resolveReady = false;
+        return false;
+    }
+    // Replacing the substrate releases the previous texture.
+    setSubstrate(0, std::unique_ptr<VROTextureSubstrate>(
+            new VROTextureSubstrateOpenGL(GL_TEXTURE_2D, _resolveTexture, driver, true)));
+    _resolveReady = true;
+    pinfo("%s: nitro canvas surface %d resized %dx%d -> %dx%d", kindName(_kind),
+          (int) _nitroSurfaceId, oldWidth, oldHeight, width, height);
+    return true;
+}
+
+bool VROAndroidViewTexture::importNitroCanvasFrame(const NitroCanvasSharedTextureHandle &handle) {
+    if (handle.ahardwareBuffer != 0) {
+        std::unique_ptr<VROAHardwareBufferImage> image =
+                VROAHardwareBufferImage::create(handle.ahardwareBuffer);
+        if (!image || !image->bindTo(_textureId)) {
+            return false;
+        }
+        // The old image (if any) is released only after the OES texture
+        // points at the new one.
+        _nitroImage = std::move(image);
+        _resolveSourceTexture = _textureId;
+        return true;
+    }
+    if (handle.surfaceTextureGLId != 0) {
+        // Route A: the producer latches its own SurfaceTexture into this
+        // name, in a context that shares objects with ours.
+        _nitroImage.reset();
+        _resolveSourceTexture = (GLuint) handle.surfaceTextureGLId;
+        return true;
+    }
+    pinfo("%s: nitro canvas surface %d published no Android buffer", kindName(_kind),
+          (int) _nitroSurfaceId);
+    return false;
+}
+
+bool VROAndroidViewTexture::updateFromNitroCanvasSurface() {
+    // No resolve program means init() failed; there is nothing to draw with.
+    if (!_nitroSource || _textureId == 0 || _resolveProgram == 0) {
+        return false;
+    }
+    VRONitroCanvasFrame frame;
+    if (!_nitroSource->poll(&frame)) {
+        return false;
+    }
+
+    // Wait for the producer's write first: it lands in storage that may
+    // already be bound, whether or not it is re-imported below.
+    VROConsumeNativeFence(frame.handle.fenceFd);
+    frame.handle.fenceFd = -1;
+
+    if (frame.handle.width != _width || frame.handle.height != _height || !_resolveReady) {
+        if (!resizeResolveTarget(frame.handle.width, frame.handle.height)) {
+            _nitroSource->invalidateStorage();
+            return false;
+        }
+    }
+    if (frame.storageChanged || !_hasLatchedFrame) {
+        VROPanelGLStateGuard guard;
+        if (!importNitroCanvasFrame(frame.handle)) {
+            _nitroSource->invalidateStorage();
+            return false;
+        }
+    }
+    _hasLatchedFrame = true;
+    resolve();
+    return true;
 }

@@ -60,6 +60,17 @@ jobs:
               "sharedCode/src/test/cpp/$test.cpp" -o "$RUNNER_TEMP/$test"
             "$RUNNER_TEMP/$test"
           done
+      - name: Nitro canvas lookup host test
+        # Builds the nitro_canvas_lookup_v2 consumer with a fake producer
+        # export; -rdynamic lets dlsym(RTLD_DEFAULT) see it as on a device.
+        run: |
+          c++ -std=c++14 -Wall -Wextra -Werror -UNDEBUG -rdynamic \
+            -I../ViroRenderer \
+            sharedCode/src/test/cpp/VRONitroCanvasSourceTest.cpp \
+            ../ViroRenderer/VRONitroCanvasLookup.cpp \
+            ../ViroRenderer/VRONitroCanvasSource.cpp \
+            -ldl -o "$RUNNER_TEMP/VRONitroCanvasSourceTest"
+          "$RUNNER_TEMP/VRONitroCanvasSourceTest"
       - name: Code checks
         run: ./gradlew :viroreact:check
       - name: Archive Lint report
@@ -118,8 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
-          /tmp/emsdk/emsdk install latest
-          /tmp/emsdk/emsdk activate latest
+          # Pinned: Emscripten 7.0 trims libc++'s transitive includes, and the
+          # vendored protobuf and basisu headers miss <algorithm>/<exception>
+          # under it. 6.0.13 is the last version main built green with.
+          /tmp/emsdk/emsdk install 6.0.13
+          /tmp/emsdk/emsdk activate 6.0.13
 
       - name: Build Viro WebAssembly renderer
         shell: bash

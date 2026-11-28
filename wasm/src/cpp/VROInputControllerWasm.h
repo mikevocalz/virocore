@@ -36,6 +36,18 @@ public:
     // origin is handled internally.
     void onScreenTouch(int action, float x, float y);
 
+    // Two-finger gestures, as VROInputControllerAR takes them from the platform:
+    // state is 1 start, 2 move, 3 end; x/y the fingers' midpoint, which picks the
+    // node at the start. scale is cumulative from 1, radians counterclockwise.
+    void onPinch(int state, float scale, float x, float y);
+    void onRotate(int state, float radians, float x, float y);
+
+    // A mouse over the canvas with no button held: hover follows it, as a
+    // headset's controller ray does, instead of the screen-centre gaze. Touch
+    // and AR never call this, so they keep the gaze. x/y as onScreenTouch.
+    void setPointerHover(float x, float y);
+    void clearPointerHover();
+
     // Called once per frame by the view with the same view/projection/viewport
     // used for rendering, so touch rays can be unprojected consistently.
     void setRenderState(VROMatrix4f view, VROMatrix4f projection,
@@ -61,13 +73,16 @@ private:
     VROMatrix4f _projection;
     int _viewportWidth = 0;
     int _viewportHeight = 0;
-
-    // Pointer held between DOM down and up, in canvas device pixels. While it
-    // is held the per-frame update aims along the pointer instead of the camera
-    // forward, so the frame loop does not pull a dragged node to screen center.
-    bool _pointerDown = false;
+    // Last pointer position in canvas device pixels, written by hover
+    // (setPointerHover) and by a held pointer (onScreenTouch).
     float _pointerX = 0;
     float _pointerY = 0;
+    bool _pointerHover = false;
+
+    // Pointer held between DOM down and up. While it is held the per-frame
+    // update aims along the pointer instead of the camera forward, so the frame
+    // loop does not pull a dragged node to screen center.
+    bool _pointerDown = false;
 
 };
 #endif

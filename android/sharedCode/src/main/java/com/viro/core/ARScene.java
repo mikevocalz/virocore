@@ -55,6 +55,12 @@ import java.util.Map;
  * href="https://virocore.viromedia.com/docs/augmented-reality-ar">Augmented Reality Guide</a>.
  */
 public class ARScene extends Scene {
+    // dispose() zeroes mNativeRef while callers can still hold this object (a torn-down
+    // React scene, an app's own field), and every native entry point dereferences the ref
+    // unchecked. So each public method that reaches native code answers here first: with
+    // this error on its callback, or a "nothing there" value. Matches the JNI's own message.
+    private static final String DISPOSED_ERROR = "AR scene is gone";
+
     /**
      * Callback interface for ARScene events. These include the detection of ambient light and the
      * tracking of real-world features.
@@ -176,6 +182,38 @@ public class ARScene extends Scene {
      */
     public enum RecordingStatus {
         NONE, RECORDING, IO_ERROR, UNSUPPORTED
+    }
+
+    /**
+     * What a finished recording wrote, returned by {@link #stopRecording()} once video.mp4,
+     * session.jsonl and any depth files are complete.
+     */
+    public static final class RecordingResult {
+        /** True when every file was written and closed and at least one frame was recorded. */
+        public final boolean success;
+        /** Why the recording failed, or null on success. */
+        public final String error;
+        /** Seconds from the first to the last recorded frame. */
+        public final double durationSec;
+        /** Camera frames recorded, one {@code pose} line each in session.jsonl. */
+        public final int frames;
+        /** Depth frames written under depth/; 0 for a recording without depth. */
+        public final int depthFrames;
+        /** {@code pose} lines carrying a {@code gps} object. */
+        public final int gpsFixes;
+        /** Size in bytes of every file written, or -1 when unknown. */
+        public final long bytes;
+
+        public RecordingResult(boolean success, String error, double durationSec, int frames,
+                               int depthFrames, int gpsFixes, long bytes) {
+            this.success = success;
+            this.error = error;
+            this.durationSec = durationSec;
+            this.frames = frames;
+            this.depthFrames = depthFrames;
+            this.gpsFixes = gpsFixes;
+            this.bytes = bytes;
+        }
     }
 
     /**
@@ -499,7 +537,11 @@ public class ARScene extends Scene {
     // AR Session Recording API state. mSessionRecorder does the actual work
     // (MediaCodec/MediaMuxer/SensorManager/file I/O — see ARSessionRecorder);
     // this class only bridges native's per-frame calls to it.
-    private com.viro.core.internal.ARSessionRecorder mSessionRecorder;
+    // stopRecording() may run off the UI thread.
+    private volatile com.viro.core.internal.ARSessionRecorder mSessionRecorder;
+    // Start and stop run on their own threads; taking or setting mSessionRecorder under this lock makes
+    // each stop own one recorder, so a second stop answers "Not recording" as on iOS.
+    private final Object mRecorderLock = new Object();
     private RecordingStartListener mRecordingStartListener;
 
     // Geospatial API state
@@ -591,6 +633,7 @@ public class ARScene extends Scene {
      * @param displayPointCloud True to display the point cloud, false to remove.
      */
     public void displayPointCloud(boolean displayPointCloud) {
+        if (mNativeRef == 0) return;
         nativeDisplayPointCloud(mNativeRef, displayPointCloud);
     }
 
@@ -643,6 +686,9 @@ public class ARScene extends Scene {
      * null if AR tracking is currently limited.
      */
     public ARNode createAnchoredNode(Vector position, Quaternion quaternion) {
+        if (mNativeRef == 0) {
+            return null;
+        }
         long nodeRef = nativeCreateAnchoredNode(mNativeRef, position.x, position.y, position.z,
                 quaternion.x, quaternion.y, quaternion.z, quaternion.w);
         if (nodeRef != 0) {
@@ -662,6 +708,7 @@ public class ARScene extends Scene {
      * @deprecated use {@link ARScene#resetPointCloudQuad()} instead
      */
     public void resetPointCloudSurface() {
+        if (mNativeRef == 0) return;
         nativeResetPointCloudSurface(mNativeRef);
     }
 
@@ -674,6 +721,7 @@ public class ARScene extends Scene {
      * @deprecated use {@link ARScene#setPointCloudQuad(Quad)} instead
      */
     public void setPointCloudSurface(Surface surface) {
+        if (mNativeRef == 0) return;
         nativeSetPointCloudSurface(mNativeRef, surface.mNativeRef);
     }
 
@@ -684,6 +732,7 @@ public class ARScene extends Scene {
      * @deprecated use {@link ARScene#setPointCloudQuadScale(Vector)} instead
      */
     public void setPointCloudSurfaceScale(Vector scale) {
+        if (mNativeRef == 0) return;
         nativeSetPointCloudSurfaceScale(mNativeRef, scale.x, scale.y, scale.z);
     }
 
@@ -692,6 +741,7 @@ public class ARScene extends Scene {
      * {@link Quad} that will be used to render each point in the point cloud.
      */
     public void resetPointCloudQuad() {
+        if (mNativeRef == 0) return;
         nativeResetPointCloudSurface(mNativeRef);
     }
 
@@ -703,6 +753,7 @@ public class ARScene extends Scene {
      * @param quad The {@link Quad} to use for representing each point in the cloud.
      */
     public void setPointCloudQuad(Quad quad) {
+        if (mNativeRef == 0) return;
         nativeSetPointCloudSurface(mNativeRef, quad.mNativeRef);
     }
 
@@ -712,6 +763,7 @@ public class ARScene extends Scene {
      * @param scale The scale as a {@link Vector} in X, Y, and Z dimensions.
      */
     public void setPointCloudQuadScale(Vector scale) {
+        if (mNativeRef == 0) return;
         nativeSetPointCloudSurfaceScale(mNativeRef, scale.x, scale.y, scale.z);
     }
 
@@ -733,6 +785,7 @@ public class ARScene extends Scene {
      * @param maxPoints The maximum number of points to render.
      */
     public void setPointCloudMaxPoints(int maxPoints) {
+        if (mNativeRef == 0) return;
         nativeSetPointCloudMaxPoints(mNativeRef, maxPoints);
     }
 
@@ -744,6 +797,9 @@ public class ARScene extends Scene {
      * @return The estimated intensity of the ambient light, in lumens.
      */
     public float getEstimatedAmbientLightIntensity() {
+        if (mNativeRef == 0) {
+            return 0f;
+        }
         return nativeGetAmbientLightIntensity(mNativeRef);
     }
 
@@ -756,6 +812,9 @@ public class ARScene extends Scene {
      * @return The estimated color of the ambient light, in an RGB [0,1] {@link Vector}.
      */
     public Vector getEstimatedAmbientLightColor() {
+        if (mNativeRef == 0) {
+            return null;
+        }
         float[] color = nativeGetAmbientLightColor(mNativeRef);
         return new Vector(color[0], color[1], color[2]);
     }
@@ -764,6 +823,7 @@ public class ARScene extends Scene {
      * @hide
      */
     public void setAnchorDetectionTypes(EnumSet<ViroViewARCore.AnchorDetectionType> enumTypes) {
+        if (mNativeRef == 0) return;
         String[] types = new String[enumTypes.size()];
         int i = 0;
         for (ViroViewARCore.AnchorDetectionType type : enumTypes) {
@@ -778,6 +838,7 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void addARDeclarativeNode(ARDeclarativeNode node) {
+        if (mNativeRef == 0) return;
         nativeAddARNode(mNativeRef, node.mNativeRef);
     }
     //#ENDIF
@@ -787,6 +848,7 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void updateARDeclarativeNode(ARDeclarativeNode node) {
+        if (mNativeRef == 0) return;
         nativeUpdateARNode(mNativeRef, node.mNativeRef);
     }
     //#ENDIF
@@ -796,6 +858,7 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void removeARDeclarativeNode(ARDeclarativeNode node) {
+        if (mNativeRef == 0) return;
         nativeRemoveARNode(mNativeRef, node.mNativeRef);
     }
     //#ENDIF
@@ -810,6 +873,10 @@ public class ARScene extends Scene {
      * @param listener Listener to respond to load success or failure.
      */
     public void loadARImageDatabase(Uri uri, LoadARImageDatabaseListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         mLoadARImageDatabaseListener = listener;
         nativeLoadARImageDatabase(mNativeRef, uri.toString(), true);
     }
@@ -818,6 +885,7 @@ public class ARScene extends Scene {
      * Unloads a previously loaded {@link com.google.ar.core.AugmentedImageDatabase}.
      */
     public void unloadARImageDatabase() {
+        if (mNativeRef == 0) return;
         nativeUnloadARImageDatabase(mNativeRef, true);
     }
 
@@ -830,6 +898,7 @@ public class ARScene extends Scene {
      * @see ARImageTarget
      */
     public void addARImageTarget(ARImageTarget target) {
+        if (mNativeRef == 0) return;
         nativeAddARImageTarget(mNativeRef, target.getNativeRef());
     }
 
@@ -839,6 +908,7 @@ public class ARScene extends Scene {
      * @param target The target to stop searching for in the real-world.
      */
     public void removeARImageTarget(ARImageTarget target) {
+        if (mNativeRef == 0) return;
         nativeRemoveARImageTarget(mNativeRef, target.getNativeRef());
     }
 
@@ -854,10 +924,12 @@ public class ARScene extends Scene {
      * @see #isOcclusionModeSupported(OcclusionMode)
      */
     public void setOcclusionMode(OcclusionMode mode) {
+        if (mNativeRef == 0) return;
         nativeSetOcclusionMode(mNativeRef, mode.getId());
     }
 
     public void setFrontCameraEnabled(boolean enabled) {
+        if (mNativeRef == 0) return;
         nativeSetFrontCameraEnabled(mNativeRef, enabled);
     }
 
@@ -868,6 +940,9 @@ public class ARScene extends Scene {
      * @return true if occlusion is supported, false otherwise.
      */
     public boolean isOcclusionSupported() {
+        if (mNativeRef == 0) {
+            return false;
+        }
         return nativeIsOcclusionSupported(mNativeRef);
     }
 
@@ -878,6 +953,9 @@ public class ARScene extends Scene {
      * @return true if the specified mode is supported, false otherwise.
      */
     public boolean isOcclusionModeSupported(OcclusionMode mode) {
+        if (mNativeRef == 0) {
+            return false;
+        }
         return nativeIsOcclusionModeSupported(mNativeRef, mode.getId());
     }
 
@@ -886,6 +964,10 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void loadARImageDatabaseDeclarative(Uri uri, LoadARImageDatabaseListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         mLoadARImageDatabaseListener = listener;
         nativeLoadARImageDatabase(mNativeRef, uri.toString(), false);
     }
@@ -896,6 +978,7 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void unloadARImageDatabaseDeclarative() {
+        if (mNativeRef == 0) return;
         nativeUnloadARImageDatabase(mNativeRef, false);
     }
     //#ENDIF
@@ -905,6 +988,7 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void addARImageTargetDeclarative(ARImageTarget target) {
+        if (mNativeRef == 0) return;
         nativeAddARImageTargetDeclarative(mNativeRef, target.getNativeRef());
     }
     //#ENDIF
@@ -914,6 +998,7 @@ public class ARScene extends Scene {
      */
     //#IFDEF 'viro_react'
     public void removeARImageTargetDeclarative(ARImageTarget target) {
+        if (mNativeRef == 0) return;
         nativeRemoveARImageTargetDeclarative(mNativeRef, target.getNativeRef());
     }
     //#ENDIF
@@ -981,14 +1066,20 @@ public class ARScene extends Scene {
     }
 
     public void setReactVisionConfig(String apiKey, String projectId, String endpoint) {
+        if (mNativeRef == 0) return;
         nativeSetReactVisionConfig(mNativeRef, apiKey, projectId, endpoint != null ? endpoint : "");
     }
 
     public void setGeospatialAnchorProvider(String provider) {
+        if (mNativeRef == 0) return;
         nativeSetGeospatialAnchorProvider(mNativeRef, provider);
     }
 
     public void hostCloudAnchorById(String anchorId, int ttlDays, CloudAnchorHostListener callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onFailure(DISPOSED_ERROR);
+            return;
+        }
         if (mCloudAnchorHostCallbacks.containsKey(anchorId)) {
             Log.e("Viro", "Ignoring redundant cloud anchor hosting request: we are already processing anchor ["
                     + anchorId + "]");
@@ -1020,45 +1111,93 @@ public class ARScene extends Scene {
      * @param listener  Invoked once recording has started, or with an error if it couldn't.
      */
     public void startRecording(String outputDir, Context context, RecordingStartListener listener) {
-        if (mSessionRecorder != null) {
-            if (listener != null) {
-                listener.onFailure("Already recording");
-            }
+        startRecording(outputDir, context, false, listener);
+    }
+
+    /**
+     * Same as {@link #startRecording(String, Context, RecordingStartListener)}, and with
+     * depth also records ARCore's depth under outputDir/depth/. It only takes effect if
+     * {@link #setDepthCaptureEnabled(boolean)} was called with true before this, on a
+     * device that supports the Depth API; otherwise the recording has no depth, and its
+     * header says so.
+     *
+     * @param depth Also record the device's depth.
+     */
+    public void startRecording(String outputDir, Context context, boolean depth, RecordingStartListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
             return;
         }
-        mSessionRecorder = new com.viro.core.internal.ARSessionRecorder(context, new com.viro.core.internal.ARSessionRecorder.ErrorListener() {
+        com.viro.core.internal.ARSessionRecorder recorder = new com.viro.core.internal.ARSessionRecorder(context, new com.viro.core.internal.ARSessionRecorder.ErrorListener() {
             @Override
             public void onRecordingError(String message) {
-                nativeReportRecordingError(mNativeRef, message);
+                if (mNativeRef != 0) nativeReportRecordingError(mNativeRef, message);
             }
         });
+        synchronized (mRecorderLock) {
+            if (mSessionRecorder != null) {
+                if (listener != null) {
+                    listener.onFailure("Already recording");
+                }
+                return;
+            }
+            mSessionRecorder = recorder;
+        }
         try {
-            mSessionRecorder.start(outputDir);
+            recorder.start(outputDir);
         } catch (Exception e) {
-            mSessionRecorder = null;
+            synchronized (mRecorderLock) {
+                if (mSessionRecorder == recorder) {
+                    mSessionRecorder = null;
+                }
+            }
             if (listener != null) {
                 listener.onFailure(e.getMessage());
             }
             return;
         }
         mRecordingStartListener = listener;
-        nativeStartRecording(mNativeRef, outputDir);
+        nativeStartRecording(mNativeRef, outputDir, depth);
     }
 
     /**
      * Stop the recording started by {@link #startRecording(String, Context, RecordingStartListener)}
-     * and finalize video.mp4 + session.jsonl. No-op if not currently recording.
+     * and finalize video.mp4 + session.jsonl. Blocks until the files are complete.
+     *
+     * @return What was written. When no recording was running, success is false and the
+     * error is "Not recording".
      */
-    public void stopRecording() {
-        nativeStopRecording(mNativeRef);
-        if (mSessionRecorder != null) {
-            mSessionRecorder.stop();
+    public RecordingResult stopRecording() {
+        // The recorder is Java-side, so it still stops after dispose.
+        if (mNativeRef != 0) nativeStopRecording(mNativeRef);
+        com.viro.core.internal.ARSessionRecorder recorder;
+        synchronized (mRecorderLock) {
+            recorder = mSessionRecorder;
             mSessionRecorder = null;
         }
+        if (recorder == null) {
+            return new RecordingResult(false, "Not recording", 0, 0, 0, 0, -1);
+        }
+        return recorder.stop();
+    }
+
+    /**
+     * Whether this session can record, and with depth true, also record depth (the device
+     * supports the ARCore Depth API). Depth is only recorded if
+     * {@link #setDepthCaptureEnabled(boolean)} was also called with true.
+     */
+    public boolean isRecordingSupported(boolean depth) {
+        if (mNativeRef == 0) {
+            return false;
+        }
+        return nativeIsRecordingSupported(mNativeRef, depth);
     }
 
     /** The current recording state. See {@link RecordingStatus}. */
     public RecordingStatus getRecordingStatus() {
+        if (mNativeRef == 0) {
+            return RecordingStatus.UNSUPPORTED;
+        }
         int ordinal = nativeGetRecordingStatus(mNativeRef);
         RecordingStatus[] values = RecordingStatus.values();
         if (ordinal < 0 || ordinal >= values.length) {
@@ -1069,7 +1208,10 @@ public class ARScene extends Scene {
 
     // Called by native (ARSceneController_JNI.cpp::nativeStartRecording) once
     // the session has actually started recording.
-    void onRecordingStartSuccess() {
+    void onRecordingStartSuccess(boolean depthActive) {
+        if (mSessionRecorder != null) {
+            mSessionRecorder.setDepthActive(depthActive);
+        }
         if (mRecordingStartListener != null) {
             mRecordingStartListener.onSuccess();
         }
@@ -1080,9 +1222,13 @@ public class ARScene extends Scene {
     // in that path native never got as far as calling setRecordingJavaCallback;
     // the Java-side encoder/sensors we already started need to be stopped too.
     void onRecordingStartFailure(String error) {
-        if (mSessionRecorder != null) {
-            mSessionRecorder.stop();
+        com.viro.core.internal.ARSessionRecorder recorder;
+        synchronized (mRecorderLock) {
+            recorder = mSessionRecorder;
             mSessionRecorder = null;
+        }
+        if (recorder != null) {
+            recorder.stop();
         }
         if (mRecordingStartListener != null) {
             mRecordingStartListener.onFailure(error);
@@ -1093,9 +1239,11 @@ public class ARScene extends Scene {
     // frame while recording — see ARSessionRecorder.onRecordingFrame() for
     // the actual encode/sidecar-write work.
     void onRecordingFrame(byte[] y, byte[] u, byte[] v, int[] dims, long timestampNs, float[] pose,
-                          double[] geo) {
+                          double[] geo, byte[] depth, byte[] depthConfidence, int[] depthDims,
+                          long depthTimestampNs) {
         if (mSessionRecorder != null) {
-            mSessionRecorder.onRecordingFrame(y, u, v, dims, timestampNs, pose, geo);
+            mSessionRecorder.onRecordingFrame(y, u, v, dims, timestampNs, pose, geo,
+                                              depth, depthConfidence, depthDims, depthTimestampNs);
         }
     }
 
@@ -1169,6 +1317,10 @@ public class ARScene extends Scene {
      * @param callback      The callback to invoke on success or failure.
      */
     public void resolveCloudAnchor(String cloudAnchorId, CloudAnchorResolveListener callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onFailure(DISPOSED_ERROR);
+            return;
+        }
         if (mCloudAnchorResolveCallbacks.containsKey(cloudAnchorId)) {
             // Answered rather than dropped: returning silently leaves the caller's
             // promise unsettled forever, which looks identical to a resolve that
@@ -1227,6 +1379,9 @@ public class ARScene extends Scene {
      * @return true if geospatial mode is supported, false otherwise.
      */
     public boolean isGeospatialModeSupported() {
+        if (mNativeRef == 0) {
+            return false;
+        }
         return nativeIsGeospatialModeSupported(mNativeRef);
     }
 
@@ -1237,6 +1392,7 @@ public class ARScene extends Scene {
      * @param enabled true to enable geospatial mode, false to disable.
      */
     public void setGeospatialModeEnabled(boolean enabled) {
+        if (mNativeRef == 0) return;
         mGeospatialModeEnabled = enabled;
         nativeSetGeospatialModeEnabled(mNativeRef, enabled);
     }
@@ -1256,6 +1412,9 @@ public class ARScene extends Scene {
      * @return The current {@link EarthTrackingState}.
      */
     public EarthTrackingState getEarthTrackingState() {
+        if (mNativeRef == 0) {
+            return EarthTrackingState.STOPPED;
+        }
         int state = nativeGetEarthTrackingState(mNativeRef);
         switch (state) {
             case 0:
@@ -1277,6 +1436,10 @@ public class ARScene extends Scene {
      * @param listener Callback to receive the pose or an error.
      */
     public void getCameraGeospatialPose(GeospatialPoseListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         mGeospatialPoseCallback = listener;
         nativeGetCameraGeospatialPose(mNativeRef);
     }
@@ -1324,6 +1487,10 @@ public class ARScene extends Scene {
      * @param listener  Callback to receive the availability result.
      */
     public void checkVPSAvailability(double latitude, double longitude, VPSAvailabilityListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onResult(VPSAvailability.UNKNOWN);
+            return;
+        }
         String key = latitude + "," + longitude;
         mVPSAvailabilityCallbacks.put(key, listener);
         nativeCheckVPSAvailability(mNativeRef, latitude, longitude);
@@ -1341,6 +1508,10 @@ public class ARScene extends Scene {
      */
     public void createGeospatialAnchor(double latitude, double longitude, double altitude,
                                         float[] quaternion, GeospatialAnchorListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         String key = "geo_" + System.nanoTime();
         mGeospatialAnchorCallbacks.put(key, listener);
         nativeCreateGeospatialAnchor(mNativeRef, key, latitude, longitude, altitude,
@@ -1359,6 +1530,10 @@ public class ARScene extends Scene {
      */
     public void hostGeospatialAnchor(double latitude, double longitude, double altitude,
                                       String altitudeMode, HostGeospatialAnchorListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         String key = "host_geo_" + System.nanoTime();
         mHostGeospatialAnchorCallbacks.put(key, listener);
         nativeHostGeospatialAnchor(mNativeRef, key, latitude, longitude, altitude,
@@ -1375,6 +1550,10 @@ public class ARScene extends Scene {
      */
     public void resolveGeospatialAnchor(String platformUuid, float[] quaternion,
                                          GeospatialAnchorListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         String key = "resolve_" + System.nanoTime();
         mGeospatialAnchorCallbacks.put(key, listener);
         nativeResolveGeospatialAnchor(mNativeRef, key, platformUuid,
@@ -1393,6 +1572,10 @@ public class ARScene extends Scene {
      */
     public void createTerrainAnchor(double latitude, double longitude, double altitudeAboveTerrain,
                                      float[] quaternion, GeospatialAnchorListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         String key = "terrain_" + System.nanoTime();
         mGeospatialAnchorCallbacks.put(key, listener);
         nativeCreateTerrainAnchor(mNativeRef, key, latitude, longitude, altitudeAboveTerrain,
@@ -1411,6 +1594,10 @@ public class ARScene extends Scene {
      */
     public void createRooftopAnchor(double latitude, double longitude, double altitudeAboveRooftop,
                                      float[] quaternion, GeospatialAnchorListener listener) {
+        if (mNativeRef == 0) {
+            if (listener != null) listener.onFailure(DISPOSED_ERROR);
+            return;
+        }
         String key = "rooftop_" + System.nanoTime();
         mGeospatialAnchorCallbacks.put(key, listener);
         nativeCreateRooftopAnchor(mNativeRef, key, latitude, longitude, altitudeAboveRooftop,
@@ -1423,11 +1610,16 @@ public class ARScene extends Scene {
      * @param anchorId The ID of the anchor to remove.
      */
     public void removeGeospatialAnchor(String anchorId) {
+        if (mNativeRef == 0) return;
         nativeRemoveGeospatialAnchor(mNativeRef, anchorId);
     }
 
     /** ReactVision — fetch a single anchor by UUID. */
     public void rvGetGeospatialAnchor(String anchorId, RvGeospatialCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvGet_" + System.nanoTime();
         mRvGeospatialCallbacks.put(key, callback);
         nativeRvGetGeospatialAnchor(mNativeRef, key, anchorId);
@@ -1436,6 +1628,10 @@ public class ARScene extends Scene {
     /** ReactVision — find anchors within radius metres of the given GPS coordinate. */
     public void rvFindNearbyGeospatialAnchors(double lat, double lng, double radius, int limit,
                                                RvGeospatialCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvNearby_" + System.nanoTime();
         mRvGeospatialCallbacks.put(key, callback);
         nativeRvFindNearbyGeospatialAnchors(mNativeRef, key, lat, lng, radius, limit);
@@ -1445,6 +1641,10 @@ public class ARScene extends Scene {
     public void rvUpdateGeospatialAnchor(String anchorId, String sceneAssetId, String sceneId,
                                           String name, String userAssetId,
                                           RvGeospatialCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvUpdate_" + System.nanoTime();
         mRvGeospatialCallbacks.put(key, callback);
         nativeRvUpdateGeospatialAnchor(mNativeRef, key, anchorId,
@@ -1469,6 +1669,10 @@ public class ARScene extends Scene {
     /** ReactVision — upload an asset file and return its user_asset_id. */
     public void rvUploadAsset(String filePath, String assetType, String fileName,
                                String appUserId, RvUploadAssetCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvUpload_" + System.nanoTime();
         mRvUploadCallbacks.put(key, callback);
         nativeRvUploadAsset(mNativeRef, key,
@@ -1480,6 +1684,10 @@ public class ARScene extends Scene {
 
     /** ReactVision — delete an anchor permanently. */
     public void rvDeleteGeospatialAnchor(String anchorId, RvGeospatialCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvDelete_" + System.nanoTime();
         mRvGeospatialCallbacks.put(key, callback);
         nativeRvDeleteGeospatialAnchor(mNativeRef, key, anchorId);
@@ -1495,6 +1703,10 @@ public class ARScene extends Scene {
 
     /** Callback for ReactVision geospatial list operation. */
     public void rvListGeospatialAnchors(int limit, int offset, RvGeospatialCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvListGeo_" + System.nanoTime();
         mRvGeospatialCallbacks.put(key, callback);
         nativeRvListGeospatialAnchors(mNativeRef, key, limit, offset);
@@ -1554,6 +1766,10 @@ public class ARScene extends Scene {
      * triangulates nothing. See {@code VROARSession::rvGetScanStatusJson} for the keys.
      */
     public void rvGetScanStatus(RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"available\":false}");
+            return;
+        }
         String key = java.util.UUID.randomUUID().toString();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvGetScanStatus(mNativeRef, key);
@@ -1567,6 +1783,10 @@ public class ARScene extends Scene {
      * app. Until it is, this is how a caller learns the mesh is ready to snapshot.
      */
     public void rvGetWorldMeshStats(RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"available\":false}");
+            return;
+        }
         String key = java.util.UUID.randomUUID().toString();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvGetWorldMeshStats(mNativeRef, key);
@@ -1574,6 +1794,10 @@ public class ARScene extends Scene {
 
     /** The numbers behind the last scan-based host, as JSON. */
     public void rvGetScanDiagnostics(RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"valid\":false}");
+            return;
+        }
         String key = java.util.UUID.randomUUID().toString();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvGetScanDiagnostics(mNativeRef, key);
@@ -1604,6 +1828,10 @@ public class ARScene extends Scene {
      * @param groupId a UUID chosen by the app. Also the co-location room key.
      */
     public void rvCreateSharedFrame(String groupId, RvSharedFrameCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvCreateSharedFrame_" + System.nanoTime();
         mRvSharedFrameCallbacks.put(key, callback);
         nativeRvCreateSharedFrame(mNativeRef, key, groupId);
@@ -1611,6 +1839,10 @@ public class ARScene extends Scene {
 
     /** CL-H: recover a frame another device published to {@code groupId}. */
     public void rvJoinSharedFrame(String groupId, RvSharedFrameCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvJoinSharedFrame_" + System.nanoTime();
         mRvSharedFrameCallbacks.put(key, callback);
         nativeRvJoinSharedFrame(mNativeRef, key, groupId);
@@ -1622,6 +1854,7 @@ public class ARScene extends Scene {
      * keyframe buffer. Call {@link #rvFinishScan} when done scanning.
      */
     public void rvStartScan() {
+        if (mNativeRef == 0) return;
         nativeRvStartScan(mNativeRef);
     }
 
@@ -1631,6 +1864,7 @@ public class ARScene extends Scene {
      * {@code ErrorCancelled} to its callback once.
      */
     public void rvCancelOperations() {
+        if (mNativeRef == 0) return;
         nativeRvCancelOperations(mNativeRef);
     }
 
@@ -1640,6 +1874,10 @@ public class ARScene extends Scene {
      * the scan's own location frame instead of relative to an anchor.
      */
     public void rvFinishScan(int ttlDays, RvFinishScanCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvFinishScan_" + System.nanoTime();
         mRvFinishScanCallbacks.put(key, callback);
         nativeRvFinishScan(mNativeRef, key, ttlDays);
@@ -1653,6 +1891,10 @@ public class ARScene extends Scene {
      * format/version). See {@code VROARSession::rvLoadVPSMap}.
      */
     public void rvLoadVPSMap(byte[] rvmapBytes, RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"success\":false}");
+            return;
+        }
         String key = "rvLoadVPSMap_" + System.nanoTime();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvLoadVPSMap(mNativeRef, key, rvmapBytes);
@@ -1660,6 +1902,7 @@ public class ARScene extends Scene {
 
     /** Drops whatever {@link #rvLoadVPSMap} loaded; per-frame matching becomes a no-op. */
     public void rvUnloadVPSMap() {
+        if (mNativeRef == 0) return;
         nativeRvUnloadVPSMap(mNativeRef);
     }
 
@@ -1670,6 +1913,10 @@ public class ARScene extends Scene {
      * {@code VROARSession::rvStartVPSServerSession}.
      */
     public void rvStartVPSServerSession(RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"success\":false}");
+            return;
+        }
         String key = "rvStartVPSServerSession_" + System.nanoTime();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvStartVPSServerSession(mNativeRef, key);
@@ -1677,6 +1924,7 @@ public class ARScene extends Scene {
 
     /** Ends VPS server mode and resets the fuser. {@link #rvUnloadVPSMap} ends it too. */
     public void rvStopVPSServerSession() {
+        if (mNativeRef == 0) return;
         nativeRvStopVPSServerSession(mNativeRef);
     }
 
@@ -1689,6 +1937,10 @@ public class ARScene extends Scene {
      */
     public void rvReportVPSServerFix(float[] worldFromCamera, float[] mapFromCamera, int inliers,
                                      RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"success\":false}");
+            return;
+        }
         String key = "rvReportVPSServerFix_" + System.nanoTime();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvReportVPSServerFix(mNativeRef, key, worldFromCamera, mapFromCamera, inliers);
@@ -1778,18 +2030,30 @@ public class ARScene extends Scene {
      * {@code VROARSession::rvGetVPSLocalizationJson} for the keys.
      */
     public void rvGetVPSLocalization(RvScanJsonCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult("{\"available\":false}");
+            return;
+        }
         String key = "rvGetVPSLocalization_" + System.nanoTime();
         mRvScanJsonCallbacks.put(key, callback);
         nativeRvGetVPSLocalization(mNativeRef, key);
     }
 
     public void rvGetCloudAnchor(String anchorId, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvGetCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvGetCloudAnchor(mNativeRef, key, anchorId);
     }
 
     public void rvListCloudAnchors(int limit, int offset, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvListCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvListCloudAnchors(mNativeRef, key, limit, offset);
@@ -1797,6 +2061,10 @@ public class ARScene extends Scene {
 
     public void rvUpdateCloudAnchor(String anchorId, String name, String description,
                                      boolean isPublic, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvUpdateCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvUpdateCloudAnchor(mNativeRef, key, anchorId,
@@ -1806,6 +2074,10 @@ public class ARScene extends Scene {
     }
 
     public void rvDeleteCloudAnchor(String anchorId, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvDeleteCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvDeleteCloudAnchor(mNativeRef, key, anchorId);
@@ -1813,6 +2085,10 @@ public class ARScene extends Scene {
 
     public void rvFindNearbyCloudAnchors(double lat, double lng, double radius, int limit,
                                           RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvNearbyCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvFindNearbyCloudAnchors(mNativeRef, key, lat, lng, radius, limit);
@@ -1821,6 +2097,10 @@ public class ARScene extends Scene {
     public void rvAttachAssetToCloudAnchor(String anchorId, String fileUrl, long fileSize,
                                             String name, String assetType, String externalUserId,
                                             RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvAttachCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvAttachAssetToCloudAnchor(mNativeRef, key, anchorId, fileUrl, fileSize,
@@ -1831,24 +2111,40 @@ public class ARScene extends Scene {
 
     public void rvRemoveAssetFromCloudAnchor(String anchorId, String assetId,
                                               RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvRemoveCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvRemoveAssetFromCloudAnchor(mNativeRef, key, anchorId, assetId);
     }
 
     public void rvGetProject(String projectId, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvGetProject_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvGetProject(mNativeRef, key, projectId);
     }
 
     public void rvGetScene(String sceneId, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvGetScene_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvGetScene(mNativeRef, key, sceneId);
     }
 
     public void rvGetSceneAssets(String sceneId, RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvGetSceneAssets_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvGetSceneAssets(mNativeRef, key, sceneId);
@@ -1858,6 +2154,10 @@ public class ARScene extends Scene {
                                               int matchCount, int inlierCount, int processingTimeMs,
                                               String platform, String externalUserId,
                                               RvCloudAnchorCallback callback) {
+        if (mNativeRef == 0) {
+            if (callback != null) callback.onResult(false, "", DISPOSED_ERROR);
+            return;
+        }
         String key = "rvTrackCloud_" + System.nanoTime();
         mRvCloudCallbacks.put(key, callback);
         nativeRvTrackCloudAnchorResolution(mNativeRef, key, anchorId, success, confidence,
@@ -1986,6 +2286,9 @@ public class ARScene extends Scene {
      * @return true if semantic mode is supported, false otherwise.
      */
     public boolean isSemanticModeSupported() {
+        if (mNativeRef == 0) {
+            return false;
+        }
         return nativeIsSemanticModeSupported(mNativeRef);
     }
 
@@ -1996,6 +2299,7 @@ public class ARScene extends Scene {
      * @param enabled true to enable semantic mode, false to disable.
      */
     public void setSemanticModeEnabled(boolean enabled) {
+        if (mNativeRef == 0) return;
         nativeSetSemanticModeEnabled(mNativeRef, enabled);
     }
 
@@ -2010,6 +2314,9 @@ public class ARScene extends Scene {
      * @return The fraction of pixels (0.0-1.0), or 0.0 if not available.
      */
     public float getSemanticLabelFraction(int labelIndex) {
+        if (mNativeRef == 0) {
+            return 0f;
+        }
         return nativeGetSemanticLabelFraction(mNativeRef, labelIndex);
     }
 
@@ -2026,7 +2333,21 @@ public class ARScene extends Scene {
      * @param enabled true to enable world mesh, false to disable.
      */
     public void setWorldMeshEnabled(boolean enabled) {
+        if (mNativeRef == 0) return;
         nativeSetWorldMeshEnabled(mNativeRef, enabled);
+    }
+
+    /**
+     * Ask the AR session to measure depth so a recording started with depth can write it.
+     * Reconfigures the AR session, which can make tracking jump, so call it before
+     * recording starts rather than by it. Combined with what occlusion and the world mesh
+     * need: it never turns their depth off. Does nothing on a device without the Depth API.
+     *
+     * @param enabled true to measure depth for recording.
+     */
+    public void setDepthCaptureEnabled(boolean enabled) {
+        if (mNativeRef == 0) return;
+        nativeSetDepthCaptureEnabled(mNativeRef, enabled);
     }
 
     /**
@@ -2039,6 +2360,9 @@ public class ARScene extends Scene {
      * @return the serialized bytes, or null.
      */
     public byte[] rvSnapshotWorldMesh(String locationTransformCsv) {
+        if (mNativeRef == 0) {
+            return null;
+        }
         return nativeRvSnapshotWorldMesh(mNativeRef, locationTransformCsv);
     }
 
@@ -2053,6 +2377,9 @@ public class ARScene extends Scene {
      * @return false if there is no world mesh or the bytes are malformed.
      */
     public boolean rvLoadWorldMesh(byte[] meshBytes, String resolvedTransformCsv) {
+        if (mNativeRef == 0) {
+            return false;
+        }
         return nativeRvLoadWorldMesh(mNativeRef, meshBytes, resolvedTransformCsv);
     }
 
@@ -2068,6 +2395,7 @@ public class ARScene extends Scene {
      * @param maxMemoryMB  budget for the fused volume; 0 keeps the current value
      */
     public void setWorldMeshFusion(boolean accumulate, float voxelSize, int maxMemoryMB) {
+        if (mNativeRef == 0) return;
         nativeSetWorldMeshFusion(mNativeRef, accumulate, voxelSize, maxMemoryMB);
     }
 
@@ -2080,6 +2408,7 @@ public class ARScene extends Scene {
      * back: a snapshot taken in between finds no mesh.
      */
     public void resetWorldMesh() {
+        if (mNativeRef == 0) return;
         nativeResetWorldMesh(mNativeRef);
     }
 
@@ -2098,6 +2427,7 @@ public class ARScene extends Scene {
     public void setWorldMeshConfig(int stride, float minConfidence, float maxDepth,
                                     double updateIntervalMs, double meshPersistenceMs,
                                     float friction, float restitution, String collisionTag) {
+        if (mNativeRef == 0) return;
         nativeSetWorldMeshConfig(mNativeRef, stride, minConfidence, maxDepth,
                                   updateIntervalMs, meshPersistenceMs,
                                   friction, restitution, collisionTag, false);
@@ -2120,6 +2450,7 @@ public class ARScene extends Scene {
                                     double updateIntervalMs, double meshPersistenceMs,
                                     float friction, float restitution, String collisionTag,
                                     boolean debugDrawEnabled) {
+        if (mNativeRef == 0) return;
         nativeSetWorldMeshConfig(mNativeRef, stride, minConfidence, maxDepth,
                                   updateIntervalMs, meshPersistenceMs,
                                   friction, restitution, collisionTag, debugDrawEnabled);
@@ -2256,6 +2587,7 @@ public class ARScene extends Scene {
 
     // World Mesh API native methods
     private native void nativeSetWorldMeshEnabled(long sceneControllerRef, boolean enabled);
+    private native void nativeSetDepthCaptureEnabled(long sceneControllerRef, boolean enabled);
     private native byte[] nativeRvSnapshotWorldMesh(long sceneControllerRef, String locationTransformCsv);
     private native boolean nativeRvLoadWorldMesh(long sceneControllerRef, byte[] meshBytes, String resolvedTransformCsv);
     private native void nativeResetWorldMesh(long sceneControllerRef);
@@ -2270,9 +2602,10 @@ public class ARScene extends Scene {
                                                   float restitution,
                                                   String collisionTag,
                                                   boolean debugDrawEnabled);
-    private native void nativeStartRecording(long sceneControllerRef, String outputDir);
+    private native void nativeStartRecording(long sceneControllerRef, String outputDir, boolean depth);
     private native void nativeStopRecording(long sceneControllerRef);
     private native int nativeGetRecordingStatus(long sceneControllerRef);
+    private native boolean nativeIsRecordingSupported(long sceneControllerRef, boolean depth);
     private native void nativeReportRecordingError(long sceneControllerRef, String error);
 
     // Called by JNI

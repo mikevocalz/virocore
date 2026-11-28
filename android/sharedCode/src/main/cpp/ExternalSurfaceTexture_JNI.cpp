@@ -18,6 +18,8 @@
 #include "VROAndroidViewTexture.h"
 #include "VROPlatformUtil.h"
 #include "VRODriverOpenGL.h"
+#include "VROFrameSynchronizer.h"
+#include "VRONitroCanvasLookup.h"
 #include "VROLog.h"
 
 #define VRO_METHOD(return_type, method_name) \
@@ -52,6 +54,43 @@ VRO_METHOD(VRO_REF(VROAndroidViewTexture), nativeCreateExternalSurfaceTexture)(V
     });
 
     return VRO_REF_NEW(VROAndroidViewTexture, texture);
+}
+
+// Lookup mode: no Surface; the texture reads nitro-canvas-in-Vision surface
+// `surfaceId` through nitro_canvas_lookup_v2 at the start of every frame.
+VRO_METHOD(VRO_REF(VROAndroidViewTexture), nativeCreateNitroCanvasTexture)(VRO_ARGS
+                                                                           VRO_REF(ViroContext) context_j,
+                                                                           VRO_INT surfaceId,
+                                                                           VRO_INT width,
+                                                                           VRO_INT height) {
+    VRO_METHOD_PREAMBLE;
+    std::weak_ptr<ViroContext> context_w = VRO_REF_GET(ViroContext, context_j);
+    std::shared_ptr<VROAndroidViewTexture> texture
+            = std::make_shared<VROAndroidViewTexture>(obj, width, height,
+                                                      VROAndroidViewTextureKind::ExternalSurface);
+    texture->setNitroCanvasSurface((int32_t) surfaceId);
+
+    std::weak_ptr<VROAndroidViewTexture> texture_w = texture;
+    VROPlatformDispatchAsyncRenderer([texture_w, context_w] {
+        std::shared_ptr<VROAndroidViewTexture> texture = texture_w.lock();
+        std::shared_ptr<ViroContext> context = context_w.lock();
+        if (!texture || !context) {
+            pinfo("ExternalSurfaceTexture: texture or context gone before renderer init");
+            return;
+        }
+        std::shared_ptr<VRODriverOpenGL> driver = std::dynamic_pointer_cast<VRODriverOpenGL>(context->getDriver());
+        if (!driver) {
+            pinfo("ExternalSurfaceTexture: OpenGL driver unavailable for renderer init");
+            return;
+        }
+        texture->init(driver, context->getFrameSynchronizer());
+    });
+
+    return VRO_REF_NEW(VROAndroidViewTexture, texture);
+}
+
+VRO_METHOD(VRO_BOOL, nativeIsNitroCanvasLookupAvailable)(VRO_NO_ARGS_STATIC) {
+    return VRONitroCanvasLookup::isAvailable() ? JNI_TRUE : JNI_FALSE;
 }
 
 VRO_METHOD(void, nativeDeleteExternalSurfaceTexture)(VRO_ARGS

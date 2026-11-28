@@ -39,6 +39,7 @@
 #include "VRORenderer.h"
 
 class VRODriver;
+class VROARNode;
 class VROVideoTextureCacheOpenGL;
 class VROTrackingHelper;
 class VROMonocularDepthEstimator;
@@ -114,6 +115,10 @@ public:
     void setOcclusionMode(VROOcclusionMode mode) override;
     bool isOcclusionSupported() const override;
     bool isOcclusionModeSupported(VROOcclusionMode mode) const override;
+
+    // Depth requested for the world mesh or for recording
+    void onWorldMeshEnabled(bool enabled) override;
+    void setDepthCaptureEnabled(bool enabled) override;
 
     // Monocular depth estimation (for non-LiDAR devices, or as alternative to LiDAR)
     void setMonocularDepthEnabled(bool enabled);
@@ -257,10 +262,12 @@ public:
 
     // AR Session Recording API (see VROARSessionRecorderIOS)
     bool isRecordingSupported() const override;
+    bool isRecordingDepthSupported() const override;
     void startRecording(const VROARRecordingConfig &config,
                          std::function<void()> onSuccess,
                          std::function<void(std::string error)> onFailure) override;
-    void stopRecording() override;
+    using VROARSession::stopRecording;
+    void stopRecording(std::function<void(const VROARRecordingResult &result)> onStopped) override;
     VROARRecordingStatus getRecordingStatus() const override;
 
     /*
@@ -278,6 +285,14 @@ public:
      Get the native ARSession object for anchor creation.
      */
     ARSession *getARSession() const { return _session; }
+
+    /*
+     Anchor a new node at a world position, so that ARKit's corrections to its map move
+     the node. The node is not added to the scene. Returns null when there is no session.
+     removeAnchoredNode removes the anchor from ARKit and stops the updates.
+     */
+    std::shared_ptr<VROARNode> createAnchoredNode(VROVector3f position);
+    void removeAnchoredNode(std::shared_ptr<VROARNode> node);
     ARConfiguration *getSessionConfiguration() const { return _sessionConfiguration; }
     bool isPaused() const { return _sessionPaused; }
 
@@ -299,6 +314,30 @@ private:
      Whether or not the session has been paused.
      */
     bool _sessionPaused;
+
+    /*
+     Whether the world mesh asked for scene depth (set by onWorldMeshEnabled).
+     */
+    bool _worldMeshDepthNeeded = false;
+
+    /*
+     The ARFrameSemantics (as a raw mask) the session needs: the union of what
+     occlusion, the world mesh and depth capture ask for, limited to what the
+     device supports. This is the only place frameSemantics is decided.
+     */
+    NSUInteger computeNeededFrameSemantics() const;
+
+    /*
+     Set the needed frameSemantics on the world tracking configuration and, if
+     they changed, re-run it (unless paused).
+     */
+    void updateFrameSemantics();
+
+    /*
+     Runs the configuration again so a change to it takes effect, unless the session is
+     paused: run() applies the whole configuration when it resumes.
+     */
+    void rerunIfRunning();
 
     /*
      The cloud anchor provider to use for hosting/resolving cloud anchors.
@@ -446,6 +485,12 @@ private:
      they may be added and maintained by other tracking software).
      */
     std::map<std::string, std::shared_ptr<VROARAnchor>> _nativeAnchorMap;
+
+    /*
+     The ARKit anchors made by createAnchoredNode, by id, so removeAnchoredNode can
+     remove one without a current frame (none while the session is paused).
+     */
+    NSMutableDictionary<NSString *, ARAnchor *> *_anchoredNodeAnchors;
     
     /*
      Background to be assigned to the VROScene.

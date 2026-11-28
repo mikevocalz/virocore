@@ -106,7 +106,7 @@ VROShaderProgram::VROShaderProgram(std::string vertexShader, std::string fragmen
         vertexAssignments += "_geometry.tangent = tangent;\n";
     }
     if ((_attributes & (int)VROShaderMask::BoneIndex) != 0) {
-        vertexAssignments += "_geometry.bone_indices = bone_indices;\n";
+        vertexAssignments += "_geometry.bone_indices = ivec4(bone_indices);\n";
     }
     if ((_attributes & (int)VROShaderMask::BoneWeight) != 0) {
         vertexAssignments += "_geometry.bone_weights = bone_weights;\n";
@@ -574,6 +574,9 @@ void VROShaderProgram::bindAttributes() {
     
     if ((_attributes & (int)VROShaderMask::Tex) != 0) {
         GL( glBindAttribLocation(_program, VROGeometryUtilParseAttributeIndex(VROGeometrySourceSemantic::Texcoord), "texcoord") );
+    }
+    if ((_attributes & (int)VROShaderMask::Tex1) != 0) {
+        GL( glBindAttribLocation(_program, VROGeometryUtilParseAttributeIndex(VROGeometrySourceSemantic::Texcoord1), "texcoord1") );
     }
     if ((_attributes & (int)VROShaderMask::Color) != 0) {
         GL( glBindAttribLocation(_program, VROGeometryUtilParseAttributeIndex(VROGeometrySourceSemantic::Color), "color") );

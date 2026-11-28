@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <algorithm>
+#include <exception> // std::terminate in container_abort (basisu_containers_impl.h)
 
 #if defined(__linux__) && !defined(ANDROID)
 // Only for malloc_usable_size() in basisu_containers_impl.h

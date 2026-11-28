@@ -53,8 +53,13 @@ if [ "$PRODUCE_BINARY" = "yes" ]; then printf binary > "$framework/ViroKit"; fi
         self.assertFalse((root / 'ios/dist/ViroKit.framework/stale.h').exists())
 
     def test_jenkins_does_not_call_retired_lane(self):
+        # Upstream 3.3.0 deleted the Jenkinsfile; with no file there is no
+        # lane to call. If it comes back, it must not call the retired one.
+        jenkinsfile = ROOT / 'Jenkinsfile'
+        if not jenkinsfile.exists():
+            return
         self.assertNotIn('fastlane virorender_viroreact_virokit_static_lib',
-                         (ROOT / 'Jenkinsfile').read_text())
+                         jenkinsfile.read_text())
 
     def test_successful_xcode_exit_without_binary_fails_packaging(self):
         _, result = self.run_build(produce_binary=False)

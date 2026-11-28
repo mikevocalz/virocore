@@ -73,10 +73,47 @@ void VROInputControllerWasm::onScreenTouch(int action, float x, float y) {
         VROInputControllerBase::onButtonEvent(ViroCardBoard::ViewerButton,
                                               VROEventDelegate::ClickState::ClickUp);
         _pointerDown = false;
+    } else if (action == 3) {
+        VROInputControllerBase::cancelButtonEvent(ViroCardBoard::ViewerButton);
+        _pointerDown = false;
     }
     // action == 1 (move) is handled by onMove above; if the pointer currently
     // owns a VRODraggedObject, VROInputControllerBase::processDragging updates
     // its world transform and emits OnDrag.
+}
+
+// The start hit-tests at the midpoint and starts the gesture in one call:
+// updateOrientation replaces the hit with the gaze ray every frame.
+void VROInputControllerWasm::onPinch(int state, float scale, float x, float y) {
+    if (state == VROEventDelegate::PinchState::PinchStart) {
+        if (_viewportWidth == 0 || _viewportHeight == 0) {
+            return;
+        }
+        VROInputControllerBase::updateHitNode(_latestCamera, _latestCamera.getPosition(), calculateCameraRay(x, y));
+    }
+    VROInputControllerBase::onPinch(ViroCardBoard::InputSource::Controller, scale,
+                                    (VROEventDelegate::PinchState) state);
+}
+
+void VROInputControllerWasm::onRotate(int state, float radians, float x, float y) {
+    if (state == VROEventDelegate::RotateState::RotateStart) {
+        if (_viewportWidth == 0 || _viewportHeight == 0) {
+            return;
+        }
+        VROInputControllerBase::updateHitNode(_latestCamera, _latestCamera.getPosition(), calculateCameraRay(x, y));
+    }
+    VROInputControllerBase::onRotate(ViroCardBoard::InputSource::Controller, radians,
+                                     (VROEventDelegate::RotateState) state);
+}
+
+void VROInputControllerWasm::setPointerHover(float x, float y) {
+    _pointerHover = true;
+    _pointerX = x;
+    _pointerY = y;
+}
+
+void VROInputControllerWasm::clearPointerHover() {
+    _pointerHover = false;
 }
 
 void VROInputControllerWasm::updateScreenTouch(int touchAction) {
@@ -92,12 +129,19 @@ void VROInputControllerWasm::updateOrientation(const VROCamera &camera) {
     // A held pointer owns the ray. Aiming along the camera forward here would
     // feed onMove a screen-center ray every frame and drag the held node there
     // between pointer events.
-    if (_pointerDown && _viewportWidth > 0 && _viewportHeight > 0) {
+    const bool pointerValid = _viewportWidth > 0 && _viewportHeight > 0;
+    if (_pointerDown && pointerValid) {
         controllerForward = calculateCameraRay(_pointerX, _pointerY);
     }
 
-    // Perform hit test
-    VROInputControllerBase::updateHitNode(camera, camera.getPosition(), controllerForward);
+    // Perform hit test. Re-cast every frame, not only on mouse moves, so the
+    // hover follows a camera that moves under a still mouse. Fuse reads the
+    // same hit, so on desktop it follows the mouse too.
+    VROVector3f hitRay = controllerForward;
+    if (_pointerHover && pointerValid) {
+        hitRay = calculateCameraRay(_pointerX, _pointerY);
+    }
+    VROInputControllerBase::updateHitNode(camera, camera.getPosition(), hitRay);
 
     // Process orientation and update delegates
     VROInputControllerBase::onMove(ViroCardBoard::InputSource::Controller, camera.getPosition(), rotation, controllerForward);

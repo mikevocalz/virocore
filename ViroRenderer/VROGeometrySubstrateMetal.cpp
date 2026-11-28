@@ -992,6 +992,17 @@ void VROGeometrySubstrateMetal::renderMaterial(VROMaterialSubstrateMetal *materi
         [renderEncoder setFragmentTexture:substrate->getTexture() atIndex:j];
         [renderEncoder setFragmentSamplerState:substrate->getSampler() atIndex:j];
     }
+    for (const std::pair<int, std::shared_ptr<VROTexture>> &indexed : material->getIndexedTextures()) {
+        VROTextureSubstrateMetal *substrate = (VROTextureSubstrateMetal *) indexed.second->getSubstrate(0, driver, true);
+        if (!substrate || substrate->getTexture() == nil) {
+            std::shared_ptr<VROTexture> blank = getBlankTexture(VROTextureType::Texture2D);
+            substrate = (VROTextureSubstrateMetal *) blank->getSubstrate(0, driver, true);
+        }
+        // Indexed slots (the PBR maps at 8-11) follow the same rule as the
+        // ordered ones: texture n is sampled through sampler n.
+        [renderEncoder setFragmentTexture:substrate->getTexture() atIndex:indexed.first];
+        [renderEncoder setFragmentSamplerState:substrate->getSampler() atIndex:indexed.first];
+    }
     
     [renderEncoder drawIndexedPrimitives:element.primitiveType
                               indexCount:element.indexCount

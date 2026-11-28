@@ -25,6 +25,16 @@
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <simd/simd.h>
+/*
+ Fragment binding contract for material textures. VROMaterialSubstrateMetal
+ lists a material's textures in order; VROGeometrySubstrateMetal binds texture
+ n at [[ texture(n) ]] and that texture's own MTLSamplerState (wrap and filter
+ modes from its VROTexture) at [[ sampler(n) ]]. Slots 0..3 are material
+ textures; 4 is the shadow map and 5..7 the IBL maps, which sample through
+ shader-constant samplers.
+ */
+#define VRO_MATERIAL_TEXTURE_SLOTS 4
+
 typedef struct {
     int type;
     vector_float3 position;
@@ -35,6 +45,7 @@ typedef struct {
     float attenuation_end_distance;
     float attenuation_falloff_exp;
     
+    // cosines of the half angles of the spot's cones, as in VROLightingUBO
     float spot_inner_angle;
     float spot_outer_angle;
 
@@ -73,7 +84,30 @@ typedef struct {
     // 0 otherwise; bloom_threshold is negative when the material contributes no bloom.
     float            tone_mapping_mask;
     float            bloom_threshold;
+
+    // glTF KHR_texture_transform, applied to the texture coordinates in the vertex
+    // stage (identity when the material has none), and the emissive colour the PBR
+    // path adds to its output.
+    matrix_float4x4  texture_transform;
+    vector_float3    emissive_color;
+    int              ignores_diffuse_alpha;
+
+    // PBR maps (pbr_lighting_fragment_maps): which are bound (VROPBRMap bits), and the
+    // factors glTF scales them by. The emissive map has its own texture transform.
+    int              pbr_maps;
+    float            metalness_intensity;
+    float            roughness_intensity;
+    float            normal_scale;
+    float            ao_strength;
+    matrix_float4x4  emissive_texture_transform;
 } VROMaterialUniforms;
+
+// Bits of VROMaterialUniforms.pbr_maps.
+#define VRO_PBR_MAP_BASE       1
+#define VRO_PBR_MAP_NORMAL     2
+#define VRO_PBR_MAP_METAL_ROUGH 4
+#define VRO_PBR_MAP_AO         8
+#define VRO_PBR_MAP_EMISSIVE   16
 
 typedef struct {
     simd_float3 position;
@@ -138,10 +172,12 @@ struct VROCustomUniforms {
 #pragma custom_uniforms
 };
 
-constexpr sampler s(coord::normalized,
-                    address::repeat,
-                    filter::linear,
-                    mip_filter::linear);
+// Material textures carry their own sampler: texture slot n pairs with
+// [[ sampler(n) ]] (VRO_MATERIAL_TEXTURE_SLOTS in VROSharedStructures.h),
+// built from the VROTexture's wrap and filter modes by
+// VROTextureSubstrateMetal and bound next to the texture by
+// VROGeometrySubstrateMetal. Render-target reads (shadow, IBL, post, distortion)
+// keep shader-constant samplers.
 
 /* ---------------------------------------
    GEOMETRY ATTRIBUTES
@@ -192,12 +228,12 @@ float compute_attenuation(constant VROLightUniforms &light,
         attenuation = 1.0 - pow(d, 1.0 / light.attenuation_falloff_exp);
         
         // Spot light
+        // spot_inner/outer_angle are the cosines of the half angles: full light inside the inner
+        // cone, none outside the outer one, as compute_angle_attenuation does in GL
         if (light.type == 3) {
-            float light_surface_angle = acos(dot(*surface_to_light, normalize(light.direction)));
-            if (light_surface_angle > light.spot_inner_angle) {
-                float t = (light_surface_angle - light.spot_inner_angle) / light.spot_outer_angle;
-                attenuation = clamp(mix(attenuation, 0.0, t), 0.0, 1.0);
-            }
+            float theta = dot(*surface_to_light, normalize(light.direction));
+            float epsilon = max(0.0001, light.spot_inner_angle - light.spot_outer_angle);
+            attenuation *= clamp((theta - light.spot_outer_angle) / epsilon, 0.0, 1.0);
         }
     }
     
@@ -205,14 +241,14 @@ float compute_attenuation(constant VROLightUniforms &light,
 }
 
 float4 compute_reflection(float3 surface_position, float3 camera_position, float3 normal,
-                          texturecube<float> reflect_texture);
+                          texturecube<float> reflect_texture, sampler reflect_sampler);
 float4 compute_reflection(float3 surface_position, float3 camera_position, float3 normal,
-                          texturecube<float> reflect_texture) {
+                          texturecube<float> reflect_texture, sampler reflect_sampler) {
     
     float3 surface_to_camera = normalize(surface_position - camera_position);
     float3 reflect_ray = reflect(surface_to_camera, -normal);
     
-    return reflect_texture.sample(s, float3(reflect_ray.xy, -reflect_ray.z));
+    return reflect_texture.sample(reflect_sampler, float3(reflect_ray.xy, -reflect_ray.z));
 }
 
 // ── Multiple render targets ───────────────────────────────────────────────────
@@ -245,6 +281,11 @@ struct VROLightingFragmentOut {
 static VROLightingFragmentOut VROMakeLightingOut(float4 color,
                                                 constant VROMaterialUniforms &material) {
     VROLightingFragmentOut out;
+    // glTF alphaMode OPAQUE: only the material's transparency and the node's
+    // opacity remain, not the diffuse color's, texture's or vertex colors' alpha.
+    if (material.ignores_diffuse_alpha != 0) {
+        color.a = material.alpha;
+    }
     out.color = color;
     if (kVROHasToneMappingMask) {
         out.tone_mask = float4(material.tone_mapping_mask);
@@ -372,7 +413,7 @@ vertex VROConstantLightingVertexOut constant_lighting_vertex(VRORendererAttribut
 
     out.position = _vertex.position;
     out.instance_id = v_instance_id;
-    out.texcoord = _geometry.texcoord;
+    out.texcoord = (material.texture_transform * float4(_geometry.texcoord, 0.0, 1.0)).xy;
     out.ambient_color = lighting.ambient_light_color;
     out.material_color = material.diffuse_surface_color;
     out.diffuse_intensity = material.diffuse_intensity;
@@ -418,6 +459,7 @@ fragment VROLightingFragmentOut constant_lighting_fragment_c(VROConstantLighting
 
 fragment VROLightingFragmentOut constant_lighting_fragment_t(VROConstantLightingVertexOut in [[ stage_in ]],
                                              texture2d<float> texture [[ texture(0) ]],
+                                             sampler texture_sampler [[ sampler(0) ]],
                                              constant VROMaterialUniforms &material [[ buffer(2) ]],
                                              constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                              constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -426,7 +468,7 @@ fragment VROLightingFragmentOut constant_lighting_fragment_t(VROConstantLighting
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = texture.sample(texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color;
@@ -449,6 +491,7 @@ fragment VROLightingFragmentOut constant_lighting_fragment_t(VROConstantLighting
 
 fragment VROLightingFragmentOut constant_lighting_fragment_q(VROConstantLightingVertexOut in [[ stage_in ]],
                                              texturecube<float> texture [[ texture(0) ]],
+                                             sampler texture_sampler [[ sampler(0) ]],
                                              constant VROMaterialUniforms &material [[ buffer(2) ]],
                                              constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                              constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -458,7 +501,7 @@ fragment VROLightingFragmentOut constant_lighting_fragment_q(VROConstantLighting
 #pragma fragment_modifier_uniforms
 
     float3 texcoord = float3(in.surface_position.x, in.surface_position.y, -in.surface_position.z);
-    float4 texture_color = texture.sample(s, texcoord);
+    float4 texture_color = texture.sample(texture_sampler, texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = in.material_color * texture_color;
@@ -541,7 +584,7 @@ vertex VROLambertLightingVertexOut lambert_lighting_vertex(VRORendererAttributes
     
     out.position = _vertex.position;
     out.instance_id = v_instance_id;
-    out.texcoord = _geometry.texcoord;
+    out.texcoord = (material.texture_transform * float4(_geometry.texcoord, 0.0, 1.0)).xy;
     out.color = _geometry.color;
     
     out.surface_position = v_position;
@@ -630,6 +673,7 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_c(VROLambertLightingVe
 
 fragment VROLightingFragmentOut lambert_lighting_fragment_c_reflect(VROLambertLightingVertexOut in [[ stage_in ]],
                                                     texturecube<float> reflect_texture [[ texture(0) ]],
+                                                    sampler reflect_texture_sampler [[ sampler(0) ]],
                                                     constant VROMaterialUniforms &material [[ buffer(2) ]],
                                                     constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                                     constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -650,7 +694,7 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_c_reflect(VROLambertLi
 
 #pragma surface_modifier_body
 
-    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture);
+    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture, reflect_texture_sampler);
     
     float3 diffuse_light_color = float3(0, 0, 0);
     for (int i = 0; i < lighting.num_lights; i++) {
@@ -672,6 +716,7 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_c_reflect(VROLambertLi
 
 fragment VROLightingFragmentOut lambert_lighting_fragment_t(VROLambertLightingVertexOut in [[ stage_in ]],
                                             texture2d<float> texture [[ texture(0) ]],
+                                            sampler texture_sampler [[ sampler(0) ]],
                                             constant VROMaterialUniforms &material [[ buffer(2) ]],
                                             constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                             constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -681,7 +726,7 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_t(VROLambertLightingVe
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = texture.sample(texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color * in.material_color;
@@ -715,7 +760,9 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_t(VROLambertLightingVe
 
 fragment VROLightingFragmentOut lambert_lighting_fragment_t_reflect(VROLambertLightingVertexOut in [[ stage_in ]],
                                                     texture2d<float> texture [[ texture(0) ]],
+                                                    sampler texture_sampler [[ sampler(0) ]],
                                                     texturecube<float> reflect_texture [[ texture(1) ]],
+                                                    sampler reflect_texture_sampler [[ sampler(1) ]],
                                                     constant VROMaterialUniforms &material [[ buffer(2) ]],
                                                     constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                                     constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -725,7 +772,7 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_t_reflect(VROLambertLi
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = texture.sample(texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color * in.material_color;
@@ -738,7 +785,7 @@ fragment VROLightingFragmentOut lambert_lighting_fragment_t_reflect(VROLambertLi
 
 #pragma surface_modifier_body
 
-    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture);
+    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture, reflect_texture_sampler);
     
     float3 diffuse_light_color = float3(0, 0, 0);
     for (int i = 0; i < lighting.num_lights; i++) {
@@ -822,7 +869,7 @@ vertex VROPhongLightingVertexOut phong_lighting_vertex(VRORendererAttributes att
     
     out.position = _vertex.position;
     out.instance_id = v_instance_id;
-    out.texcoord = _geometry.texcoord;
+    out.texcoord = (material.texture_transform * float4(_geometry.texcoord, 0.0, 1.0)).xy;
     out.color = _geometry.color;
     
     out.surface_position = v_position;
@@ -900,6 +947,7 @@ float3 apply_light_phong(constant VROLightUniforms &light,
 
 fragment VROLightingFragmentOut phong_lighting_fragment_c(VROPhongLightingVertexOut in [[ stage_in ]],
                                           texture2d<float> specular_texture [[ texture(0) ]],
+                                          sampler specular_texture_sampler [[ sampler(0) ]],
                                           constant VROMaterialUniforms &material [[ buffer(2) ]],
                                           constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                           constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -911,7 +959,7 @@ fragment VROLightingFragmentOut phong_lighting_fragment_c(VROPhongLightingVertex
 
     VROSurface _surface;
     _surface.diffuse_color = in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -945,7 +993,9 @@ fragment VROLightingFragmentOut phong_lighting_fragment_c(VROPhongLightingVertex
 
 fragment VROLightingFragmentOut phong_lighting_fragment_c_reflect(VROPhongLightingVertexOut in [[ stage_in ]],
                                                   texture2d<float> specular_texture [[ texture(0) ]],
+                                                  sampler specular_texture_sampler [[ sampler(0) ]],
                                                   texturecube<float> reflect_texture [[ texture(1) ]],
+                                                  sampler reflect_texture_sampler [[ sampler(1) ]],
                                                   constant VROMaterialUniforms &material [[ buffer(2) ]],
                                                   constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                                   constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -957,7 +1007,7 @@ fragment VROLightingFragmentOut phong_lighting_fragment_c_reflect(VROPhongLighti
 
     VROSurface _surface;
     _surface.diffuse_color = in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -966,7 +1016,7 @@ fragment VROLightingFragmentOut phong_lighting_fragment_c_reflect(VROPhongLighti
 
 #pragma surface_modifier_body
 
-    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture);
+    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture, reflect_texture_sampler);
     
     float3 diffuse_light_color = float3(0, 0, 0);
     float3 surface_to_camera = normalize(in.camera_position - in.surface_position);
@@ -991,7 +1041,9 @@ fragment VROLightingFragmentOut phong_lighting_fragment_c_reflect(VROPhongLighti
 
 fragment VROLightingFragmentOut phong_lighting_fragment_t(VROPhongLightingVertexOut in [[ stage_in ]],
                                           texture2d<float> diffuse_texture [[ texture(0) ]],
+                                          sampler diffuse_texture_sampler [[ sampler(0) ]],
                                           texture2d<float> specular_texture [[ texture(1) ]],
+                                          sampler specular_texture_sampler [[ sampler(1) ]],
                                           constant VROMaterialUniforms &material [[ buffer(2) ]],
                                           constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                           constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1001,11 +1053,11 @@ fragment VROLightingFragmentOut phong_lighting_fragment_t(VROPhongLightingVertex
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = diffuse_texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = diffuse_texture.sample(diffuse_texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color * in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -1039,8 +1091,11 @@ fragment VROLightingFragmentOut phong_lighting_fragment_t(VROPhongLightingVertex
 
 fragment VROLightingFragmentOut phong_lighting_fragment_t_reflect(VROPhongLightingVertexOut in [[ stage_in ]],
                                           texture2d<float> diffuse_texture [[ texture(0) ]],
+                                          sampler diffuse_texture_sampler [[ sampler(0) ]],
                                           texture2d<float> specular_texture [[ texture(1) ]],
+                                          sampler specular_texture_sampler [[ sampler(1) ]],
                                           texturecube<float> reflect_texture [[ texture(2) ]],
+                                          sampler reflect_texture_sampler [[ sampler(2) ]],
                                                   constant VROMaterialUniforms &material [[ buffer(2) ]],
                                                   constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                                   constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1050,11 +1105,11 @@ fragment VROLightingFragmentOut phong_lighting_fragment_t_reflect(VROPhongLighti
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = diffuse_texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = diffuse_texture.sample(diffuse_texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color * in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -1063,7 +1118,7 @@ fragment VROLightingFragmentOut phong_lighting_fragment_t_reflect(VROPhongLighti
 
 #pragma surface_modifier_body
 
-    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture);
+    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture, reflect_texture_sampler);
     
     float3 diffuse_light_color = float3(0, 0, 0);
     float3 surface_to_camera = normalize(in.camera_position - in.surface_position);
@@ -1150,7 +1205,7 @@ vertex VROBlinnLightingVertexOut blinn_lighting_vertex(VRORendererAttributes att
     
     out.position = _vertex.position;
     out.instance_id = v_instance_id;
-    out.texcoord = _geometry.texcoord;
+    out.texcoord = (material.texture_transform * float4(_geometry.texcoord, 0.0, 1.0)).xy;
     out.color = _geometry.color;
     
     out.surface_position = v_position;
@@ -1228,6 +1283,7 @@ float3 apply_light_blinn(constant VROLightUniforms &light,
 
 fragment VROLightingFragmentOut blinn_lighting_fragment_c(VROBlinnLightingVertexOut in [[ stage_in ]],
                                           texture2d<float> specular_texture [[ texture(0) ]],
+                                          sampler specular_texture_sampler [[ sampler(0) ]],
                                           constant VROMaterialUniforms &material [[ buffer(2) ]],
                                           constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                           constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1239,7 +1295,7 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_c(VROBlinnLightingVertex
 
     VROSurface _surface;
     _surface.diffuse_color = in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -1273,7 +1329,9 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_c(VROBlinnLightingVertex
 
 fragment VROLightingFragmentOut blinn_lighting_fragment_c_reflect(VROBlinnLightingVertexOut in [[ stage_in ]],
                                                   texture2d<float> specular_texture [[ texture(0) ]],
+                                                  sampler specular_texture_sampler [[ sampler(0) ]],
                                                   texturecube<float> reflect_texture [[ texture(1) ]],
+                                                  sampler reflect_texture_sampler [[ sampler(1) ]],
                                                   constant VROMaterialUniforms &material [[ buffer(2) ]],
                                                   constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                                   constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1285,7 +1343,7 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_c_reflect(VROBlinnLighti
 
     VROSurface _surface;
     _surface.diffuse_color = in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -1294,7 +1352,7 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_c_reflect(VROBlinnLighti
 
 #pragma surface_modifier_body
 
-    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture);
+    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture, reflect_texture_sampler);
     
     float3 diffuse_light_color = float3(0, 0, 0);
     float3 surface_to_camera = normalize(in.camera_position - in.surface_position);
@@ -1319,7 +1377,9 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_c_reflect(VROBlinnLighti
 
 fragment VROLightingFragmentOut blinn_lighting_fragment_t(VROBlinnLightingVertexOut in [[ stage_in ]],
                                           texture2d<float> diffuse_texture [[ texture(0) ]],
+                                          sampler diffuse_texture_sampler [[ sampler(0) ]],
                                           texture2d<float> specular_texture [[ texture(1) ]],
+                                          sampler specular_texture_sampler [[ sampler(1) ]],
                                           constant VROMaterialUniforms &material [[ buffer(2) ]],
                                           constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                           constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1329,11 +1389,11 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_t(VROBlinnLightingVertex
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = diffuse_texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = diffuse_texture.sample(diffuse_texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color * in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -1367,8 +1427,11 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_t(VROBlinnLightingVertex
 
 fragment VROLightingFragmentOut blinn_lighting_fragment_t_reflect(VROBlinnLightingVertexOut in [[ stage_in ]],
                                                   texture2d<float> diffuse_texture [[ texture(0) ]],
+                                                  sampler diffuse_texture_sampler [[ sampler(0) ]],
                                                   texture2d<float> specular_texture [[ texture(1) ]],
+                                                  sampler specular_texture_sampler [[ sampler(1) ]],
                                                   texturecube<float> reflect_texture [[ texture(2) ]],
+                                                  sampler reflect_texture_sampler [[ sampler(2) ]],
                                                   constant VROMaterialUniforms &material [[ buffer(2) ]],
                                                   constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                                   constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1378,11 +1441,11 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_t_reflect(VROBlinnLighti
 #pragma surface_modifier_uniforms
 #pragma fragment_modifier_uniforms
 
-    float4 diffuse_texture_color = diffuse_texture.sample(s, in.texcoord);
+    float4 diffuse_texture_color = diffuse_texture.sample(diffuse_texture_sampler, in.texcoord);
 
     VROSurface _surface;
     _surface.diffuse_color = diffuse_texture_color * in.material_color;
-    _surface.specular_color = specular_texture.sample(s, in.texcoord);
+    _surface.specular_color = specular_texture.sample(specular_texture_sampler, in.texcoord);
     _surface.shininess = material.shininess;
     _surface.normal = in.normal;
     _surface.position = in.surface_position;
@@ -1391,7 +1454,7 @@ fragment VROLightingFragmentOut blinn_lighting_fragment_t_reflect(VROBlinnLighti
 
 #pragma surface_modifier_body
 
-    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture);
+    float4 reflective_color = compute_reflection(in.surface_position, in.camera_position, _surface.normal, reflect_texture, reflect_texture_sampler);
     
     float3 diffuse_light_color = float3(0, 0, 0);
     float3 surface_to_camera = normalize(in.camera_position - in.surface_position);
@@ -1519,11 +1582,9 @@ static float vro_attenuation_pbr(constant VROLightUniforms &light, float3 surfac
 
     // Spot cone
     if (light.type == 3) {
-        const float angle = acos(clamp(dot(-*L, normalize(light.direction)), -1.0, 1.0));
-        if (angle > light.spot_inner_angle) {
-            const float t = (angle - light.spot_inner_angle) / max(light.spot_outer_angle, 1e-3);
-            attenuation = mix(attenuation, 0.0, clamp(t, 0.0, 1.0));
-        }
+        const float theta = dot(-*L, normalize(light.direction));
+        const float epsilon = max(0.0001, light.spot_inner_angle - light.spot_outer_angle);
+        attenuation *= clamp((theta - light.spot_outer_angle) / epsilon, 0.0, 1.0);
     }
     return attenuation;
 }
@@ -1538,6 +1599,8 @@ typedef struct {
     float3 normal;
 
     float3 ambient_color;
+    // The untransformed texture coordinates, for a map with its own transform (emissive).
+    float2 raw_texcoord;
     // Particle instancing: which instance this vertex belongs to, so the fragment
     // stage can index particle_colors. Flat — an instance index must not interpolate.
     uint   instance_id [[ flat ]];
@@ -1583,11 +1646,12 @@ vertex VROPBRLightingVertexOut pbr_lighting_vertex(VRORendererAttributes attribu
 
     out.position = _vertex.position;
     out.instance_id = v_instance_id;
-    out.texcoord = _geometry.texcoord;
+    out.texcoord = (material.texture_transform * float4(_geometry.texcoord, 0.0, 1.0)).xy;
     out.color = _geometry.color;
     out.surface_position = v_position;
     out.camera_position = view.camera_position;
     out.normal = normalize((_transforms.normal_matrix * float4(_geometry.normal, 0.0)).xyz);
+    out.raw_texcoord = _geometry.texcoord;
     out.ambient_color = lighting.ambient_light_color;
 
     return out;
@@ -1596,6 +1660,11 @@ vertex VROPBRLightingVertexOut pbr_lighting_vertex(VRORendererAttributes attribu
 // Shared body: `albedo` already carries the material colour (from a uniform or a texture).
 static float4 vro_pbr_shade(VROPBRLightingVertexOut in,
                             float4 albedo,
+                            float3 normal,
+                            float metalness,
+                            float roughness,
+                            float ao,
+                            float3 emissive,
                             constant VROMaterialUniforms &material,
                             constant VROSceneLightingUniforms &lighting,
                             depth2d_array<float> shadow_map,
@@ -1609,11 +1678,11 @@ static float4 vro_pbr_shade(VROPBRLightingVertexOut in,
     _surface.specular_texcoord = in.texcoord;
     _surface.shininess = material.shininess;
     // Clamped: a roughness of zero makes the GGX denominator collapse.
-    _surface.roughness = max(material.roughness, 0.06);
-    _surface.metalness = material.metalness;
-    _surface.ao = material.ao;
+    _surface.roughness = max(roughness, 0.06);
+    _surface.metalness = metalness;
+    _surface.ao = ao;
     _surface.alpha = material.alpha;
-    _surface.normal = normalize(in.normal);
+    _surface.normal = normalize(normal);
     _surface.position = in.surface_position;
     _surface.view = normalize(in.camera_position - in.surface_position);
 
@@ -1677,10 +1746,12 @@ static float4 vro_pbr_shade(VROPBRLightingVertexOut in,
 
         ambient = (kD * diffuse_ibl + specular_ibl) * _surface.ao;
     } else {
-        ambient = in.ambient_color * base_color * _surface.ao;
+        // A metal has no diffuse response, and without an environment map nothing to
+        // reflect: only the diffusing share of the surface takes the flat ambient.
+        ambient = in.ambient_color * base_color * (1.0 - _surface.metalness) * _surface.ao;
     }
 
-    return float4(ambient + radiance_out, _surface.alpha * _surface.diffuse_color.a);
+    return float4(ambient + radiance_out + emissive, _surface.alpha * _surface.diffuse_color.a);
 }
 
 fragment VROLightingFragmentOut pbr_lighting_fragment_c(VROPBRLightingVertexOut in [[ stage_in ]],
@@ -1692,13 +1763,15 @@ fragment VROLightingFragmentOut pbr_lighting_fragment_c(VROPBRLightingVertexOut 
                                              texturecube<float> irradiance_map [[ texture(5) ]],
                                              texturecube<float> prefiltered_map [[ texture(6) ]],
                                              texture2d<float> brdf_map [[ texture(7) ]]) {
-    const float4 color = vro_pbr_shade(in, material.diffuse_surface_color, material, lighting, shadow_map,
+    const float4 color = vro_pbr_shade(in, material.diffuse_surface_color, in.normal, material.metalness,
+                                      material.roughness, material.ao, material.emissive_color, material, lighting, shadow_map,
                                       irradiance_map, prefiltered_map, brdf_map);
     return VROMakeLightingOut(color, material);
 }
 
 fragment VROLightingFragmentOut pbr_lighting_fragment_t(VROPBRLightingVertexOut in [[ stage_in ]],
                                              texture2d<float> diffuse_texture [[ texture(0) ]],
+                                             sampler diffuse_texture_sampler [[ sampler(0) ]],
                                              constant VROMaterialUniforms &material [[ buffer(2) ]],
                                              constant VROCustomUniforms &_custom [[ buffer(3) ]],
                                              constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
@@ -1707,9 +1780,82 @@ fragment VROLightingFragmentOut pbr_lighting_fragment_t(VROPBRLightingVertexOut 
                                              texturecube<float> irradiance_map [[ texture(5) ]],
                                              texturecube<float> prefiltered_map [[ texture(6) ]],
                                              texture2d<float> brdf_map [[ texture(7) ]]) {
-    const float4 albedo = diffuse_texture.sample(s, in.texcoord) * material.diffuse_surface_color;
-    const float4 color = vro_pbr_shade(in, albedo, material, lighting, shadow_map,
+    const float4 albedo = diffuse_texture.sample(diffuse_texture_sampler, in.texcoord) * material.diffuse_surface_color;
+    const float4 color = vro_pbr_shade(in, albedo, in.normal, material.metalness, material.roughness,
+                                      material.ao, material.emissive_color, material, lighting, shadow_map,
                                       irradiance_map, prefiltered_map, brdf_map);
+    return VROMakeLightingOut(color, material);
+}
+
+// Tangent frame from screen-space derivatives (no tangent attribute needed): T and B
+// follow +u and +v on the surface. glTF normal maps put +Y toward -v (up in the image),
+// so the map's green is flipped before it is applied.
+static float3x3 vro_cotangent_frame(float3 N, float3 p, float2 uv) {
+    const float3 dp1 = dfdx(p);
+    const float3 dp2 = dfdy(p);
+    const float2 duv1 = dfdx(uv);
+    const float2 duv2 = dfdy(uv);
+    const float3 dp2perp = cross(dp2, N);
+    const float3 dp1perp = cross(N, dp1);
+    const float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    const float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    const float invmax = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-12));
+    return float3x3(T * invmax, B * invmax, N);
+}
+
+// PBR with glTF's maps: base color, normal (scaled), metallic-roughness (B and G, by the
+// factors), occlusion (R, by its strength) and emissive (by the emissive color, through
+// its own texture transform). A map that is absent is bound to the blank texture and
+// skipped through material.pbr_maps.
+fragment VROLightingFragmentOut pbr_lighting_fragment_maps(VROPBRLightingVertexOut in [[ stage_in ]],
+                                             texture2d<float> diffuse_texture [[ texture(0) ]],
+                                             sampler diffuse_texture_sampler [[ sampler(0) ]],
+                                             texture2d<float> normal_map [[ texture(8) ]],
+                                             sampler normal_map_sampler [[ sampler(8) ]],
+                                             texture2d<float> metal_rough_map [[ texture(9) ]],
+                                             sampler metal_rough_map_sampler [[ sampler(9) ]],
+                                             texture2d<float> ao_map [[ texture(10) ]],
+                                             sampler ao_map_sampler [[ sampler(10) ]],
+                                             texture2d<float> emissive_map [[ texture(11) ]],
+                                             sampler emissive_map_sampler [[ sampler(11) ]],
+                                             constant VROMaterialUniforms &material [[ buffer(2) ]],
+                                             constant VROCustomUniforms &_custom [[ buffer(3) ]],
+                                             constant VROSceneLightingUniforms &lighting [[ buffer(4) ]],
+                                             constant float4 *particle_colors [[ buffer(7) ]],
+                                             depth2d_array<float> shadow_map [[ texture(4) ]],
+                                             texturecube<float> irradiance_map [[ texture(5) ]],
+                                             texturecube<float> prefiltered_map [[ texture(6) ]],
+                                             texture2d<float> brdf_map [[ texture(7) ]]) {
+    const int maps = material.pbr_maps;
+    float4 albedo = material.diffuse_surface_color;
+    if (maps & VRO_PBR_MAP_BASE) {
+        albedo *= diffuse_texture.sample(diffuse_texture_sampler, in.texcoord);
+    }
+    float3 N = normalize(in.normal);
+    if (maps & VRO_PBR_MAP_NORMAL) {
+        float3 t = normal_map.sample(normal_map_sampler, in.texcoord).xyz * 2.0 - 1.0;
+        t.xy *= material.normal_scale;
+        t.y = -t.y;
+        N = normalize(vro_cotangent_frame(N, in.surface_position, in.texcoord) * t);
+    }
+    float metalness = material.metalness;
+    float roughness = material.roughness;
+    if (maps & VRO_PBR_MAP_METAL_ROUGH) {
+        const float4 mr = metal_rough_map.sample(metal_rough_map_sampler, in.texcoord);
+        metalness = mr.b * material.metalness_intensity;
+        roughness = mr.g * material.roughness_intensity;
+    }
+    float ao = material.ao;
+    if (maps & VRO_PBR_MAP_AO) {
+        ao = mix(1.0, ao_map.sample(ao_map_sampler, in.texcoord).r, material.ao_strength);
+    }
+    float3 emissive = material.emissive_color;
+    if (maps & VRO_PBR_MAP_EMISSIVE) {
+        const float2 uv = (material.emissive_texture_transform * float4(in.raw_texcoord, 0.0, 1.0)).xy;
+        emissive *= emissive_map.sample(emissive_map_sampler, uv).rgb;
+    }
+    const float4 color = vro_pbr_shade(in, albedo, N, metalness, roughness, ao, emissive, material, lighting,
+                                      shadow_map, irradiance_map, prefiltered_map, brdf_map);
     return VROMakeLightingOut(color, material);
 }
 
@@ -1724,10 +1870,13 @@ vertex VRODistortionVertexOut distortion_vertex(VRODistortionAttributes attribut
     return out;
 }
 
+constexpr sampler kVRODistortionSampler(coord::normalized, address::repeat,
+                                        filter::linear, mip_filter::linear);
+
 fragment float4 distortion_fragment(VRODistortionVertexOut in [[ stage_in ]],
                                     texture2d<float> texture [[ texture(0) ]]) {
     
-    return in.vignette * texture.sample(s, in.texcoord);
+    return in.vignette * texture.sample(kVRODistortionSampler, in.texcoord);
 }
 
 typedef struct {
@@ -1754,9 +1903,9 @@ vertex VRODistortionAberrationVertexOut distortion_aberration_vertex(VRODistorti
 fragment float4 distortion_aberration_fragment(VRODistortionAberrationVertexOut in [[ stage_in ]],
                                                texture2d<float> texture [[ texture(0) ]]) {
 
-    return in.vignette * float4(texture.sample(s, in.red_texcoord).r,
-                                texture.sample(s, in.green_texcoord).g,
-                                texture.sample(s, in.blue_texcoord).b,
+    return in.vignette * float4(texture.sample(kVRODistortionSampler, in.red_texcoord).r,
+                                texture.sample(kVRODistortionSampler, in.green_texcoord).g,
+                                texture.sample(kVRODistortionSampler, in.blue_texcoord).b,
                                 1.0);
 }
 
@@ -1772,7 +1921,6 @@ fragment float4 distortion_aberration_fragment(VRODistortionAberrationVertexOut 
 // materials are built by shared code that knows nothing about MSL, so the two vertex
 // entry points are selected by VROGeometrySubstrateMetal instead.
 
-constexpr sampler kVROSilhouetteSampler(coord::normalized, filter::linear, address::clamp_to_edge);
 
 struct VROSilhouetteVertexOut {
     float4 position [[ position ]];
@@ -1809,8 +1957,9 @@ vertex VROSilhouetteVertexOut silhouette_skinned_vertex(VRORendererAttributes at
 // void fragment stage is valid whether or not the pass has a colour attachment, so the
 // same function serves the depth-only shadow target and the colour-masked portal pass.
 fragment void silhouette_fragment_textured(VROSilhouetteVertexOut in [[ stage_in ]],
-                                           texture2d<float> diffuse_texture [[ texture(0) ]]) {
-    const float alpha = diffuse_texture.sample(kVROSilhouetteSampler, in.texcoord).a;
+                                           texture2d<float> diffuse_texture [[ texture(0) ]],
+                                           sampler diffuse_texture_sampler [[ sampler(0) ]]) {
+    const float alpha = diffuse_texture.sample(diffuse_texture_sampler, in.texcoord).a;
     // Cut-outs must not cast a solid shadow.
     if (alpha < 0.5) {
         discard_fragment();

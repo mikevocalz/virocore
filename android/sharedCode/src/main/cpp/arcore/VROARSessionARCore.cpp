@@ -59,6 +59,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <memory>
+#include <vector>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -94,7 +97,9 @@ static const float kMinPlaneExtent = 0.10f;  // 10cm minimum size in any dimensi
 
 VROARSessionARCore::VROARSessionARCore(std::shared_ptr<VRODriverOpenGL> driver)
     : VROARSession(VROTrackingType::DOF6, VROWorldAlignment::Gravity),
-      _lightingMode(arcore::LightingMode::EnvironmentalHDR),
+      // AmbientIntensity: VROARFrameARCore reads the pixel intensity and colour correction, which
+      // ARCore returns as zero in any other mode. Nothing reads the HDR estimate yet.
+      _lightingMode(arcore::LightingMode::AmbientIntensity),
       _planeFindingMode(arcore::PlaneFindingMode::Horizontal),
       _updateMode(arcore::UpdateMode::Blocking),
       _cloudAnchorMode(arcore::CloudAnchorMode::Enabled),
@@ -214,6 +219,7 @@ VROARSessionARCore::~VROARSessionARCore() {
 #pragma mark - Lifecycle and Setup
 
 void VROARSessionARCore::run() {
+  _paused = false;
   if (_session != nullptr) {
     // ARCore requires setCameraTextureName to be called after every pause/resume cycle.
     // Re-register here so the camera stream is always wired to our OES texture before
@@ -229,6 +235,7 @@ void VROARSessionARCore::run() {
 }
 
 void VROARSessionARCore::pause() {
+  _paused = true;
   if (_session != nullptr) {
     _session->pause();
     pinfo("AR session paused");
@@ -525,6 +532,13 @@ bool VROARSessionARCore::updateARCoreConfig() {
     }
   }
 
+  if (_paused) {
+    // configure() needs the session paused; leave it so; run() resumes it with the new config
+    if (status != arcore::ConfigStatus::Success) {
+      pwarn("Failed to configure AR session (status %d)", (int)status);
+    }
+    return status == arcore::ConfigStatus::Success;
+  }
   if (status == arcore::ConfigStatus::Success) {
     _session->resume();
     // After pause→configure→resume the camera hardware stream is reset.
@@ -949,7 +963,16 @@ void VROARSessionARCore::resolveCloudAnchor(
       if (onFailure) onFailure(std::string(VROReactVisionAuth::kNoCredentialsError) + "|ErrorNotAuthorized");
       return;
     }
-    _cloudAnchorProviderRV->resolveCloudAnchor(cloudAnchorId, onSuccess, onFailure);
+    std::weak_ptr<VROARSessionARCore> session_w = shared_from_this();
+    _cloudAnchorProviderRV->resolveCloudAnchor(cloudAnchorId,
+        [session_w, onSuccess](std::shared_ptr<VROARAnchor> resolved) {
+          VROPlatformDispatchAsyncRenderer([session_w, onSuccess, resolved] {
+            std::shared_ptr<VROARSessionARCore> session = session_w.lock();
+            std::shared_ptr<VROARAnchor> tracked = session ? session->trackResolvedAnchor(resolved) : nullptr;
+            onSuccess(tracked ? tracked : resolved);
+          });
+        },
+        onFailure);
     return;
   }
 
@@ -959,6 +982,38 @@ void VROARSessionARCore::resolveCloudAnchor(
     return;
   }
   _cloudAnchorProvider->resolveCloudAnchor(cloudAnchorId, onSuccess, onFailure);
+}
+
+// A ReactVision resolve is a pose computed once, in world coordinates. Left as plain
+// coordinates it stays put when ARCore later shifts its world (a relocalisation, a
+// map merge), so content placed from it ends up somewhere else in the room. Held by
+// an ARCore anchor it moves with those corrections, as the arcore provider's own
+// resolved anchors do, and it reaches the scene's anchor callbacks, so a node can
+// attach to it by id. Null when ARCore cannot make an anchor (tracking limited).
+std::shared_ptr<VROARAnchor> VROARSessionARCore::trackResolvedAnchor(std::shared_ptr<VROARAnchor> resolved) {
+  if (!_session || !resolved) {
+    return nullptr;
+  }
+  VROMatrix4f transform = resolved->getTransform();
+  VROVector3f position = transform.extractTranslation();
+  VROQuaternion rotation = transform.extractRotation(transform.extractScale());
+  arcore::Pose *pose = _session->createPose(position.x, position.y, position.z,
+                                            rotation.X, rotation.Y, rotation.Z, rotation.W);
+  std::shared_ptr<arcore::Anchor> anchor_arc = std::shared_ptr<arcore::Anchor>(_session->acquireNewAnchor(pose));
+  delete (pose);
+  if (!anchor_arc) {
+    pinfo("Resolved cloud anchor [%s] left at fixed coordinates: ARCore could not create an anchor",
+          resolved->getCloudAnchorId().c_str());
+    return nullptr;
+  }
+
+  std::string key = VROStringUtil::toString64(anchor_arc->getId());
+  std::shared_ptr<VROARAnchorARCore> anchor =
+      std::make_shared<VROARAnchorARCore>(key, anchor_arc, nullptr, shared_from_this());
+  anchor->sync();
+  anchor->setCloudAnchorId(resolved->getCloudAnchorId());
+  addAnchor(anchor);
+  return anchor;
 }
 
 #pragma mark - AR Frames
@@ -1200,7 +1255,12 @@ void VROARSessionARCore::processUpdatedAnchors(VROARFrameARCore *frameAR) {
         addAnchor(vAnchor);
       }
 
-      // The plane has been subsumed or is no longer tracked: remove it
+      // Paused (ARCore lost tracking for a moment): keep the plane as it was. ARCore
+      // resumes a paused plane, so removing it made every plane vanish and come back on
+      // each brief tracking drop. Only a subsumed or stopped plane is removed.
+    } else if (subsumingPlane == NULL && state == arcore::TrackingState::Paused) {
+
+      // The plane has been subsumed or has stopped tracking: remove it
     } else {
       auto it = _nativeAnchorMap.find(key);
       if (it != _nativeAnchorMap.end()) {
@@ -1548,9 +1608,10 @@ void VROARSessionARCore::setOcclusionMode(VROOcclusionMode mode) {
       break;
     case VROOcclusionMode::Disabled:
     default:
-      // Keep depth active if world mesh still needs it
-      newDepthMode = _worldMeshDepthNeeded ? arcore::DepthMode::Automatic
-                                           : arcore::DepthMode::Disabled;
+      // Keep depth active if world mesh or depth capture still needs it
+      newDepthMode = (_worldMeshDepthNeeded || isDepthCaptureEnabled())
+          ? arcore::DepthMode::Automatic
+          : arcore::DepthMode::Disabled;
       break;
   }
 
@@ -1599,7 +1660,7 @@ bool VROARSessionARCore::isOcclusionModeSupported(VROOcclusionMode mode) const {
 
 arcore::DepthMode VROARSessionARCore::computeNeededDepthMode() const {
   bool occlusionNeedsDepth = (getOcclusionMode() != VROOcclusionMode::Disabled);
-  return (_worldMeshDepthNeeded || occlusionNeedsDepth)
+  return (_worldMeshDepthNeeded || occlusionNeedsDepth || isDepthCaptureEnabled())
       ? arcore::DepthMode::Automatic
       : arcore::DepthMode::Disabled;
 }
@@ -1622,6 +1683,19 @@ void VROARSessionARCore::onWorldMeshEnabled(bool enabled) {
     if (_session != nullptr) {
       updateARCoreConfig();
       pinfo("VROARSessionARCore: world mesh %s, depth mode set to %d",
+            enabled ? "enabled" : "disabled", (int)_depthMode);
+    }
+  }
+}
+
+void VROARSessionARCore::setDepthCaptureEnabled(bool enabled) {
+  VROARSession::setDepthCaptureEnabled(enabled);
+  arcore::DepthMode needed = computeNeededDepthMode();
+  if (needed != _depthMode) {
+    _depthMode = needed;
+    if (_session != nullptr) {
+      updateARCoreConfig();
+      pinfo("VROARSessionARCore: depth capture %s, depth mode set to %d",
             enabled ? "enabled" : "disabled", (int)_depthMode);
     }
   }
@@ -3109,15 +3183,37 @@ void VROARSessionARCore::startRecording(const VROARRecordingConfig &config,
     // The actual video/IMU/sidecar setup already happened in Java before this
     // was called (see ARScene.startRecording()) — this just tells updateFrame()
     // to start calling recordFrameForRecording() each frame.
+    // Depth only flows if the session was already measuring it: enabling it here
+    // would reconfigure ARCore mid-recording.
+    _recordingDepth = config.depth && _session != nullptr && isDepthCaptureEnabled() &&
+                      isDepthModeEnabled() &&
+                      _session->isDepthModeSupported(arcore::DepthMode::Automatic);
+    _lastRecordedDepthTimestampNs = -1;
     _recordingStatus = VROARRecordingStatus::Recording;
     if (onSuccess) {
         onSuccess();
     }
 }
 
-void VROARSessionARCore::stopRecording() {
+bool VROARSessionARCore::isRecordingDepthSupported() const {
+    return _session != nullptr && _session->isDepthModeSupported(arcore::DepthMode::Automatic);
+}
+
+void VROARSessionARCore::stopRecording(std::function<void(const VROARRecordingResult &result)> onStopped) {
+    VROARRecordingStatus status = _recordingStatus;
     _recordingStatus = VROARRecordingStatus::None;
+    _recordingDepth = false;
     setRecordingJavaCallback(nullptr);
+    if (onStopped) {
+        VROARRecordingResult result;
+        if (status == VROARRecordingStatus::Recording) {
+            result.success = true;
+        } else {
+            result.error = status == VROARRecordingStatus::IOError ? "Recording stopped after a write error"
+                                                                    : "Not recording";
+        }
+        onStopped(result);
+    }
 }
 
 VROARRecordingStatus VROARSessionARCore::getRecordingStatus() const {
@@ -3180,6 +3276,12 @@ void VROARSessionARCore::recordFrameForRecording(VROARFrameARCore *arFrame) {
 
     int64_t timestampNs = _frame->getTimestampNs();
 
+    std::vector<uint8_t> depthData, confidenceData;
+    int depthWidth = 0, depthHeight = 0;
+    int64_t depthTimestampNs = 0;
+    bool hasDepth = _recordingDepth &&
+        copyDepthForRecording(depthData, confidenceData, &depthWidth, &depthHeight, &depthTimestampNs);
+
     JNIEnv *env = VROPlatformGetJNIEnv();
     jbyteArray yArr = env->NewByteArray(yLen);
     env->SetByteArrayRegion(yArr, 0, yLen, (const jbyte *) yData);
@@ -3228,10 +3330,30 @@ void VROARSessionARCore::recordFrameForRecording(VROARFrameARCore *arFrame) {
     jdoubleArray geoArr = env->NewDoubleArray(7);
     env->SetDoubleArrayRegion(geoArr, 0, 7, geo);
 
-    VROPlatformCallHostFunction(_recordingJavaCallback, "onRecordingFrame",
-                                "([B[B[B[IJ[F[D)V",
-                                yArr, uArr, vArr, dimsArr, (jlong) timestampNs, poseArr, geoArr);
+    // depth = [width, height] of the depth map; the depth and confidence arrays
+    // and the depth timestamp are null/0 when this frame carries no new depth.
+    jbyteArray depthArr = nullptr, confidenceArr = nullptr;
+    jintArray depthDimsArr = nullptr;
+    if (hasDepth) {
+        depthArr = env->NewByteArray((jsize) depthData.size());
+        env->SetByteArrayRegion(depthArr, 0, (jsize) depthData.size(), (const jbyte *) depthData.data());
+        confidenceArr = env->NewByteArray((jsize) confidenceData.size());
+        env->SetByteArrayRegion(confidenceArr, 0, (jsize) confidenceData.size(), (const jbyte *) confidenceData.data());
+        jint depthDims[2] = { depthWidth, depthHeight };
+        depthDimsArr = env->NewIntArray(2);
+        env->SetIntArrayRegion(depthDimsArr, 0, 2, depthDims);
+    }
 
+    VROPlatformCallHostFunction(_recordingJavaCallback, "onRecordingFrame",
+                                "([B[B[B[IJ[F[D[B[B[IJ)V",
+                                yArr, uArr, vArr, dimsArr, (jlong) timestampNs, poseArr, geoArr,
+                                depthArr, confidenceArr, depthDimsArr, (jlong) depthTimestampNs);
+
+    if (depthArr) {
+        env->DeleteLocalRef(depthArr);
+        env->DeleteLocalRef(confidenceArr);
+        env->DeleteLocalRef(depthDimsArr);
+    }
     env->DeleteLocalRef(yArr);
     env->DeleteLocalRef(uArr);
     env->DeleteLocalRef(vArr);
@@ -3240,6 +3362,66 @@ void VROARSessionARCore::recordFrameForRecording(VROARFrameARCore *arFrame) {
     env->DeleteLocalRef(geoArr);
 
     delete img;
+}
+
+// Depth frames go out at most every 100 ms by their own timestamp; a depth image
+// ARCore has not refreshed since the last one carries the same timestamp.
+static const int64_t kRecordingMinDepthIntervalNs = 100000000;
+
+bool VROARSessionARCore::copyDepthForRecording(std::vector<uint8_t> &depth,
+                                               std::vector<uint8_t> &confidence,
+                                               int *width, int *height, int64_t *timestampNs) {
+    arcore::Image *depthRaw = nullptr;
+    if (_frame->acquireDepthImage(&depthRaw) != arcore::ImageRetrievalStatus::Success || !depthRaw) {
+        return false;
+    }
+    std::unique_ptr<arcore::Image> depthImage(depthRaw);
+
+    int64_t depthTimestamp = depthImage->getTimestampNs();
+    if (_lastRecordedDepthTimestampNs >= 0 &&
+        depthTimestamp - _lastRecordedDepthTimestampNs < kRecordingMinDepthIntervalNs) {
+        return false;
+    }
+
+    arcore::Image *confidenceRaw = nullptr;
+    if (_frame->acquireDepthConfidenceImage(&confidenceRaw) != arcore::ImageRetrievalStatus::Success ||
+        !confidenceRaw) {
+        return false;
+    }
+    std::unique_ptr<arcore::Image> confidenceImage(confidenceRaw);
+
+    int w = depthImage->getWidth();
+    int h = depthImage->getHeight();
+    if (w <= 0 || h <= 0 || confidenceImage->getWidth() != w || confidenceImage->getHeight() != h) {
+        return false;
+    }
+
+    const uint8_t *depthPlane = nullptr; int depthLen = 0;
+    const uint8_t *confidencePlane = nullptr; int confidenceLen = 0;
+    depthImage->getPlaneData(0, &depthPlane, &depthLen);
+    confidenceImage->getPlaneData(0, &confidencePlane, &confidenceLen);
+    int depthRowStride = depthImage->getPlaneRowStride(0);
+    int confidenceRowStride = confidenceImage->getPlaneRowStride(0);
+    if (!depthPlane || !confidencePlane ||
+        depthImage->getPlanePixelStride(0) != 2 || confidenceImage->getPlanePixelStride(0) != 1 ||
+        depthRowStride < w * 2 || confidenceRowStride < w ||
+        depthLen < (h - 1) * depthRowStride + w * 2 ||
+        confidenceLen < (h - 1) * confidenceRowStride + w) {
+        return false;
+    }
+
+    depth.resize((size_t) w * h * 2);
+    confidence.resize((size_t) w * h);
+    for (int row = 0; row < h; row++) {
+        memcpy(depth.data() + (size_t) row * w * 2, depthPlane + (size_t) row * depthRowStride, (size_t) w * 2);
+        memcpy(confidence.data() + (size_t) row * w, confidencePlane + (size_t) row * confidenceRowStride, (size_t) w);
+    }
+
+    *width = w;
+    *height = h;
+    *timestampNs = depthTimestamp;
+    _lastRecordedDepthTimestampNs = depthTimestamp;
+    return true;
 }
 
 void VROARSessionARCore::updateDepthTexture() {

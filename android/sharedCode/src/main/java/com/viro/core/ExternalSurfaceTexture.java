@@ -48,6 +48,16 @@ import android.view.Surface;
  * The texture can be applied to any {@link Material} via
  * {@link Material#setDiffuseTexture(Texture)}; the engine rewrites the diffuse
  * sampler to <tt>samplerExternalOES</tt> automatically for EGL-image textures.
+ * <p>
+ * <b>Nitro canvas lookup mode.</b> {@link #createForNitroCanvasSurface} binds
+ * the texture to a nitro-canvas-in-Vision CanvasSurface by its id instead of
+ * handing out a Surface. At the start of every rendered frame the renderer
+ * calls the producer's exported {@code nitro_canvas_lookup_v2} (found with
+ * {@code dlsym}/{@code dlopen("libNitroCanvasInVision.so")}), waits on the
+ * producer's sync fence, and binds the producer-owned AHardwareBuffer through
+ * an EGLImage, re-importing it only when the buffer, its size or its colour
+ * flag changes. {@link #setCornerRadius} and {@link #setPremultipliedAlpha}
+ * apply in both modes; {@link #getSurface()} stays null in lookup mode.
  */
 public class ExternalSurfaceTexture extends Texture {
 
@@ -61,6 +71,7 @@ public class ExternalSurfaceTexture extends Texture {
 
     private volatile Surface mSurface;
     private volatile SurfaceListener mListener;
+    private final int mNitroCanvasSurfaceId;
 
     /**
      * Construct a new ExternalSurfaceTexture sized to the producer's pixel
@@ -79,7 +90,68 @@ public class ExternalSurfaceTexture extends Texture {
         mWidth = pxWidth;
         mHeight = pxHeight;
         mListener = listener;
+        mNitroCanvasSurfaceId = 0;
         mNativeRef = nativeCreateExternalSurfaceTexture(viroContext.mNativeRef, pxWidth, pxHeight);
+    }
+
+    private ExternalSurfaceTexture(ViroContext viroContext, int nitroCanvasSurfaceId,
+                                   int pxWidth, int pxHeight) {
+        mWidth = pxWidth;
+        mHeight = pxHeight;
+        mListener = null;
+        mNitroCanvasSurfaceId = nitroCanvasSurfaceId;
+        mNativeRef = nativeCreateNitroCanvasTexture(viroContext.mNativeRef, nitroCanvasSurfaceId,
+                pxWidth, pxHeight);
+    }
+
+    /**
+     * Create a texture that reads a nitro-canvas-in-Vision CanvasSurface by its
+     * id, through the producer's {@code nitro_canvas_lookup_v2} export, rather
+     * than through a Surface. Requires a producer that exports that symbol
+     * (0.0.2-rive.5 and later); older producers use the Surface constructor.
+     * <p>
+     * The texture keeps polling while it lives, so a producer library that
+     * loads after this call is picked up; frames published before it loads
+     * are not lost, since the producer hands out its latest frame.
+     *
+     * @param viroContext The {@link ViroContext} of the view that renders it.
+     * @param surfaceId   The CanvasSurface {@code id} serialized by
+     *                    {@code canvasSource} on the JS side. Must be positive.
+     * @param pxWidth     The producer's current width in pixels (used until
+     *                    the first frame; the producer's size wins after).
+     * @param pxHeight    The producer's current height in pixels.
+     * @return the texture; apply it with {@link Material#setDiffuseTexture}.
+     * @throws IllegalArgumentException if surfaceId, pxWidth or pxHeight is not positive.
+     */
+    public static ExternalSurfaceTexture createForNitroCanvasSurface(ViroContext viroContext,
+                                                                     int surfaceId,
+                                                                     int pxWidth, int pxHeight) {
+        if (surfaceId <= 0) {
+            throw new IllegalArgumentException("nitro canvas surface id must be positive, got " + surfaceId);
+        }
+        if (pxWidth <= 0 || pxHeight <= 0) {
+            throw new IllegalArgumentException("size must be positive, got " + pxWidth + "x" + pxHeight);
+        }
+        return new ExternalSurfaceTexture(viroContext, surfaceId, pxWidth, pxHeight);
+    }
+
+    /**
+     * Whether a loaded or loadable library exports {@code nitro_canvas_lookup_v2}
+     * (ABI v2). Use it to choose between {@link #createForNitroCanvasSurface}
+     * and the Surface constructor for older producers. A false answer is
+     * re-checked on a backoff, so it can turn true once the producer loads.
+     * Requires the Viro native library to be loaded (any ViroView created).
+     */
+    public static boolean isNitroCanvasLookupAvailable() {
+        return nativeIsNitroCanvasLookupAvailable();
+    }
+
+    /**
+     * The CanvasSurface id this texture reads in lookup mode, or 0 for a
+     * Surface-mode texture.
+     */
+    public int getNitroCanvasSurfaceId() {
+        return mNitroCanvasSurfaceId;
     }
 
     /**
@@ -167,6 +239,9 @@ public class ExternalSurfaceTexture extends Texture {
      Native functions implemented in ExternalSurfaceTexture_JNI.cpp.
      */
     private native long nativeCreateExternalSurfaceTexture(long renderContextRef, int width, int height);
+    private native long nativeCreateNitroCanvasTexture(long renderContextRef, int surfaceId,
+                                                       int width, int height);
+    private static native boolean nativeIsNitroCanvasLookupAvailable();
     private native void nativeDeleteExternalSurfaceTexture(long nativeRef);
     private native void nativeSetCornerRadius(long nativeRef, float radiusMeters,
                                               float widthMeters, float heightMeters);
