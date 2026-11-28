@@ -349,6 +349,8 @@ bool VROAndroidViewTexture::createResolveTarget(bool sRGBStorage) {
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glGenerateMipmap(GL_TEXTURE_2D);
+    pinfo("VROAndroidViewTexture: %dx%d resolve target, %d mip levels, %s storage",
+          _width, _height, (int) levels, sRGBStorage ? "sRGB" : "RGBA8");
     return true;
 }
 
@@ -407,8 +409,8 @@ bool VROAndroidViewTexture::createResolveResources(bool sRGBStorage) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    pinfo("VROAndroidViewTexture: %dx%d resolve target, %d mip levels, %s storage",
-          _width, _height, (int) levels, sRGBStorage ? "sRGB" : "RGBA8");
+    pinfo("VROAndroidViewTexture: %dx%d resolve program ready, %s storage",
+          _width, _height, sRGBStorage ? "sRGB" : "RGBA8");
     return true;
 }
 
