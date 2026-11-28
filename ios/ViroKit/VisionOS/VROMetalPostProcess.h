@@ -26,6 +26,7 @@
 #if VRO_METAL
 
 #include "VROImagePostProcess.h"
+#include "VROMaterial.h" // VROBlendMode
 #include "VROMetalRenderPassHost.h"
 #include <Metal/Metal.h>
 #include <string>
@@ -58,6 +59,13 @@ public:
     // ── VROImagePostProcess ──────────────────────────────────────────────────
 
     void setVerticalFlip(bool flip) override { _verticalFlip = flip; }
+    /*
+     Recorded only. Every Metal blit overwrites its whole target with blending
+     off (see pipelineStateForFormat), so the source, premultiplied or not,
+     lands unchanged; that is what PremultiplyAlpha over a cleared target
+     produces, the one mode the shared passes request.
+     */
+    void setBlendMode(VROBlendMode mode) override { _blendMode = mode; }
 
     void blit(std::vector<std::shared_ptr<VROTexture>> textures,
               std::shared_ptr<VRODriver> &driver) override;
@@ -85,6 +93,7 @@ private:
     VROMetalRenderPassHost *_host;
     std::vector<uint8_t> _uniforms;
     bool _verticalFlip;
+    VROBlendMode _blendMode = VROBlendMode::Alpha;
 };
 
 #endif  // VRO_METAL
