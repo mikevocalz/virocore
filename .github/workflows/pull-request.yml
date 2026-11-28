@@ -129,8 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
-          /tmp/emsdk/emsdk install latest
-          /tmp/emsdk/emsdk activate latest
+          # Pinned: Emscripten 7.0 trims libc++'s transitive includes, and the
+          # vendored protobuf and basisu headers miss <algorithm>/<exception>
+          # under it. 6.0.13 is the last version main built green with.
+          /tmp/emsdk/emsdk install 6.0.13
+          /tmp/emsdk/emsdk activate 6.0.13
 
       - name: Build Viro WebAssembly renderer
         shell: bash
